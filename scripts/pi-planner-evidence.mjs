@@ -257,6 +257,34 @@ export function plannerPlanAdmission(planText, facts = [], issue = null) {
   };
 }
 
+// Inspect only budget fields actually serialized in the provider request. The
+// expected phase budget is NOT evidence of what the provider will receive.
+// Keep model capacity separate from serialized provider payload verification.
+export function plannerProviderBudgetEvidence(payload, expected) {
+  const fields = [
+    ['max_output_tokens', payload?.max_output_tokens],
+    ['max_completion_tokens', payload?.max_completion_tokens],
+    ['max_tokens', payload?.max_tokens],
+    ['maxTokens', payload?.maxTokens],
+    ['generationConfig.maxOutputTokens', payload?.generationConfig?.maxOutputTokens],
+    ['generation_config.max_output_tokens', payload?.generation_config?.max_output_tokens],
+  ].filter(([, value]) => value !== undefined && value !== null);
+  if (fields.length === 0) {
+    return { effective: null, fields: [], verified: false, reason: 'provider_budget_unverified' };
+  }
+  const values = fields.map(([field, value]) => ({ field, value }));
+  const valid = values.every(({ value }) => Number.isSafeInteger(value) && value > 0);
+  const unique = new Set(values.map(({ value }) => value));
+  const effective = valid && unique.size === 1 ? values[0].value : null;
+  return {
+    effective,
+    fields: values.map(({ field }) => field),
+    verified: effective === expected,
+    reason: !valid ? 'invalid_provider_budget' : unique.size !== 1
+      ? 'conflicting_provider_budgets' : effective === expected ? 'verified' : 'provider_budget_mismatch',
+  };
+}
+
 export default function (pi) {
   registerPlannerEvidenceTools(pi);
   pi.registerTool?.({
@@ -289,7 +317,7 @@ export default function (pi) {
   let control = null;
   let lastAssistant = null;
   let lastProviderInputTokens = null;
-  let providerBudgetValid = true;
+  let providerBudgetEvidence = { effective: null, fields: [], verified: false, reason: 'no_provider_request' };
   const budgetHistory = [];
 
   function setPhase(next, metadata = {}) {
@@ -343,13 +371,19 @@ export default function (pi) {
     const tools = Array.isArray(payload.tools)
       ? payload.tools.filter(tool => allowed.has(tool.function?.name ?? tool.name))
       : [];
-    const effective = Number(payload.max_output_tokens ?? payload.max_tokens ?? event.model?.maxTokens ?? budget);
-    const validBudget = !Number.isFinite(effective) || effective === budget;
-    providerBudgetValid = validBudget;
-    budgetHistory.push({ phase, expected: budget, effective: Number.isFinite(effective) ? effective : null });
+    providerBudgetEvidence = plannerProviderBudgetEvidence(payload, budget);
+    budgetHistory.push({
+      phase, expected: budget, effective: providerBudgetEvidence.effective,
+      fields: providerBudgetEvidence.fields, verified: providerBudgetEvidence.verified,
+      reason: providerBudgetEvidence.reason,
+    });
     updatePlannerProtocolState({ budgetHistory, submissionBudget: budget });
-    console.log(`PI_PLANNER_PROVIDER_REQUEST ${JSON.stringify({ phase, requestedBudget: budget, effectiveBudget: Number.isFinite(effective) ? effective : null, tools: tools.map(tool => tool.function?.name ?? tool.name), validBudget })}`);
-    if (!validBudget) recordEvidenceFailure({ failureKind: 'planner_submission_budget_unavailable', diagnostic: 'Provider budget disagrees with session phase' });
+    console.log(`PI_PLANNER_PROVIDER_REQUEST ${JSON.stringify({
+      phase, requestedBudget: budget, effectiveBudget: providerBudgetEvidence.effective,
+      providerFields: providerBudgetEvidence.fields, budgetVerified: providerBudgetEvidence.verified,
+      verificationReason: providerBudgetEvidence.reason,
+      tools: tools.map(tool => tool.function?.name ?? tool.name),
+    })}`);
     if (tools.length === 0) {
       const { tools: _tools, tool_choice: _choice, ...rest } = payload;
       return rest;
@@ -455,6 +489,10 @@ export default function (pi) {
         lastAssistant.calls[0].name === 'begin_plan_submission' &&
         lastAssistant.calls[0].id === control.toolCallId;
       if (beginComplete) {
+        if (!providerBudgetEvidence.verified) {
+          fail('planner_submission_budget_unavailable', 'Research request output budget was not verified at provider boundary', ctx);
+          return;
+        }
         control = null;
         evidenceProgressContinuationPending = false;
         if (!(await applyBudget(ctx, 4096))) {
@@ -487,11 +525,10 @@ export default function (pi) {
       return undefined;
     }
     if (phase !== 'submission_pending') return undefined;
-    const accepted = providerBudgetValid && control?.kind === 'submit' && control.executed &&
+    const accepted = providerBudgetEvidence.verified && control?.kind === 'submit' && control.executed &&
       lastAssistant?.reason === 'tooluse' && lastAssistant.complete &&
       lastAssistant.calls.length === 1 && lastAssistant.calls[0].name === 'submit_plan' &&
-      lastAssistant.calls[0].id === control.toolCallId &&
-      (lastAssistant.outputTokens === null || lastAssistant.outputTokens < budget || lastAssistant.complete);
+      lastAssistant.calls[0].id === control.toolCallId;
     if (accepted) {
       const planText = control.planText;
       const qualitySignals = control.qualitySignals;
@@ -502,8 +539,39 @@ export default function (pi) {
       control = null;
       return undefined;
     }
-    const cause = !providerBudgetValid ? 'provider_budget_mismatch' : control?.failureKind ?? (lastAssistant?.reason === 'length' ? 'truncated' : 'incomplete_or_missing_submit_plan');
+    // A longer attempt cannot repair an unverified provider serialization budget.
+    if (!providerBudgetEvidence.verified) {
+      fail('planner_submission_budget_unavailable',
+        'Actual submission provider budget is unverified or differs from the phase budget', ctx);
+      return;
+    }
+    // An inadmissible but complete plan is a terminal invalid plan, not a transport retry.
+    if (control?.kind === 'invalid' && control.failureKind !== 'planner_submission_invalid') {
+      fail(control.failureKind, 'Complete submit_plan was rejected by minimal admission', ctx);
+      return;
+    }
+    if (lastAssistant?.reason === 'error' || lastAssistant?.reason === 'aborted') {
+      fail('planner_submission_transport_failure', 'Provider returned an error or aborted submission', ctx);
+      return;
+    }
+    if (lastAssistant?.complete && lastAssistant.reason !== 'tooluse') {
+      fail('planner_submission_missing', 'Completed provider response omitted submit_plan', ctx);
+      return;
+    }
+    if (lastAssistant?.reason === 'tooluse' && lastAssistant.calls.length > 1) {
+      fail('planner_submission_invalid_transition', 'Duplicate or conflicting submission tool calls', ctx);
+      return;
+    }
+    const failureKind = control?.failureKind ?? 'planner_submission_incomplete';
+    const cause = control?.failureKind ?? (lastAssistant?.reason === 'length' ? 'truncated' : 'incomplete_or_missing_submit_plan');
+    const retryable = lastAssistant?.reason === 'length' ||
+      control?.kind === 'invalid' && control.failureKind === 'planner_submission_invalid' ||
+      (lastAssistant?.reason === 'tooluse' && (!control || !control.executed || !lastAssistant.complete));
     control = null;
+    if (!retryable) {
+      fail(failureKind, 'Submission did not contain a complete valid tool call', ctx);
+      return;
+    }
     if (!escalated) {
       escalated = true;
       if (!(await applyBudget(ctx, 8192))) {
@@ -514,13 +582,13 @@ export default function (pi) {
         fail(className, '8192-token submission-only retry cannot fit or is unsupported', ctx);
         return;
       }
-      console.log(`PI_PLANNER_BUDGET_ESCALATION ${JSON.stringify({ cause, to: budget, evidenceToolsAvailable: false })}`);
+      console.log(\`PI_PLANNER_BUDGET_ESCALATION ${JSON.stringify({ cause, to: budget, evidenceToolsAvailable: false })}\`);
       pi.setActiveTools?.(['submit_plan']);
       return continuation(entries,
-        'SUBMISSION RETRY ONLY: the prior submit_plan was incomplete or invalid. Do not inspect the repository or reuse partial tool arguments. Call submit_plan({ planText }) with the FULL plan from existing issue and verified research context; this is the sole retry.',
+        'SUBMISSION RETRY ONLY: previous submit_plan transport was incomplete or malformed. Do not inspect the repository or reuse partial tool arguments. Call submit_plan({ planText }) with the FULL plan from existing issue and verified research context; this is the sole retry.',
         'planner-submission-retry');
     }
-    fail('planner_submission_incomplete', 'Submission retry did not deliver a single complete normally terminated submit_plan call', ctx);
+    fail(failureKind, 'One permitted incomplete-submission retry did not complete', ctx);
     return undefined;
   });
 }
