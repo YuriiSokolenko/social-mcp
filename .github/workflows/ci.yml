@@ -75,7 +75,7 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: social-mcp-ci-${{ github.run_id }}-${{ github.run_attempt }}
       DOCKER_BUILDKIT: "1"
-      DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+      DOCKER_CONFIG: /tmp/social-mcp-docker-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout
