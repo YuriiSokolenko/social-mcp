@@ -64,7 +64,7 @@ export function patchPiSubagentsSource(source) {
     '    return acceptedTerminalPlannerReceipt(messages, JSON.parse(readFileSync(sidecar, "utf8")), lifecycleId);',
     '  } catch (error) {',
     '    // Log only the exception category; sidecar paths and plan content remain private.',
-    '    const kind = error instanceof ReferenceError ? "injected_dependency_missing" : "receipt_unavailable";',
+    '    const kind = error?.name === "ReferenceError" ? "injected_dependency_missing" : "receipt_unavailable";',
     '    console.warn("PI_PLANNER_TERMINAL_RECEIPT_CHECK_FAILED " + JSON.stringify({ kind }));',
     '    return false;',
     '  }',
