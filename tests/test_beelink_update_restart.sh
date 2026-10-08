@@ -23,4 +23,5 @@ if grep -Eq 'compose down.*-v|docker (system|volume) prune|docker rm -f' "$SCRIP
 fi
 grep -q 'active/queued Actions work' "$SCRIPT" || fail 'busy-work guard must fail closed'
 grep -q 'social-mcp.pi-runner=ephemeral' "$SCRIPT" || fail 'only labeled project ephemeral workers may be stopped'
+grep -q -- '--pull never' "$SCRIPT" || fail 'Beszel must not pull mutable external images during this restart'
 printf 'PASS: Beelink update/restart argument and safety checks\n'

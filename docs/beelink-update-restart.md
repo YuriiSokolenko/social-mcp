@@ -19,11 +19,13 @@ reboot the host or restart Docker Engine.
 
 The managed services come from the tracked autoscaler and Zoekt Compose files:
 Pi and general managers, the persistent control runner, the run-check sandbox
-image/executor, ephemeral workers, and Zoekt. Orbit and DuckDB JSON support and
+image/executor, ephemeral workers, and Zoekt. Beszel and its agent are also
+recreated only when their live Compose labels, image names, and persistent data
+mounts match the known `/home/yurasik/infra/beszel` deployment. They use existing
+local images without pulling. Otherwise the script leaves Beszel untouched.
+Orbit and DuckDB JSON support and
 the SearXNG MCP executable are provisioned in the Pi worker image; the worker's
 startup preflight performs the MCP initialize/search check before registration.
-No Beszel Compose deployment is tracked in this repository, so the script does
-not guess at or restart one.
 
 Reports are written with mode 0600 to
 `/var/log/beelink-update-restart/`. A copy of the host autoscaler `.env` is

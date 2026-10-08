@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+REPO_DIR="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 AUTOSCALER_REL="infra/github-runner-autoscaler"
 ZOEKT_ROOT="${ZOEKT_ROOT:-/home/yurasik/zoekt-social-mcp}"
 REPORT_DIR="${BEELINK_REPORT_DIR:-/var/log/beelink-update-restart}"
@@ -43,6 +43,7 @@ run() {
 as_user() { runuser -u "$ORIGINAL_USER" -- "$@"; }
 compose() { docker compose --project-directory "$STAGE" --env-file "$STAGE/$AUTOSCALER_REL/.env" --env-file "$STAGE/$AUTOSCALER_REL/latest-images.env" -f "$STAGE/$AUTOSCALER_REL/compose.yaml" "$@"; }
 zoekt_compose() { docker compose --project-directory "$STAGE" -f "$STAGE/infra/zoekt/compose.yaml" "$@"; }
+beszel_compose() { docker compose --project-directory "$BESZEL_ROOT" -f "$BESZEL_ROOT/docker-compose.yml" "$@"; }
 
 while (($#)); do
   case "$1" in
@@ -65,14 +66,31 @@ trap 'rc=$?; log "finished exit=$rc"; if (( rc != 0 )); then printf "\nUpdate st
 (( EUID == 0 )) || die 'run with sudo (root privileges are required)'
 [[ -n "$ORIGINAL_USER" && "$ORIGINAL_USER" != root ]] || die 'SUDO_USER must identify the invoking non-root user'
 id "$ORIGINAL_USER" >/dev/null 2>&1 || die 'SUDO_USER is not a valid account'
-[[ -f "$REPO_DIR/.git" || -d "$REPO_DIR/.git" ]] || die "not inside a Git checkout: $REPO_DIR"
-[[ -f "$REPO_DIR/$AUTOSCALER_REL/compose.yaml" && -f "$REPO_DIR/infra/zoekt/compose.yaml" ]] || die 'tracked N150 Compose manifests are missing'
-[[ -f "$REPO_DIR/$AUTOSCALER_REL/.env" ]] || die "host configuration missing: $AUTOSCALER_REL/.env"
 
 for cmd in docker git gh jq df runuser curl; do command -v "$cmd" >/dev/null 2>&1 || die "required command is missing: $cmd"; done
 docker info >/dev/null 2>&1 || die 'Docker Engine is unavailable to root'
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin is unavailable'
 as_user gh auth status >/dev/null 2>&1 || die 'GitHub CLI is not authenticated for the invoking account; authenticate gh and retry'
+
+# The script may be installed in a sibling n150-deploy directory. Prefer the
+# exact checkout backing the active runner managers; this avoids guessing among
+# stale and deployment-specific checkouts.
+if [[ -z "$REPO_DIR" || ! -d "$REPO_DIR/.git" ]]; then
+  RUNNER_COMPOSE_DIR="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' pi-runner-manager 2>/dev/null || true)"
+  if [[ -n "$RUNNER_COMPOSE_DIR" && -f "$RUNNER_COMPOSE_DIR/compose.yaml" ]]; then
+    REPO_DIR="$(cd -- "$RUNNER_COMPOSE_DIR/../.." && pwd -P)"
+  else
+    REPO_CANDIDATES=()
+    for candidate in "$(dirname -- "$SCRIPT_DIR")"/social-mcp-deploy-*; do
+      [[ -d "$candidate/.git" && -f "$candidate/$AUTOSCALER_REL/compose.yaml" ]] && REPO_CANDIDATES+=("$candidate")
+    done
+    ((${#REPO_CANDIDATES[@]} == 1)) || die 'could not identify one active social-mcp Git checkout; run from its scripts directory or restore the runner manager'
+    REPO_DIR="$(cd -- "${REPO_CANDIDATES[0]}" && pwd -P)"
+  fi
+fi
+[[ -d "$REPO_DIR/.git" ]] || die "not inside a Git checkout: $REPO_DIR"
+[[ -f "$REPO_DIR/$AUTOSCALER_REL/compose.yaml" && -f "$REPO_DIR/infra/zoekt/compose.yaml" ]] || die 'tracked N150 Compose manifests are missing'
+[[ -f "$REPO_DIR/$AUTOSCALER_REL/.env" ]] || die "host configuration missing: $AUTOSCALER_REL/.env"
 DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')" || die 'cannot identify Docker storage location'
 for storage_path in "$REPO_DIR" "$DOCKER_ROOT"; do
   df -Pk "$storage_path" | awk 'NR==2 { if ($4 < 5242880) exit 1 }' || die "less than 5 GiB free on filesystem containing $storage_path"
@@ -91,7 +109,29 @@ REMOTE="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null)" || die 'origin 
 
 DISK_IMAGES="$(docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^n150\// {print $0}' | wc -l | tr -d ' ')"
 CONTAINERS="$(docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' | awk 'tolower($0) ~ /(pi-runner-manager|general-runner-manager|n150-control|social-mcp-zoekt|social-mcp\.pi-runner=ephemeral)/ {print $0}')"
+EPHEMERAL_CONTAINERS="$(docker ps -a --filter label=social-mcp.pi-runner=ephemeral --format '{{.Names}}|{{.Image}}|{{.Status}}')"
+[[ -n "$EPHEMERAL_CONTAINERS" ]] && CONTAINERS+=$'\n'"$EPHEMERAL_CONTAINERS"
 [[ -n "$CONTAINERS" ]] || CONTAINERS='No named N150 services detected by repository service names.'
+
+# Beszel is external to this Git repository, but is included only when its live
+# Compose metadata, expected image names, and persistent host bind mounts match
+# the known deployment. Never print its Compose config or environment values.
+BESZEL_ROOT="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' beszel 2>/dev/null || true)"
+BESZEL_CONFIG="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' beszel 2>/dev/null || true)"
+BESZEL_SAFE=0
+if [[ "$BESZEL_ROOT" == /home/yurasik/infra/beszel && "$BESZEL_CONFIG" == /home/yurasik/infra/beszel/docker-compose.yml && -f "$BESZEL_ROOT/docker-compose.yml" ]]; then
+  BESZEL_IMAGE="$(docker inspect --format '{{.Config.Image}}' beszel 2>/dev/null || true)"
+  BESZEL_AGENT_IMAGE="$(docker inspect --format '{{.Config.Image}}' beszel-agent 2>/dev/null || true)"
+  BESZEL_MOUNTS="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' beszel beszel-agent 2>/dev/null || true)"
+  if [[ "$BESZEL_IMAGE" == henrygd/beszel:* && "$BESZEL_AGENT_IMAGE" == henrygd/beszel-agent* ]] \
+    && grep -q '^/home/yurasik/infra/beszel/beszel_data$' <<<"$BESZEL_MOUNTS" \
+    && grep -q '^/home/yurasik/infra/beszel/beszel_agent_data$' <<<"$BESZEL_MOUNTS"; then
+    BESZEL_SAFE=1
+  fi
+fi
+if (( BESZEL_SAFE )); then
+  beszel_compose config --quiet || die 'identified Beszel Compose configuration is invalid'
+fi
 
 ACTIVE="$(as_user gh run list --repo "$REPO_SLUG" --limit 100 --json status --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null)" || die 'cannot query GitHub Actions active and queued jobs; refusing to restart blindly'
 RUNNERS_JSON="$(as_user gh api "repos/$REPO_SLUG/actions/runners?per_page=100" 2>/dev/null)" || die 'cannot query GitHub self-hosted runner state; refusing to restart blindly'
@@ -99,7 +139,8 @@ BUSY="$(jq '[.runners[]? | select(.busy == true)] | length' <<<"$RUNNERS_JSON")"
 QUEUED="$(as_user gh run list --repo "$REPO_SLUG" --limit 100 --json status --jq '[.[] | select(.status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null)" || die 'cannot query queued GitHub Actions jobs'
 unset RUNNERS_JSON
 
-PLAN="Repository $REPO_DIR ($BRANCH @ ${CURRENT_COMMIT:0:12}, dirty paths: $DIRTY); target origin/dev. Build manager, Pi worker, general worker, control runner, and run-check sandbox before stopping the documented managers, control runner, labeled ephemeral workers, and Zoekt. Keep all named volumes. Recreate only those tracked services; reindex Zoekt. Beszel is excluded because this repository has no tracked Beszel deployment."
+PLAN="Repository $REPO_DIR ($BRANCH @ ${CURRENT_COMMIT:0:12}, dirty paths: $DIRTY); target origin/dev. Build manager, Pi worker, general worker, control runner, and run-check sandbox before stopping the documented managers, control runner, labeled ephemeral workers, and Zoekt. Keep all named volumes. Recreate those services and reindex Zoekt."
+if (( BESZEL_SAFE )); then PLAN+=" Beszel and Beszel Agent are safely identified; recreate them from their existing local images without pulling and preserve their host data directories."; else PLAN+=" Beszel was not safely identifiable and will be left untouched."; fi
 printf 'Beelink N150 update plan\n%s\n\nCurrent named containers:\n%s\nDocker images in n150 namespace: %s\nGitHub active/queued runs: %s / %s busy self-hosted runners.\n' "$PLAN" "$CONTAINERS" "$DISK_IMAGES" "$ACTIVE" "$BUSY"
 log "preflight current=$CURRENT_COMMIT branch=$BRANCH dirty_paths=$DIRTY n150_images=$DISK_IMAGES active_runs=$ACTIVE queued_runs=$QUEUED busy_runners=$BUSY"
 
@@ -173,6 +214,14 @@ fi
 zoekt_compose stop zoekt-web >/dev/null 2>&1 || true
 compose up -d --no-build --force-recreate control-runner general-runner-manager pi-runner-manager || die 'runner services failed to recreate'
 zoekt_compose up -d --no-build --force-recreate zoekt-web || die 'Zoekt failed to recreate'
+if (( BESZEL_SAFE )); then
+  beszel_compose up -d --pull never --no-build --force-recreate beszel beszel-agent || die 'Beszel services failed to recreate from their existing local images'
+  for beszel_service in beszel beszel-agent; do
+    beszel_state="$(docker inspect --format '{{.State.Status}}' "$beszel_service" 2>/dev/null || true)"
+    [[ "$beszel_state" == running ]] || die "$beszel_service failed verification (state=${beszel_state:-missing})"
+    log "service=$beszel_service state=$beszel_state image=$(docker inspect --format '{{.Image}}' "$beszel_service")"
+  done
+fi
 
 # Refresh the separate persistent Zoekt index; updater's own flock prevents overlap.
 if [[ -x "$ZOEKT_ROOT/update-index.sh" ]]; then
