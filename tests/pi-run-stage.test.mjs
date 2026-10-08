@@ -1373,6 +1373,38 @@ test('#469 validation repair handoff is bounded, deterministic, and independent 
 });
 
 
+test('#567 repair receives complete v2 opaque Planner text', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-plan-text-');
+  const terminal = join(dir, 'terminal');
+  const planText = '## Plan\nEdit src/app.py and test <module> — ✓\n' + 'Preserve context. '.repeat(350);
+  writeFileSync(terminal + '.prepared-implementation.json', JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    planText,
+    complexity: 'nontrivial',
+    requiredMutationAnchors: [],
+    largeMutation: false,
+    reason: 'Plain text Planner handoff',
+    workspaceRoot: dir,
+    freshBaseCommit: 'abc123',
+    baseRef: 'origin/dev',
+  }));
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'repair',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const handoff = validationRepairHandoff(spec, new Error('final check failed'));
+  assert.equal(handoff.prepared_implementation.planText, planText);
+  assert.equal(handoff.prepared_implementation.plan, undefined);
+  const repair = createValidationRepairSpec(spec, new Error('final check failed'));
+  assert.equal(JSON.parse(repair.environment.PI_VALIDATION_REPAIR_HANDOFF).prepared_implementation.planText, planText);
+  assert.ok(repair.prompt.includes('Preserve context.'));
+});
+
 test('#470 repair handoff marks every truncated authoritative list as incomplete', (t) => {
   const dir = temporaryDirectory(t, 'stage-repair-handoff-truncated-');
   const terminal = join(dir, 'terminal');
