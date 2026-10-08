@@ -103,10 +103,46 @@ jobs:
         run: |
           image="${COMPOSE_PROJECT_NAME}-manager-import-check:latest"
           worker_image="${COMPOSE_PROJECT_NAME}-general-worker-check:latest"
-          trap 'docker image rm "$image" "$worker_image" >/dev/null 2>&1 || true' EXIT
+          pi_worker_image="${COMPOSE_PROJECT_NAME}-pi-worker-check:latest"
+          trap 'docker image rm "$image" "$worker_image" "$pi_worker_image" >/dev/null 2>&1 || true' EXIT
           docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t "$image" .
           docker run --rm --entrypoint node "$image" -e "import('/opt/social-mcp/scripts/pi-common/run-check.mjs').then(() => console.log('run-check import ok'))"
           docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t "$worker_image" .
+          docker run --rm --entrypoint bash "$worker_image" -lc '
+            set -euo pipefail
+            test "$(id -u runner)" = 1001
+            test -x ./bin/Runner.Listener
+            python3 --version
+            python3 -c "import sys; assert sys.version_info >= (3, 12), sys.version"
+            python_temp="$(mktemp -d)"
+            python3 -m venv "$python_temp/venv"
+            "$python_temp/venv/bin/python" --version
+            gh --version
+            gh variable set --help >/dev/null
+            docker --version
+            docker buildx version
+            docker compose version
+            sudo -n true
+          '
+          docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t "$pi_worker_image" .
+          docker run --rm --entrypoint bash "$pi_worker_image" -lc '
+            set -euo pipefail
+            test "$(id -u runner)" = 1001
+            test -x ./bin/Runner.Listener
+            pi --version
+            orbit version
+            ast-grep --version
+            basedpyright --version
+            mini --help >/dev/null
+            test -x "$(command -v kotlin-lsp)"
+            sudo -n true
+          '
+          docker run --rm --entrypoint node "$pi_worker_image" --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            import fs from "node:fs";
+            const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+            fs.accessSync(root + "/lsp-mcp-server/dist/index.js");
+          '
 
       - name: Control runner capability and graceful-stop smoke
         shell: bash
