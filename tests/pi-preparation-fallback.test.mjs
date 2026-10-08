@@ -292,8 +292,20 @@ function runtimeScenario(mode) {
         if (mode === 'success' || mode === 'layout-aware') {
           const stateFile = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
           assert.ok(stateFile, 'Planner has a per-child state file');
-          fs.writeFileSync(stateFile, JSON.stringify({ used: 0, facts: [], toolCounts: {},
-            phase: 'submitted', submissionBudget: 4096, planText: finalText }));
+          const lifecycleId = process.env.PI_PLANNER_LIFECYCLE_ID;
+          assert.ok(lifecycleId, 'Planner has a per-child lifecycle identity');
+          fs.writeFileSync(stateFile, JSON.stringify({
+            used: 0, facts: [], toolCounts: {}, phase: 'submitted',
+            submissionBudget: 4096, planText: finalText,
+            budgetHistory: [{
+              phase: 'submission_pending', expected: 4096, effective: 4096, verified: true,
+            }],
+            submissionReceipt: {
+              lifecycleId, toolCallId: 'completed-submit-plan', admitted: true, executed: true,
+              providerComplete: true, stopReason: 'tooluse', providerBudgetVerified: true,
+              submissionBudget: 4096, planTextBytes: Buffer.byteLength(finalText, 'utf8'),
+            },
+          }));
         }
         bus.emit('prompt-template:subagent:response', {
           requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, ...reply,
