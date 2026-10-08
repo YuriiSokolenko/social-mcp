@@ -21,6 +21,7 @@ import {
 } from './pi-common/progress-controller.mjs';
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
+import { compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
 import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
@@ -1853,6 +1854,12 @@ export default function (pi) {
     return hints.join(' ');
   }
 
+  // Single source of truth for the replaceable Implementer action steer. The provider
+  // boundary refreshes it from the actual executable tool list, not stale Pi history.
+  function currentImplementerActionSteer(activeToolNames) {
+    return `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)} Verification status: ${verificationLifecycleGuidance()}`;
+  }
+
   syncProductiveState();
 
   // The run_check sandbox is a hard dependency of stages that expose it. Prove it works before any
@@ -2150,6 +2157,36 @@ export default function (pi) {
           }
         }
       }
+
+      // #594: prune stale action steers only in the outgoing Implementer payload.
+      // The Pi session transcript remains chronological and unchanged for replay/audit.
+      // Other steers, including validation/terminal recovery and capability corrections,
+      // have separate lifetimes and are intentionally not compacted.
+      const executableActionTools = providerToolNames(patched);
+      const liveActionDirective =
+        productiveState === 'action_required' &&
+        executableActionTools.length > 0 &&
+        ceilingWithoutToolTurns === 0 &&
+        !terminalRecoveryState &&
+        !(codingSession && codingRepairWindowActive())
+          ? currentImplementerActionSteer(executableActionTools)
+          : null;
+      const steerCompaction = compactRuntimeActionSteers(patched, liveActionDirective);
+      if (steerCompaction.blocked) {
+        // Fail closed if a candidate would require changing tool-linked messages.
+        throw new Error(`PI_RUNTIME_STEERING_COMPACTION_BLOCKED: ${steerCompaction.blocked}`);
+      }
+      if (steerCompaction.removed > 0) {
+        console.log(`PI_RUNTIME_STEERING_COMPACTION ${JSON.stringify({
+          stage,
+          request: providerCapabilitySnapshot?.request ?? null,
+          removed: steerCompaction.removed,
+          bytesSaved: Buffer.byteLength(JSON.stringify(patched)) -
+            Buffer.byteLength(JSON.stringify(steerCompaction.payload)),
+          active: liveActionDirective != null,
+        })}`);
+      }
+      patched = steerCompaction.payload;
 
       if (!codingSession) {
         const metadata = mainPromptRequestMetadata(patched, previousMainPromptMetadata);
@@ -4724,7 +4761,7 @@ export default function (pi) {
         : postComplexityRequired
           ? `RUNTIME REVIEW ACTION REQUIRED: complexity is already declared. Do not continue prose-only deliberation. ${currentToolGuidance} ${semantics}`
           : stage === 'implementer'
-            ? `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${currentToolGuidance} ${semantics} Verification status: ${verificationLifecycleGuidance()}`
+            ? currentImplementerActionSteer(activeToolNames)
             : `RUNTIME ACTION REQUIRED: classification evidence is complete. In the next response, do not narrate classifications. ${currentToolGuidance} ${semantics}`;
       const reason = stage === 'implementer' && ceilingWithoutToolTurns > 0
         ? `ceiling without tool (${ceilingWithoutToolTurns}/${MAX_CEILING_WITHOUT_TOOL_TURNS})`
