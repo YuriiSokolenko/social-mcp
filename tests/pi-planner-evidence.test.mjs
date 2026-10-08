@@ -428,7 +428,7 @@ test('accepted submit_plan stops the provider loop with a durable prepared hando
       // A real provider-turn replay: each turn calls before_provider_request,
       // message_end, the registered tool, tool_execution_end and turn_end.
       // Pi's tool-batch contract stops the loop on a terminate:true result.
-      const h = extensionHarness(t, { stateFile: process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] });
+      const h = extensionHarness(t, { stateFile: process.env[PLANNER_EVIDENCE_STATE_FILE_ENV], mockLog: false });
       for (const turn of [
         { name: 'begin_plan_submission', input: {} },
         { name: 'submit_plan', input: { planText: plan } },
@@ -440,7 +440,7 @@ test('accepted submit_plan stops the provider loop with a durable prepared hando
           break;
         }
       }
-      observedProviderRequests = h.logs().filter(line => line.startsWith('PI_PLANNER_PROVIDER_REQUEST ')).length;
+      observedProviderRequests = logs.filter(line => line.startsWith('PI_PLANNER_PROVIDER_REQUEST ')).length;
       acceptedState = protocolState(h);
       // Real Pi text adapter reports this as a failed child: the last assistant
       // message is terminal toolUse and there is no final prose to extract.
@@ -474,6 +474,67 @@ test('accepted submit_plan stops the provider loop with a durable prepared hando
   assert.doesNotMatch(block, /PREPARATION_FALLBACK/);
   const serialized = block.match(/<untrusted_planner_handoff_json>\s*(\{[^\n]+\})/);
   assert.equal(JSON.parse(serialized[1]).planText, plan);
+});
+
+test('terminal toolUse adapter recovery fails closed for tampered receipts and other delegation failures', async t => {
+  const error = 'Subagent produced no output after terminal assistant stopReason "toolUse".';
+  const planText = validPlannerText();
+  const variants = [
+    { name: 'missing sidecar', missing: true },
+    { name: 'corrupt sidecar', corrupt: true },
+    { name: 'only begin_plan_submission', mutate: state => { state.phase = 'submission_pending'; delete state.submissionReceipt; } },
+    { name: 'plain final prose', mutate: state => { state.phase = 'researching'; delete state.submissionReceipt; } },
+    { name: 'missing plan', mutate: state => { delete state.planText; } },
+    { name: 'empty plan', mutate: state => { state.planText = ''; } },
+    { name: 'stale lifecycle', mutate: state => { state.submissionReceipt.lifecycleId = 'other-child'; } },
+    { name: 'missing receipt', mutate: state => { delete state.submissionReceipt; } },
+    { name: 'unexecuted tool', mutate: state => { state.submissionReceipt.executed = false; } },
+    { name: 'rejected admission', mutate: state => { state.submissionReceipt.admitted = false; } },
+    { name: 'incomplete provider', mutate: state => { state.submissionReceipt.providerComplete = false; } },
+    { name: 'length terminated', mutate: state => { state.submissionReceipt.stopReason = 'length'; } },
+    { name: 'unverified provider budget', mutate: state => { state.submissionReceipt.providerBudgetVerified = false; } },
+    { name: 'wrong submission budget', mutate: state => { state.submissionBudget = 2048; } },
+    { name: 'unverified request history', mutate: state => { state.budgetHistory[0].verified = false; } },
+    { name: 'wrong request phase', mutate: state => { state.budgetHistory[0].phase = 'researching'; } },
+    { name: 'partial write or wrong bytes', mutate: state => { state.submissionReceipt.planTextBytes -= 2; } },
+    { name: 'failed tool transition', mutate: state => { state.phase = 'failed'; state.failureKind = 'planner_submission_invalid'; } },
+    { name: 'unrelated terminal tool', mutate: state => { state.submissionReceipt.toolCallId = ''; } },
+    { name: 'child provider failure', status: 'failed', error: 'provider request failed' },
+    { name: 'child cancellation', status: 'cancelled', error: 'aborted by parent' },
+    { name: 'child timeout', status: 'timed_out', error: 'timeout' },
+    { name: 'invalid request', status: 'invalid_request', error: 'invalid delegation' },
+  ];
+  t.mock.method(console, 'log', () => {});
+  for (const variant of variants) {
+    const { dir, env } = fixture(t);
+    const { pi, ctx } = plannerHost({ cwd: dir, driveChild: async () => {
+      const file = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+      const lifecycleId = process.env[PLANNER_LIFECYCLE_ID_ENV];
+      if (!variant.missing) {
+        const state = {
+          used: 0, facts: [], toolCounts: {}, phase: 'submitted', planText,
+          submissionBudget: 4096,
+          budgetHistory: [{ phase: 'submission_pending', expected: 4096, effective: 4096, verified: true }],
+          submissionReceipt: {
+            lifecycleId, toolCallId: 'submitted-tool', admitted: true, executed: true,
+            providerComplete: true, stopReason: 'tooluse', providerBudgetVerified: true,
+            submissionBudget: 4096, planTextBytes: Buffer.byteLength(planText, 'utf8'),
+          },
+        };
+        variant.mutate?.(state);
+        fs.writeFileSync(file, variant.corrupt ? '{"phase":"submitted","planText":' : JSON.stringify(state));
+      }
+      return { status: variant.status ?? 'failed', error: variant.error ?? error,
+        usage: { turns: 2, input: 180, output: 60 } };
+    } });
+    const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, {
+      env, orbitSeedBuilder: async () => ({ present: false }),
+    });
+    assert.equal(result.status, 'fallback', variant.name);
+    assert.equal(result.planText, undefined, variant.name);
+    assert.match(preparedImplementationBlock(result), /PREPARATION_FALLBACK/, variant.name);
+    assert.deepEqual(result.plannerUsage, { turns: 2, input: 180, output: 60 }, variant.name);
+  }
 });
 
 test('terminal hint is denied to invalid, truncated, duplicate and budget-unverified submit attempts', async t => {
