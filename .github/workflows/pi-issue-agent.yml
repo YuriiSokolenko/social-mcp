@@ -124,9 +124,16 @@ jobs:
           command -v orbit >/dev/null
           orbit version
           cd "$RUNNER_TEMP"
-          orbit setup pi --mcp --yes --no-index >/dev/null
-          orbit index "$JOB_DIR" >/dev/null
-          echo "Orbit Local MCP configured and current issue worktree indexed."
+          if ! orbit setup pi --mcp --yes --no-index >/dev/null; then
+            echo "::warning::Orbit setup failed; Implementer will continue and can use its read-only fallback."
+          fi
+          if ! orbit index "$JOB_DIR" >/dev/null; then
+            echo "::warning::Orbit index failed; Implementer will continue and can use its read-only fallback."
+          fi
+          if ! bash "$GITHUB_WORKSPACE/scripts/orbit-context-preflight.sh" "$JOB_DIR"; then
+            echo "::warning::Orbit context preflight failed; Implementer will continue and can use its read-only fallback."
+          fi
+          echo "Orbit Local MCP setup attempted for the current issue worktree."
 
       - name: Run implementation backend with live progress
         if: steps.claim.outputs.terminal != 'true'
