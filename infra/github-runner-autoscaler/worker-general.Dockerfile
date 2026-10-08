@@ -25,7 +25,8 @@ RUN apt-get update \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
     && rm /tmp/node.tar.xz \
-    && npm install --global "npm@${NPM_VERSION}" \
+    && HOME=/root npm_config_cache=/tmp/npm-cache npm install --global "npm@${NPM_VERSION}" \
+    && rm -rf /tmp/npm-cache \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "${GH_CLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
     && chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg \

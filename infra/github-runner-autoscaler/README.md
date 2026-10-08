@@ -152,7 +152,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 ```bash
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.9 .
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe .
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.9 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.7 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.2 .
 ```
@@ -190,7 +190,7 @@ the package. The adapter passed its type checks and regression suite against
 Pi `1.1.0` with strict peer resolution. The experimental `mini-swe`
 Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded
 local model endpoint; Pi remains the default backend. The Pi and general worker
-image tags are `1.1.0-mini-swe` and `0.87.9`. `run_check` tooling remains in
+image tags are `1.1.0-mini-swe` and `0.87.10`. `run_check` tooling remains in
 the separate `0.1.2` sandbox image. System-package changes must use a new image
 tag rather than silently reusing an already-built local tag. The sandbox
 image independently contains Python 3.12, the repository's pinned Ruff and
@@ -210,12 +210,12 @@ RUNNER_IMAGE=n150/github-pi-runner-ephemeral:1.0.4-mini-swe
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
 
-To deploy the general worker update, build the exact `0.87.9` tag, set
-`GENERAL_RUNNER_IMAGE=n150/github-general-runner-ephemeral:0.87.9` in the host
+To deploy the general worker update, build the exact `0.87.10` tag, set
+`GENERAL_RUNNER_IMAGE=n150/github-general-runner-ephemeral:0.87.10` in the host
 `.env`, then recreate only the general manager:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.9 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
 docker compose --env-file .env up -d --force-recreate --no-deps general-runner-manager
 ```
 
@@ -568,7 +568,7 @@ Evidence is disabled when `INFRA_EVIDENCE_DIR` is unset.
 Deploy these changes by building the new manager tag
 `n150/pi-runner-manager:run-check-docker-0.1.9`, sandbox tag
 `n150/run-check-sandbox:0.1.2`, and general worker tag
-`n150/github-general-runner-ephemeral:0.87.9` from this checkout, then updating the
+`n150/github-general-runner-ephemeral:0.87.10` from this checkout, then updating the
 host `.env` and recreating the managers. Existing cached tags do not acquire the
 new gates. Do not restart busy worker containers during deployment.
 

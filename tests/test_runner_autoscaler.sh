@@ -92,7 +92,7 @@ grep -q '@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}' <<<"$pi_wor
 grep -q 'npm:pi-subagents@${PI_SUBAGENTS_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must seed the pinned subagents extension'
 grep -Fq 'npm:pi-subagents@${subagentsVersion}' infra/github-runner-autoscaler/worker-entrypoint.sh || fail 'Pi worker entrypoint must pin subagents in writable job config'
 grep -q "npm', \['root', '-g'\]" infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs || fail 'LSP wrapper must resolve the npm global path for the public Node base'
-grep -q 'RUNNER_IMAGE:.*github-general-runner-ephemeral:0.87.9' infra/github-runner-autoscaler/compose.yaml || fail 'Compose must use the rebuilt general worker tag'
+grep -q 'RUNNER_IMAGE:.*github-general-runner-ephemeral:0.87.10' infra/github-runner-autoscaler/compose.yaml || fail 'Compose must use the rebuilt general worker tag'
 grep -q '/opt/actions-runner-baseline' <<<"$control_dockerfile" || fail 'control image must keep baseline package outside the persistent runner root'
 grep -q 'cp -a /opt/actions-runner-baseline/. /home/runner/actions-runner/' <<<"$control_dockerfile" || fail 'new control volume must be seeded with the runner package'
 
