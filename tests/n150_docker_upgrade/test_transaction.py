@@ -123,6 +123,9 @@ case "$1" in
     [[ "${MISSING_PIN:-}" == "$spec" ]] && exit 0
     sum="$(printf '%s' "$spec" | sha256sum | awk '{print $1}')"
     printf 'Package: %s\nVersion: %s\nSHA256: %s\n' "${spec%%=*}" "${spec#*=}" "$sum"
+    if [[ "${LARGE_APT_OUTPUT:-}" == yes ]]; then
+      dd if=/dev/zero bs=65536 count=64 status=none | tr '\0' x
+    fi
     ;;
   *) exit 2 ;;
 esac
@@ -308,6 +311,14 @@ def test_missing_exact_pin_fails_before_mutation(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "exact package version or SHA-256 metadata unavailable" in result.stdout
     _assert_rolled_back(tmp_path)
+
+
+def test_large_exact_apt_metadata_is_consumed_without_sigpipe(tmp_path: Path) -> None:
+    env = _prepare(tmp_path)
+    env["LARGE_APT_OUTPUT"] = "yes"
+    result = _run(tmp_path, env)
+    assert result.returncode == 0, result.stdout
+    assert _state(tmp_path / "state") == {"BUILDX": NEW_BUILDX, "COMPOSE": NEW_COMPOSE}
 
 
 def test_cli_install_failure_rolls_back_packages_and_cli_link(tmp_path: Path) -> None:

@@ -24,7 +24,12 @@ BACKUP_DIR=''
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 package_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
-version_hash() { apt-cache show "$1=$2" | awk '/^SHA256: / { print $2; exit }'; }
+version_hash() {
+  apt-cache show "$1=$2" | awk '
+    /^SHA256: / && !found { checksum = $2; found = 1 }
+    END { if (found) print checksum }
+  '
+}
 sha256_file() { sha256sum -- "$1" | awk '{ print $1 }'; }
 secure_root_directory() {
   local path="$1" mode
