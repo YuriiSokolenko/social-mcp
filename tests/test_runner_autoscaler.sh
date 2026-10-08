@@ -62,7 +62,7 @@ general_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker-general.D
 pi_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker.Dockerfile)"
 for worker_dockerfile in "$general_worker_dockerfile" "$pi_worker_dockerfile"; do
   grep -q '^ARG RUNNER_PLATFORM=linux/amd64' <<<"$worker_dockerfile" || fail 'worker images must default to the supported amd64 runner platform'
-  grep -q '^FROM --platform=${RUNNER_PLATFORM} debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91$' <<<"$worker_dockerfile" || fail 'worker images must use a public, pinned Debian base image'
+  grep -Eq '^FROM --platform=\$\{RUNNER_PLATFORM\} [^@]+@sha256:[0-9a-f]{64}$' <<<"$worker_dockerfile" || fail 'worker images must use a public, pinned base image'
   grep -q 'NODE_VERSION=26.11.1' <<<"$worker_dockerfile" || fail 'worker Node.js version must be pinned'
   grep -q 'NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651' <<<"$worker_dockerfile" || fail 'worker Node.js archive checksum must be pinned'
   grep -q 'NPM_VERSION=12.2.0' <<<"$worker_dockerfile" || fail 'worker npm version must be pinned'
@@ -70,6 +70,8 @@ for worker_dockerfile in "$general_worker_dockerfile" "$pi_worker_dockerfile"; d
   grep -q 'af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32' <<<"$worker_dockerfile" || fail 'worker Actions Runner archive checksum must be pinned'
   ! grep -q 'n150/github-pi-runner' <<<"$worker_dockerfile" || fail 'worker build must not depend on an unpublished N150 base image'
 done
+grep -q '^FROM --platform=\${RUNNER_PLATFORM} debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91$' <<<"$general_worker_dockerfile" || fail 'general worker must use its pinned Debian base image'
+grep -q '^FROM --platform=\${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258$' <<<"$pi_worker_dockerfile" || fail 'Pi worker must use its pinned Python 3.12 base image'
 grep -q '^FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:' <<<"$general_worker_dockerfile" || fail 'general worker must use a digest-pinned Python 3.12 runtime'
 grep -q '"gh=${GH_CLI_VERSION}"' <<<"$general_worker_dockerfile" || fail 'general worker must include the pinned GitHub CLI'
 grep -q 'GH_CLI_KEYRING_SHA256=' <<<"$general_worker_dockerfile" || fail 'general worker must verify the official GitHub CLI package keyring'

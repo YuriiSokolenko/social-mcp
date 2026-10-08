@@ -1,5 +1,5 @@
 ARG RUNNER_PLATFORM=linux/amd64
-FROM --platform=${RUNNER_PLATFORM} debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91
+FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 ARG NODE_VERSION=26.11.1
 ARG NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651
@@ -26,7 +26,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sqlite3 sudo tar gzip xz-utils \
       libatomic1 libcurl4 libgcc-s1 libicu72 libkrb5-3 liblttng-ust1 libssl3 libstdc++6 libunwind8 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
