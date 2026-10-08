@@ -582,7 +582,7 @@ export default function (pi) {
         fail(className, '8192-token submission-only retry cannot fit or is unsupported', ctx);
         return;
       }
-      console.log(\`PI_PLANNER_BUDGET_ESCALATION ${JSON.stringify({ cause, to: budget, evidenceToolsAvailable: false })}\`);
+      console.log(`PI_PLANNER_BUDGET_ESCALATION ${JSON.stringify({ cause, to: budget, evidenceToolsAvailable: false })}`);
       pi.setActiveTools?.(['submit_plan']);
       return continuation(entries,
         'SUBMISSION RETRY ONLY: previous submit_plan transport was incomplete or malformed. Do not inspect the repository or reuse partial tool arguments. Call submit_plan({ planText }) with the FULL plan from existing issue and verified research context; this is the sole retry.',
