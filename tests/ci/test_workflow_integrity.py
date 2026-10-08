@@ -10,8 +10,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
-SCRIPT_REF = re.compile(r"(?<![\\w.])scripts/[a-zA-Z0-9_./-]+\\.(?:mjs|py|sh)\\b")
-ACTION_REF = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+@(?:v[1-9]\\d*|[0-9a-f]{40})$")
+SCRIPT_REF = re.compile(r"(?<![\w.])scripts/[a-zA-Z0-9_./-]+\.(?:mjs|py|sh)\b")
+ACTION_REF = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+@(?:v[1-9]\d*|[0-9a-f]{40})$")
 CONTROL_JOBS = {
     ("ci.yml", "wake-merge-gate"),
     ("ci-terminal-wake.yml", "wake-pr-merge-gate"),
