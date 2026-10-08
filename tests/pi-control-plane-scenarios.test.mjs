@@ -137,6 +137,15 @@ test('implementer preserves PR ownership when a post-publication step fails or i
 });
 
 
+test('control runner watch covers both post-dev and PR terminal wake lanes', () => {
+  const workflow = fs.readFileSync('.github/workflows/control-runner-watch.yml', 'utf8');
+  assert.match(workflow, /workflowId: 'ci\.yml'/);
+  assert.match(workflow, /jobName: 'wake-merge-gate'/);
+  assert.match(workflow, /workflowId: 'ci-terminal-wake\.yml'/);
+  assert.match(workflow, /jobName: 'wake-pr-merge-gate'/);
+  assert.match(workflow, /\['queued', 'in_progress'\]/);
+});
+
 test('stateful control workflows serialize without cancelling active work', () => {
   for (const file of ['pi-dispatcher.yml', 'pi-triage.yml', 'pi-reconcile.yml', 'pi-architect.yml', 'pi-issue-agent.yml', 'pi-pr-review.yml', 'pi-pr-fix.yml', 'pi-auto-merge.yml']) {
     const workflow = fs.readFileSync(`.github/workflows/${file}`, 'utf8');
