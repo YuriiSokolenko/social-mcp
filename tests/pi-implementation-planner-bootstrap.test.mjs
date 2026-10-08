@@ -66,7 +66,7 @@ test('Planner alone opts out of inherited skill catalog without losing its read-
   assert.match(frontmatter, /^inheritProjectContext: false$/m);
   assert.match(frontmatter, /^inheritGlobalContext: false$/m);
   assert.match(frontmatter, /^inheritSkills: false$/m);
-  assert.doesNotMatch(frontmatter, /^skills:\\s*|^skillPath:\\s*/m, 'no explicit skill injection');
+  assert.doesNotMatch(frontmatter, /^(skills|skillPath):/m, 'no explicit skill injection');
   assert.match(frontmatter, /^tools: read, grep, find, ls, repo_search, planner_code_graph$/m);
   const overrides = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8')).subagents.agentOverrides;
   assert.equal(overrides['implementation-planner'].inheritSkills, undefined, 'no project override re-enables inherited skills');
