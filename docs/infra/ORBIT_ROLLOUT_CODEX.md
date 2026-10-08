@@ -21,10 +21,10 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
 
 1. Inspect the N150 checkout and active jobs first. If the checkout has unrelated dirty changes, preserve them and use a separate clean checkout of the merged `dev` commit for image builds. Do not force-stop busy workers or proceed while a safe drain cannot be established.
 
-2. Confirm the tracked worker image now installs the pinned Orbit package:
+2. Confirm the tracked worker image now installs the pinned GNU Orbit artifact and preloads DuckDB JSON:
 
    ```bash
-   grep -n 'ORBIT_VERSION=0.138.0' infra/github-runner-autoscaler/worker.Dockerfile
+   grep -nE 'ORBIT_VERSION=0.138.0|ORBIT_SHA256=|DUCKDB_JSON_SHA256=' infra/github-runner-autoscaler/worker.Dockerfile
    ```
 
 3. Rebuild the Pi ephemeral worker image:
@@ -32,7 +32,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker build \
      -f infra/github-runner-autoscaler/worker.Dockerfile \
-     -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r1 \
+     -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3 \
      .
    ```
 
@@ -41,11 +41,13 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker run --rm \
      --entrypoint orbit \
-     n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r1 \
+     n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3 \
      version
    ```
 
    Expected: `0.138.0`. Do not print container environment variables.
+
+   The workflow preflight validates both issue source/test file contexts and a directory context immediately after indexing. Run a fresh Implementer or Architect workflow on the rebuilt image and confirm it prints three `Orbit context preflight passed` lines. This is the clean-container check; do not reuse an old runner container or HOME cache.
 
 5. After confirming the Pi pool is drained and the general pool remains untouched, update only the Pi image reference in the host `.env`, then recreate only the Pi manager so newly spawned ephemeral runners use the rebuilt image:
 

@@ -151,7 +151,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 
 ```bash
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.9 .
-docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r2 .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3 .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.7 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.2 .
@@ -166,9 +166,9 @@ pins Python `3.12.15`, GitHub CLI `2.102.0`, Docker CLI `29.8.2`, Buildx
 not use locally built N150 images as build stages, so BuildKit can resolve
 every base independently in a clean builder. The manager and general worker
 retry a failed Docker daemon check once after five seconds before quarantining
-the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe-r2`
-pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit `@gitlab/orbit@0.138.0`,
-`pi-mcp-adapter@5.1.0`, `mcp-searxng@2.5.1`, `pi-subagents@0.76.1`, `mini-swe-agent==2.4.6`,
+the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe-r3`
+pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit CLI `0.138.0` (GNU x86_64 artifact),
+`pi-mcp-adapter@5.1.0`, SearXNG MCP `2.5.1`, `pi-subagents@0.76.1`, `mini-swe-agent==2.4.6`,
 `lsp-mcp-server@1.1.26`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`,
 BasedPyright `1.40.2`, and JetBrains Kotlin LSP `263.6379.0`. The image tag is
 independent of the Pi package version.
@@ -190,9 +190,10 @@ the package. The adapter passed its type checks and regression suite against
 Pi `1.1.0` with strict peer resolution. The experimental `mini-swe`
 Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded
 local model endpoint; Pi remains the default backend. The Pi and general worker
-image tags are `1.1.0-mini-swe-r2` and `0.87.10`. Pi itself remains version
-`1.1.0`; `r1` records the image-only Python alias fix and `r2` adds the required
-SearXNG MCP runtime. `run_check` tooling remains in the separate `0.1.2` sandbox
+image tags are `1.1.0-mini-swe-r3` and `0.87.10`. Pi itself remains version
+`1.1.0`; `r1` records the image-only Python alias fix, `r2` adds the required
+SearXNG MCP runtime, and `r3` combines SearXNG with GNU Orbit and DuckDB JSON
+provisioning. `run_check` tooling remains in the separate `0.1.2` sandbox
 image. System-package changes must use a new image tag rather than silently
 reusing an already-built local tag. The sandbox
 image independently contains Python 3.12, the repository's pinned Ruff and
@@ -494,9 +495,13 @@ when file + line/column are already known and auto-start the routed server.
 
 ## GitLab Orbit Local for Pi
 
-The `pi-agent` ephemeral worker image pins `@gitlab/orbit@0.138.0`. Architect and Implementer workflows run `orbit setup pi --mcp --yes --no-index` before Pi starts, then index only the checkout authoritative for that job. No GitLab login, PAT, or Orbit Remote service is required: Orbit Local runs against the worker's local checkout and local DuckDB graph.
+The `pi-agent` ephemeral worker image pins Orbit CLI `0.138.0` as the GNU x86_64 artifact because its musl npm binary disables DuckDB dynamic extension loading. The image uses Debian Trixie for the GNU artifact's GLIBC 2.39 requirement and preloads the SHA-256-pinned DuckDB 1.5.5 JSON extension into the runner user's fresh-home cache, so file context does not depend on runtime download or mutable host cache. Architect and Implementer workflows run `orbit setup pi --mcp --yes --no-index`, index only the checkout authoritative for that job, then run `scripts/orbit-context-preflight.sh` against two existing files and a directory. No GitLab login, PAT, or Orbit Remote service is required: Orbit Local runs against the worker's local checkout/worktree and local DuckDB graph.
 
-After changing a worker image, bump its tracked image tag, rebuild that tag on N150, update the host `.env` to the same tag, restart the affected runner manager, and verify a fresh Architect or Implementer job prints only the Orbit version plus the non-sensitive confirmation line. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
+The failure is a binary/runtime mismatch: Orbit `0.138.0`'s npm Linux artifact is musl, and DuckDB `1.5.5` cannot dynamically load its auto-installed `json` extension from that build (`Dynamic loading not supported`). The GNU Orbit artifact supports the extension loader but requires GLIBC `2.39`, which is absent from the prior Bookworm worker base. The preflight fails with the captured Orbit stderr and reports the Orbit binary/version, current worktree HEAD, HOME, and extension cache contents; it never records a failed query as a successful context.
+
+To repeat the context smoke check on a clean worker, run `orbit setup pi --mcp --yes --no-index`, `orbit index <worktree>`, then `bash scripts/orbit-context-preflight.sh <worktree> src/social_mcp/diagnostics/smoke_retry_after.py tests/diagnostics/test_smoke_retry_after.py src/social_mcp/diagnostics`. The preflight prints Orbit version, worktree HEAD, HOME, and the extension cache contents if any target fails.
+
+After changing a worker image, bump its tracked image tag, rebuild that tag on N150, update the host `.env` to the same tag, restart the affected runner manager, and verify a fresh Architect or Implementer job prints the Orbit version, indexed HEAD preflight, and three nonempty file/directory context checks. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
 
 Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text index; Orbit supplies per-job structural code context for the current checkout/worktree.
 

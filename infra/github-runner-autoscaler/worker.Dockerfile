@@ -1,5 +1,5 @@
 ARG RUNNER_PLATFORM=linux/amd64
-FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-trixie@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
 
 ARG NODE_VERSION=26.11.1
 ARG NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651
@@ -11,6 +11,9 @@ ARG PI_MCP_ADAPTER_VERSION=5.1.0
 ARG MCP_SEARXNG_VERSION=2.5.1
 ARG PI_SUBAGENTS_VERSION=0.76.1
 ARG ORBIT_VERSION=0.138.0
+ARG ORBIT_SHA256=5cdf2c397eb8990c7a2503a85c7f12740bbe52c2bf262aa2eb883297c74d7ce6
+ARG ORBIT_DUCKDB_VERSION=1.5.5
+ARG DUCKDB_JSON_SHA256=325c0e08e081a928c66bba1528f3848e54dade9f82a8afe84f97df137333962e
 ARG LSP_MCP_SERVER_VERSION=1.1.26
 ARG GIT_CONTEXT_MCP_VERSION=1.0.0
 ARG AST_GREP_VERSION=0.45.3
@@ -26,7 +29,7 @@ COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /tmp/patch-pi-mcp-a
 COPY infra/github-runner-autoscaler/check-pi-searxng-mcp.mjs /usr/local/bin/check-pi-searxng-mcp
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sqlite3 sudo tar gzip xz-utils \
-      libatomic1 libcurl4 libgcc-s1 libicu72 libkrb5-3 liblttng-ust1 libssl3 libstdc++6 libunwind8 zlib1g \
+      libatomic1 libcurl4 libgcc-s1 libicu76 libkrb5-3 liblttng-ust1 libssl3t64 libstdc++6 libunwind8 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
@@ -43,9 +46,25 @@ RUN apt-get update \
     && echo "${ACTIONS_RUNNER_SHA256}  /tmp/actions-runner.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/actions-runner.tar.gz -C /home/runner/actions-runner \
     && rm /tmp/actions-runner.tar.gz \
+    && curl -fsSL \
+      "https://gitlab.com/api/v4/projects/77960826/packages/generic/orbit-cli/${ORBIT_VERSION}/orbit-cli-linux-x86_64.tar.gz" \
+      -o /tmp/orbit-cli.tar.gz \
+    && echo "${ORBIT_SHA256}  /tmp/orbit-cli.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/orbit-cli.tar.gz -C /usr/local/bin orbit \
+    && chmod 0755 /usr/local/bin/orbit \
+    && rm /tmp/orbit-cli.tar.gz \
+    && install -d -o runner -g runner "/home/runner/.duckdb/extensions/v${ORBIT_DUCKDB_VERSION}/linux_amd64" \
+    && curl -fsSL \
+      "https://extensions.duckdb.org/v${ORBIT_DUCKDB_VERSION}/linux_amd64/json.duckdb_extension.gz" \
+      -o /tmp/json.duckdb_extension.gz \
+    && echo "${DUCKDB_JSON_SHA256}  /tmp/json.duckdb_extension.gz" | sha256sum -c - \
+    && gzip -dc /tmp/json.duckdb_extension.gz \
+      > "/home/runner/.duckdb/extensions/v${ORBIT_DUCKDB_VERSION}/linux_amd64/json.duckdb_extension" \
+    && chown runner:runner "/home/runner/.duckdb/extensions/v${ORBIT_DUCKDB_VERSION}/linux_amd64/json.duckdb_extension" \
+    && rm /tmp/json.duckdb_extension.gz \
     && chown -R runner:runner /home/runner/actions-runner /opt/kotlin-lsp \
     && npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
-      "@gitlab/orbit@${ORBIT_VERSION}" "lsp-mcp-server@${LSP_MCP_SERVER_VERSION}" "git-context-mcp@${GIT_CONTEXT_MCP_VERSION}" \
+      "lsp-mcp-server@${LSP_MCP_SERVER_VERSION}" "git-context-mcp@${GIT_CONTEXT_MCP_VERSION}" \
       "mcp-searxng@${MCP_SEARXNG_VERSION}" \
     && npm install --prefix /opt/ast-grep "@ast-grep/cli@${AST_GREP_VERSION}" \
     && ln -s /opt/ast-grep/node_modules/.bin/ast-grep /usr/local/bin/ast-grep \
