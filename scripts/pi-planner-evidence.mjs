@@ -454,6 +454,7 @@ export default function (pi) {
       }
       if (evidenceProgressContinuationPending) {
         evidenceProgressContinuationPending = false;
+        console.log(`PI_PLANNER_EVIDENCE_CONTINUATION ${JSON.stringify({ action: 'delivered', source: 'turn_end' })}`);
         return continuation(entries, '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.', 'planner-evidence-progress');
       }
       return undefined;
