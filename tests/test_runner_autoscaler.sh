@@ -84,6 +84,12 @@ grep -q 'GH_CLI_VERSION=2.102.0' <<<"$general_worker_dockerfile" || fail 'genera
 grep -q 'groupadd --gid 983 hostdocker' <<<"$general_worker_dockerfile" || fail 'general worker socket group must preserve the host docker GID'
 grep -q 'PI_CODING_AGENT_VERSION=1.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current stable Pi runtime'
 grep -q 'PI_MCP_ADAPTER_VERSION=5.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current MCP adapter'
+grep -q '^COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /usr/local/lib/patch-pi-mcp-adapter.mjs$' <<<"$pi_worker_dockerfile" \
+  || fail 'MCP adapter patch helper must live in a runner-readable system path'
+grep -q 'node /usr/local/lib/patch-pi-mcp-adapter.mjs' <<<"$pi_worker_dockerfile" \
+  || fail 'Pi worker must invoke the patch helper from its readable path'
+! grep -q '/tmp/patch-pi-mcp-adapter.mjs' <<<"$pi_worker_dockerfile" \
+  || fail 'Pi worker must not invoke a root-owned helper from /tmp as runner'
 grep -q 'MCP_SEARXNG_VERSION=2.5.1' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the required SearXNG MCP server'
 grep -q 'mcp-searxng@${MCP_SEARXNG_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker image must install the pinned SearXNG MCP executable'
 grep -q 'check-pi-searxng-mcp' infra/github-runner-autoscaler/worker-entrypoint.sh || fail 'Pi workers must preflight SearXNG MCP before runner registration'
@@ -303,7 +309,7 @@ process.on('SIGINT', () => {
 });
 setInterval(() => {}, 1000);
 LISTENER
-  sed -i "s/__VERSION__/$version/" "$root/bin/Runner.Listener"
+  perl -pi -e "s/__VERSION__/$version/" "$root/bin/Runner.Listener"
   chmod +x "$root/bin/Runner.Listener"
 }
 
