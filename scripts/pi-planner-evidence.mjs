@@ -1,3 +1,4 @@
+import { plannerBudgetSupported, plannerModelLimit } from './pi-common/planner-request-budget.mjs';
 import fs from 'node:fs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { plannerOrbitContext } from './pi-common/planner-orbit.mjs';
@@ -190,148 +191,304 @@ function recordEvidenceFailure({ failureKind, diagnostic, env = process.env }) {
   }
 }
 
+// Persist protocol state separately from the short evidence fingerprint ledger. Only a
+// complete, normally terminated submit_plan can write planText to this private sidecar.
+function updatePlannerProtocolState(patch, env = process.env) {
+  const file = env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  if (!file) return;
+  let previous = {};
+  try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* fresh child */ }
+  fs.writeFileSync(file, JSON.stringify({ ...previous, ...patch }) + '\n', { mode: 0o600 });
+}
+
+export function plannerPlanAdmission(planText, facts = [], issue = null) {
+  if (typeof planText !== 'string' || !planText.trim()) return { ok: false, failureKind: 'planner_submission_invalid' };
+  if (planText.split(/\r?\n/).some(line => /^\s*(?:\[INSERT PLAN HERE\]|<TODO:\s*write plan>)\s*$/i.test(line))) {
+    return { ok: false, failureKind: 'planner_submission_placeholder' };
+  }
+  const paths = facts.flatMap(fact => String(fact).match(/(?:src|tests|scripts|agents|\.pi|\.github)\/[A-Za-z0-9_./-]+/g) ?? []);
+  const knownTargets = [...new Set(paths)].slice(0, 8);
+  const targetMentioned = knownTargets.some(target => planText.includes(target));
+  const blocker = /\b(blocked|unavailable|out.of.scope|missing (?:access|permission|tool|capability)|cannot|not exposed|requires github)\b/i.test(planText);
+  // A verified concrete repository target should survive in the handoff, unless the Planner
+  // explicitly explains why implementing it is outside the available tool surface.
+  if (knownTargets.length && !targetMentioned && !blocker) {
+    return { ok: false, failureKind: 'planner_submission_missing_verified_target' };
+  }
+  const title = String(issue?.title ?? '').trim();
+  return {
+    ok: true,
+    qualitySignals: {
+      verifiedTargets: knownTargets.length,
+      targetMentioned,
+      capabilityBlocker: blocker,
+      issueAlignment: Boolean(title && title.split(/\s+/).some(word => word.length > 4 && planText.toLowerCase().includes(word.toLowerCase()))),
+      actionableSteps: /\b(update|modify|add|remove|test|verify|inspect|implement|review|create|check)\b/i.test(planText),
+      verification: /\b(test|verification|verify|check|CI)\b/i.test(planText),
+      uncertainty: /\b(assum|unknown|unverified|uncertain|blocker)\b/i.test(planText),
+    },
+  };
+}
+
 export default function (pi) {
   registerPlannerEvidenceTools(pi);
+  pi.registerTool?.({
+    name: 'begin_plan_submission',
+    label: 'Finish Planner research',
+    description: 'End repository investigation and request a separate provider turn to submit the complete plan. No arguments. This is NOT the finished handoff.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    async execute() { return { content: [{ type: 'text', text: 'Research closed. On the next request call submit_plan with the complete Markdown plan; no repository tools remain.' }] }; },
+  });
+  pi.registerTool?.({
+    name: 'submit_plan',
+    label: 'Submit complete plan',
+    description: 'Only successful Planner terminal operation. Supply the full actionable Markdown/plain-text plan in planText on the dedicated larger-budget request.',
+    parameters: { type: 'object', properties: { planText: { type: 'string', minLength: 1 } }, required: ['planText'], additionalProperties: false },
+    async execute() { return { content: [{ type: 'text', text: 'Plan submission received; the runtime will validate complete provider termination before acceptance.' }] }; },
+  });
 
   const gate = createPlannerEvidenceGate();
   const pendingEvidence = new Map();
   const knownFacts = new Set();
-  let finalizing = false;
+  let phase = 'researching';
+  let budget = 2048;
+  let escalated = false;
+  let nudgeUsed = false;
   let evidenceProgressContinuationPending = false;
+  let stallDetected = false;
   let lastEvidenceSignature = null;
   let lastEvidenceMadeProgress = true;
   let consecutiveNoProgressEvidence = 0;
+  let control = null;
+  let lastAssistant = null;
+  let lastProviderInputTokens = null;
+  const budgetHistory = [];
 
-  const closeForFinalization = (source) => {
-    if (finalizing) return;
-    finalizing = true;
-    if (evidenceProgressContinuationPending) {
-      evidenceProgressContinuationPending = false;
-      console.log(`PI_PLANNER_EVIDENCE_CONTINUATION ${JSON.stringify({ action: 'cancelled', source })}`);
+  function setPhase(next, metadata = {}) {
+    const prior = phase;
+    phase = next;
+    updatePlannerProtocolState({ phase, submissionBudget: budget, budgetHistory, ...metadata });
+    console.log(`PI_PLANNER_PHASE ${JSON.stringify({ from: prior, to: next, budget, ...('failureKind' in metadata ? { failureKind: metadata.failureKind } : {}) })}`);
+  }
+  function fail(failureKind, reason, ctx) {
+    const sanitized = sanitizeDiagnosticText(reason, 300);
+    recordEvidenceFailure({ failureKind, diagnostic: sanitized });
+    setPhase('failed', { failureKind });
+    console.warn(`PI_PLANNER_SUBMISSION_REJECTED ${JSON.stringify({ failureKind, reason: sanitized, budget })}`);
+    ctx?.abort?.();
+  }
+  function continuation(entries, message, kind) {
+    return {
+      entries: [...(Array.isArray(entries) ? entries : []), {
+        type: 'custom_message', customType: kind, content: message, display: false,
+      }],
+      continue: true,
+    };
+  }
+  async function applyBudget(ctx, target) {
+    // A budget switch happens only between provider requests; the model is owned by this
+    // Planner child. No process-global mutation can affect concurrent agents.
+    if (!plannerBudgetSupported(pi, target) || !ctx?.model || typeof pi.setModel !== 'function') return false;
+    const capacity = Number(ctx.model.contextWindow);
+    if (Number.isFinite(capacity) && capacity > 0) {
+      if (capacity < target + 1024) return false;
+      // A retry must retain enough verified history for a meaningful plan without researching again.
+      if (target === 8192 && (!Number.isFinite(lastProviderInputTokens) ||
+          lastProviderInputTokens + target + 1024 > capacity)) return false;
     }
-    if (typeof pi.setActiveTools === 'function') pi.setActiveTools([]);
-    console.log(`PI_PLANNER_FINALIZATION_TRANSITION ${JSON.stringify({ from: 'planning', to: 'finalizing', source })}`);
-  };
+    const changed = await pi.setModel({ ...ctx.model, maxTokens: target });
+    if (!changed) return false;
+    budget = target;
+    return true;
+  }
 
   recordEvidenceState({ used: 0 });
+  updatePlannerProtocolState({ phase, submissionBudget: budget, budgetHistory });
   console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'start' })}`);
-  pi.on('before_provider_request', (event) => {
+  pi.on('before_provider_request', event => {
     const payload = event?.payload;
-    if (!finalizing) return payload;
     if (!payload) return payload;
-    // The repair child may be loaded before Pi has bound the session. Deactivate tools only
-    // once a provider request is actually being built, then omit tool fields entirely so
-    // OpenAI-compatible backends never receive an empty tools array.
-    if (typeof pi.setActiveTools === 'function') pi.setActiveTools([]);
-    const { tools: _tools, tool_choice: _toolChoice, ...withoutTools } = payload;
-    return withoutTools;
+    // Never expose submit_plan on a research request or evidence tools after transition.
+    const allowed = phase === 'researching'
+      ? new Set([...PLANNER_EVIDENCE_TOOLS, 'begin_plan_submission'])
+      : phase === 'submission_pending' ? new Set(['submit_plan']) : new Set();
+    const tools = Array.isArray(payload.tools)
+      ? payload.tools.filter(tool => allowed.has(tool.function?.name ?? tool.name))
+      : [];
+    const effective = Number(payload.max_output_tokens ?? payload.max_tokens ?? event.model?.maxTokens ?? budget);
+    const validBudget = !Number.isFinite(effective) || effective === budget;
+    budgetHistory.push({ phase, expected: budget, effective: Number.isFinite(effective) ? effective : null });
+    updatePlannerProtocolState({ budgetHistory, submissionBudget: budget });
+    console.log(`PI_PLANNER_PROVIDER_REQUEST ${JSON.stringify({ phase, requestedBudget: budget, effectiveBudget: Number.isFinite(effective) ? effective : null, tools: tools.map(tool => tool.function?.name ?? tool.name), validBudget })}`);
+    if (!validBudget) recordEvidenceFailure({ failureKind: 'planner_submission_budget_unavailable', diagnostic: 'Provider budget disagrees with session phase' });
+    if (tools.length === 0) {
+      const { tools: _tools, tool_choice: _choice, ...rest } = payload;
+      return rest;
+    }
+    return { ...payload, tools, tool_choice: 'auto' };
   });
 
   pi.on('tool_call', async (event, ctx) => {
-    if (finalizing) {
-      return { block: true, reason: 'Planner finalization has started; repository evidence is closed.' };
-    }
-
-    let signature = null;
-    if (PLANNER_EVIDENCE_TOOLS.includes(event.toolName)) {
-      signature = plannerActionSignature(event.toolName, event.input);
-      if (signature === lastEvidenceSignature && lastEvidenceMadeProgress === false) {
-        const diagnostic = `Repeated equivalent ${event.toolName} action produced no new planning information.`;
-        recordEvidenceFailure({ failureKind: 'semantic_no_progress', diagnostic });
-        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'evidence', tool: event.toolName, signature })}`);
-        ctx?.abort?.();
-        return { block: true, reason: `${diagnostic} Planner stopped by semantic no-progress protection.` };
+    if (event.toolName === 'begin_plan_submission') {
+      if (phase !== 'researching' || control || Object.keys(event.input ?? {}).length > 0) {
+        return { block: true, reason: 'begin_plan_submission is valid only once during research with no arguments.' };
       }
+      control = { kind: 'begin', toolCallId: event.toolCallId, executed: false };
+      return undefined;
     }
-
+    if (event.toolName === 'submit_plan') {
+      if (phase !== 'submission_pending' || control) return { block: true, reason: 'submit_plan is allowed once in submission_pending only.' };
+      const decision = plannerPlanAdmission(event.input?.planText, [...knownFacts], (() => {
+        try { return JSON.parse(fs.readFileSync(process.env.PI_ISSUE_CONTEXT, 'utf8')); } catch { return null; }
+      })());
+      if (!decision.ok) {
+        control = { kind: 'invalid', failureKind: decision.failureKind };
+        return { block: true, reason: decision.failureKind };
+      }
+      control = { kind: 'submit', toolCallId: event.toolCallId, executed: false, planText: event.input.planText, qualitySignals: decision.qualitySignals };
+      return undefined;
+    }
+    if (phase !== 'researching') {
+      return { block: true, reason: 'Planner repository inspection is closed after begin_plan_submission.' };
+    }
+    const signature = PLANNER_EVIDENCE_TOOLS.includes(event.toolName)
+      ? plannerActionSignature(event.toolName, event.input) : null;
+    if (signature && signature === lastEvidenceSignature && !lastEvidenceMadeProgress) {
+      stallDetected = true;
+      console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'repeated_evidence', tool: event.toolName })}`);
+      return { block: true, reason: 'Repeated equivalent evidence produced no progress. Call begin_plan_submission with facts already collected.' };
+    }
     const admission = gate.admit(event.toolName);
-    if (admission.evidence && admission.allowed) {
+    if (admission.allowed) {
       recordEvidenceState(admission, { toolName: event.toolName });
-      if (event.toolCallId) {
-        pendingEvidence.set(event.toolCallId, {
-          toolName: event.toolName,
-          input: structuredClone(event.input ?? {}),
-          admission,
-          signature,
-        });
-      }
+      if (event.toolCallId) pendingEvidence.set(event.toolCallId, {
+        toolName: event.toolName, input: structuredClone(event.input ?? {}), admission, signature,
+      });
       console.log(`PI_PLANNER_EVIDENCE ${JSON.stringify({ tool: event.toolName, action: admission.used })}`);
+      return undefined;
     }
-    if (admission.allowed) return undefined;
-    console.log(`PI_PLANNER_EVIDENCE_BLOCKED ${JSON.stringify({ tool: event.toolName, actions: admission.used })}`);
     return { block: true, reason: admission.reason };
   });
 
-  pi.on('message_end', (event) => {
-    const message = event?.message;
-    if (message?.role !== 'assistant' || !Array.isArray(message.content)) return;
-    if (message.stopReason === 'error' || message.stopReason === 'aborted') return;
-    if (message.content.some(block => block?.type === 'toolCall')) return;
-    const text = message.content
-      .map(block => typeof block === 'string' ? block : typeof block?.text === 'string' ? block.text : '')
-      .join('')
-      .trim();
-    if (text) closeForFinalization('assistant_content');
-  });
-
-  pi.on('turn_end', (event) => {
-    if (finalizing) {
-      evidenceProgressContinuationPending = false;
-      return undefined;
-    }
-    if (!evidenceProgressContinuationPending) return undefined;
-
-    evidenceProgressContinuationPending = false;
-    console.log(`PI_PLANNER_EVIDENCE_CONTINUATION ${JSON.stringify({ action: 'delivered', source: 'turn_end' })}`);
-    return {
-      entries: [
-        ...(Array.isArray(event?.entries) ? event.entries : []),
-        {
-          type: 'custom_message',
-          customType: 'planner-evidence-progress',
-          content: '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.',
-          display: false,
-        },
-      ],
-      continue: true,
+  pi.on('message_end', event => {
+    const msg = event?.message;
+    if (msg?.role !== 'assistant') return;
+    const calls = Array.isArray(msg.content) ? msg.content.filter(block => block?.type === 'toolCall') : [];
+    const reason = String(msg.stopReason ?? msg.stop_reason ?? '').toLowerCase();
+    const output = Number(msg.usage?.outputTokens ?? msg.usage?.output_tokens ?? msg.usage?.output);
+    const input = Number(msg.usage?.inputTokens ?? msg.usage?.input_tokens ?? msg.usage?.input);
+    if (Number.isFinite(input) && input >= 0) lastProviderInputTokens = input;
+    lastAssistant = {
+      reason, calls: calls.map(call => ({ id: call.id, name: call.name })),
+      complete: ['tooluse', 'stop', 'end_turn', 'completed', 'complete'].includes(reason),
+      outputTokens: Number.isFinite(output) ? output : null,
+      text: Array.isArray(msg.content) && msg.content.some(block => block?.type === 'text' && String(block.text ?? '').trim()),
     };
+    if (lastAssistant.text && calls.length === 0 && phase === 'researching') {
+      evidenceProgressContinuationPending = false;
+      console.log('PI_PLANNER_PLAIN_FINAL_REJECTED');
+    }
   });
 
-  pi.on('tool_execution_end', async (event, ctx) => {
+  pi.on('tool_execution_end', event => {
+    if (control?.toolCallId && event.toolCallId === control.toolCallId) {
+      control.executed = !event.isError;
+      return;
+    }
     const pending = event.toolCallId ? pendingEvidence.get(event.toolCallId) : null;
     if (event.toolCallId) pendingEvidence.delete(event.toolCallId);
     if (!pending) return;
-
     const fact = event.isError ? null : plannerEvidenceFact(pending.toolName, pending.input, event.result);
-    const madeProgress = Boolean(fact && !knownFacts.has(fact));
-    if (madeProgress) {
+    const progress = Boolean(fact && !knownFacts.has(fact));
+    if (progress) {
       consecutiveNoProgressEvidence = 0;
       knownFacts.add(fact);
       recordEvidenceState(pending.admission, { fact, toolName: pending.toolName });
       console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
       console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'progress' })}`);
-      if (!finalizing && !evidenceProgressContinuationPending) {
-        // Defer the reminder to the turn_end lifecycle boundary instead of Pi's steer queue.
-        // That keeps one continuation per evidence-producing turn while allowing terminal
-        // assistant content to invalidate it before another provider request can be scheduled.
-        evidenceProgressContinuationPending = true;
-        console.log(`PI_PLANNER_EVIDENCE_CONTINUATION ${JSON.stringify({ action: 'queued', source: 'evidence_progress' })}`);
-      }
+      if (phase === 'researching') evidenceProgressContinuationPending = true;
     } else {
       consecutiveNoProgressEvidence += 1;
-      if (consecutiveNoProgressEvidence >= EVIDENCE_NO_PROGRESS_STREAK_LIMIT) {
-        const diagnostic = `${consecutiveNoProgressEvidence} consecutive repository actions produced no new compact planning fact.`;
-        recordEvidenceFailure({ failureKind: 'semantic_no_progress', diagnostic });
-        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({
-          kind: 'evidence_streak',
-          actions: pending.admission.used,
-          consecutiveNoProgressEvidence,
-        })}`);
-        ctx?.abort?.();
-      }
+      if (consecutiveNoProgressEvidence >= EVIDENCE_NO_PROGRESS_STREAK_LIMIT) stallDetected = true;
     }
     lastEvidenceSignature = pending.signature;
-    lastEvidenceMadeProgress = madeProgress;
+    lastEvidenceMadeProgress = progress;
+  });
+
+  pi.on('turn_end', async (event, ctx) => {
+    const entries = event?.entries;
+    if (phase === 'researching') {
+      const beginComplete = control?.kind === 'begin' && control.executed && lastAssistant?.complete &&
+        lastAssistant.reason === 'tooluse' && lastAssistant.calls.length === 1 &&
+        lastAssistant.calls[0].name === 'begin_plan_submission' &&
+        lastAssistant.calls[0].id === control.toolCallId;
+      if (beginComplete) {
+        control = null;
+        evidenceProgressContinuationPending = false;
+        if (!(await applyBudget(ctx, 4096))) {
+          fail('planner_submission_budget_unavailable', '4096 output tokens not supported for this Planner session', ctx);
+          return;
+        }
+        setPhase('submission_pending');
+        pi.setActiveTools?.(['submit_plan']);
+        return continuation(entries,
+          'RESEARCH CLOSED. On THIS NEW provider request call submit_plan({ planText }) exactly once with the complete actionable Markdown plan. No repository evidence tools remain. Do not return plain prose.',
+          'planner-submission-phase');
+      }
+      if (control?.kind === 'begin') { control = null; stallDetected = true; }
+      if (stallDetected || lastAssistant?.text && lastAssistant.calls.length === 0) {
+        evidenceProgressContinuationPending = false;
+        if (nudgeUsed) {
+          fail(stallDetected ? 'planner_no_progress' : 'planner_submission_not_started',
+            'Planner did not begin submission after the deterministic nudge', ctx);
+          return;
+        }
+        nudgeUsed = true;
+        stallDetected = false;
+        return continuation(entries, 'PLANNER COMPLETION REQUIRED: research is over. Using only already-collected evidence, call begin_plan_submission() exactly once. Ordinary final prose is NOT a submission.', 'planner-research-nudge');
+      }
+      if (evidenceProgressContinuationPending) {
+        evidenceProgressContinuationPending = false;
+        return continuation(entries, '🐈 The cat is still waiting to be petted. Finish the plan as soon as you have enough evidence.', 'planner-evidence-progress');
+      }
+      return undefined;
+    }
+    if (phase !== 'submission_pending') return undefined;
+    const accepted = control?.kind === 'submit' && control.executed &&
+      lastAssistant?.reason === 'tooluse' && lastAssistant.complete &&
+      lastAssistant.calls.length === 1 && lastAssistant.calls[0].name === 'submit_plan' &&
+      lastAssistant.calls[0].id === control.toolCallId &&
+      (lastAssistant.outputTokens === null || lastAssistant.outputTokens < budget || lastAssistant.complete);
+    if (accepted) {
+      const planText = control.planText;
+      const qualitySignals = control.qualitySignals;
+      setPhase('submitted', { planText, qualitySignals });
+      console.log(`PI_PLANNER_SUBMITTED ${JSON.stringify({ planTextBytes: Buffer.byteLength(planText, 'utf8'), budget, qualitySignals, termination: lastAssistant.reason })}`);
+      console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted' })}`);
+      pi.setActiveTools?.([]);
+      control = null;
+      return undefined;
+    }
+    const cause = control?.failureKind ?? (lastAssistant?.reason === 'length' ? 'truncated' : 'incomplete_or_missing_submit_plan');
+    control = null;
+    if (!escalated) {
+      escalated = true;
+      if (!(await applyBudget(ctx, 8192))) {
+        const capacity = Number(ctx?.model?.contextWindow);
+        const className = Number.isFinite(capacity) && capacity > 0 &&
+          Number.isFinite(lastProviderInputTokens) && lastProviderInputTokens + 9216 > capacity
+          ? 'planner_submission_context_exhausted' : 'planner_submission_budget_unavailable';
+        fail(className, '8192-token submission-only retry cannot fit or is unsupported', ctx);
+        return;
+      }
+      console.log(`PI_PLANNER_BUDGET_ESCALATION ${JSON.stringify({ cause, to: budget, evidenceToolsAvailable: false })}`);
+      pi.setActiveTools?.(['submit_plan']);
+      return continuation(entries,
+        'SUBMISSION RETRY ONLY: the prior submit_plan was incomplete or invalid. Do not inspect the repository or reuse partial tool arguments. Call submit_plan({ planText }) with the FULL plan from existing issue and verified research context; this is the sole retry.',
+        'planner-submission-retry');
+    }
+    fail('planner_submission_incomplete', 'Submission retry did not deliver a single complete normally terminated submit_plan call', ctx);
+    return undefined;
   });
 }
 
