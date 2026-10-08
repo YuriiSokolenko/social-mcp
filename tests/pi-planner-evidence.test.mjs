@@ -358,15 +358,16 @@ async function plannerTurn(h, name, input = {}, {
   });
   const ctx = { model: h.model, abort: () => {} };
   const verdict = await h.handlers.get('tool_call')({ toolName: name, toolCallId: id, input }, ctx);
+  let toolResult = null;
   if (!verdict?.block) {
     const tool = h.registeredTools.get(name);
-    if (tool) await tool.execute(id, input, undefined, undefined, { cwd: '/tmp' });
+    if (tool) toolResult = await tool.execute(id, input, undefined, undefined, { cwd: '/tmp' });
     await h.handlers.get('tool_execution_end')({
       toolName: name, toolCallId: id, isError: false, result: { content: [{ type: 'text', text: 'acknowledged' }] },
     }, ctx);
   }
   const continuation = await h.handlers.get('turn_end')({ entries: [] }, ctx);
-  return { verdict, continuation };
+  return { verdict, continuation, toolResult };
 }
 
 function protocolState(h) { return JSON.parse(fs.readFileSync(h.stateFile, 'utf8')); }
@@ -391,7 +392,8 @@ test('begin is not completion; only a subsequent complete submit_plan accepts ex
     max_tokens: 4096,
   } });
   assert.deepEqual(second.tools.map(tool => tool.function.name), ['submit_plan']);
-  await plannerTurn(h, 'submit_plan', { planText: plan }, { outputTokens: 3000 });
+  const submission = await plannerTurn(h, 'submit_plan', { planText: plan }, { outputTokens: 3000 });
+  assert.equal(submission.toolResult?.terminate, true, 'accepted tool hints clean agent-loop termination');
   const state = protocolState(h);
   assert.equal(state.phase, 'submitted');
   assert.equal(state.planText, plan);
@@ -404,6 +406,74 @@ test('begin is not completion; only a subsequent complete submit_plan accepts ex
   assert.ok(block.includes('\\u003cfoo\\u003e'));
   const match = block.match(/<untrusted_planner_handoff_json>\s*(\{[^\n]+\})/);
   assert.equal(JSON.parse(match[1]).planText, plan);
+});
+
+test('accepted submit_plan stops the provider loop with a durable prepared handoff and correct usage', async t => {
+  const { dir, env } = fixture(t, { 'src/net.py': 'def send(): pass\n' });
+  const plan = validPlannerText();
+  let observedProviderRequests = null;
+  let terminated = false;
+  let acceptedState = null;
+  const { pi, ctx, requests } = plannerHost({
+    cwd: dir,
+    driveChild: async () => {
+      // A real provider-turn replay: each turn calls before_provider_request,
+      // message_end, the registered tool, tool_execution_end and turn_end.
+      // Pi's tool-batch contract stops the loop on a terminate:true result.
+      const h = extensionHarness(t, { stateFile: process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] });
+      for (const turn of [
+        { name: 'begin_plan_submission', input: {} },
+        { name: 'submit_plan', input: { planText: plan } },
+        { name: 'unused_post_submit_provider_turn', input: {} },
+      ]) {
+        const outcome = await plannerTurn(h, turn.name, turn.input);
+        if (outcome.toolResult?.terminate) {
+          terminated = true;
+          break;
+        }
+      }
+      observedProviderRequests = h.logs().filter(line => line.startsWith('PI_PLANNER_PROVIDER_REQUEST ')).length;
+      acceptedState = protocolState(h);
+      return {
+        status: 'completed',
+        usage: { turns: observedProviderRequests, input: 1900, output: 850 },
+        result: { kind: 'text', text: '' },
+      };
+    },
+  });
+  const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, {
+    env, orbitSeedBuilder: async () => ({ present: false }),
+  });
+
+  assert.equal(terminated, true);
+  assert.equal(requests.length, 1, 'one delegated Planner lifecycle');
+  assert.equal(observedProviderRequests, 2, 'research transition and successful submit only');
+  assert.equal(acceptedState.budgetHistory.length, 2);
+  assert.equal(acceptedState.budgetHistory.some(request => request.phase === 'submitted'), false);
+  assert.equal(result.status, 'prepared');
+  assert.equal(result.planText, plan);
+  assert.equal(result.plannerProviderTurns, 2);
+  assert.deepEqual(result.plannerUsage, { turns: 2, input: 1900, output: 850 });
+  assert.equal(result.reason, 'Planner completed an explicit submit_plan handoff.');
+  assert.equal(result.plannerEvidenceActions, 0);
+});
+
+test('terminal hint is denied to invalid, truncated, duplicate and budget-unverified submit attempts', async t => {
+  for (const scenario of [
+    { name: 'placeholder', input: { planText: '[INSERT PLAN HERE]' } },
+    { name: 'truncated', input: { planText: 'Update src/net.py.' }, options: { stopReason: 'length' } },
+    { name: 'duplicate', input: { planText: 'Update src/net.py.' },
+      options: { extraCalls: [{ type: 'toolCall', name: 'submit_plan', id: 'duplicate', arguments: { planText: 'other' } }] } },
+    { name: 'unverified', input: { planText: 'Update src/net.py.' }, options: { providerPayload: {} } },
+    { name: 'provider_error', input: { planText: 'Update src/net.py.' }, options: { stopReason: 'error' } },
+  ]) {
+    const h = extensionHarness(t);
+    await plannerTurn(h, 'begin_plan_submission');
+    const outcome = await plannerTurn(h, 'submit_plan', scenario.input, scenario.options);
+    assert.notEqual(outcome.toolResult?.terminate, true, scenario.name);
+    assert.notEqual(protocolState(h).phase, 'submitted', scenario.name);
+    assert.throws(() => acceptedPlannerSubmission(protocolState(h), {}), /never completed/, scenario.name);
+  }
 });
 
 test('early final prose produces one deterministic nudge then classified fallback', async t => {
