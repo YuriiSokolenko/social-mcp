@@ -622,7 +622,7 @@ test('runtime-owned preparation uses one plain-text planner and harness-owned st
   assert.match(delegation, /runTextSubagent/);
   assert.doesNotMatch(runtime, /name: 'prepare_implementation'|runStructuredImplementationPlanner/, 'main runtime no longer registers or runs the planner');
   assert.match(bootstrapPlanner, /runTextSubagent/);
-  assert.match(bootstrapPlanner, /acceptedPlannerText/);
+  assert.match(bootstrapPlanner, /acceptedPlannerSubmission/);
   assert.match(bootstrapPlanner, /planText/);
   assert.doesNotMatch(bootstrapPlanner, /parsePlannerXml|IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA|PLANNER_RESULT_TOOL/);
   assert.doesNotMatch(bootstrapPlanner, /evidence_budget/);
@@ -649,8 +649,9 @@ test('runtime-owned preparation uses one plain-text planner and harness-owned st
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
   assert.match(bootstrapPlanner, /Preparation complete; start from the Planner handoff below/);
-  assert.match(planner, /plain-text or Markdown assistant response/i);
-  assert.match(planner, /harness owns complexity defaults, mutation-budget decisions/i);
+  assert.match(planner, /begin_plan_submission/);
+  assert.match(planner, /submit_plan/);
+  assert.match(planner, /The harness owns complexity defaults/i);
   assert.doesNotMatch(planner, /required_mutation_anchors|trivial \| nontrivial|Dispatcher already owns Architect routing/);
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs', './scripts/pi-planner-evidence.mjs']);
 });
@@ -699,7 +700,7 @@ test('runtime action-forces the elevated large-mutation request and preserves on
     'finish-tool attempt accounting happens only after controller-blocked calls return',
   );
   assert.doesNotMatch(planner, /required_mutation_anchors|evidence_budget/);
-  assert.match(planner, /harness owns complexity defaults, mutation-budget decisions/i);
+  assert.match(planner, /The harness owns complexity defaults/i);
 });
 
 test('repo search performs deterministic path and content discovery without a child model', () => {

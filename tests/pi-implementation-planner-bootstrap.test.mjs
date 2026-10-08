@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import bootstrapExtension from '../scripts/pi-implementer-bootstrap.mjs';
+import plannerEvidenceExtension from '../scripts/pi-planner-evidence.mjs';
 
 import {
   bootstrapFailureFallback,
@@ -50,6 +51,15 @@ function textPlan({ steps = ['Do it'], facts = [], reason = 'done' } = {}) {
   return [...steps, ...facts.map(fact => `Repository observation: ${fact}`), `Reason: ${reason}`].join('\n');
 }
 
+// Earlier child-mocking tests exercise the bootstrap envelope, not the provider replay.
+// The separate Planner lifecycle tests exercise the actual tool phase transition.
+function simulateSubmittedPlan(planText) {
+  const file = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
+  assert.ok(file, 'delegated Planner sidecar must be set before child launch');
+  fs.writeFileSync(file, JSON.stringify({ used: 0, facts: [], toolCounts: {}, phase: 'submitted',
+    submissionBudget: 4096, planText }) + '\n');
+}
+
 test('implementer stage has no planner evidence cap, lifecycle deadline, or configurable format-retry knob', () => {
   const config = stageConfig('implementer');
   assert.equal(config.implementationPlannerMaxTokens, 2048);
@@ -67,13 +77,13 @@ test('Planner alone opts out of inherited skill catalog without losing its read-
   assert.match(frontmatter, /^inheritGlobalContext: false$/m);
   assert.match(frontmatter, /^inheritSkills: false$/m);
   assert.doesNotMatch(frontmatter, /^(skills|skillPath):/m, 'no explicit skill injection');
-  assert.match(frontmatter, /^tools: read, grep, find, ls, repo_search, planner_code_graph$/m);
+  assert.match(frontmatter, /^tools: read, grep, find, ls, repo_search, planner_code_graph, begin_plan_submission, submit_plan$/m);
   const overrides = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8')).subagents.agentOverrides;
   assert.equal(overrides['implementation-planner'].inheritSkills, undefined, 'no project override re-enables inherited skills');
   assert.match(planner, /resolvedTargets > conventionHints > discovered repository context/);
   assert.match(planner, /ORBIT-DERIVED REPOSITORY CONTEXT/);
   assert.match(planner, /No mutation, shell, delegation, or untrusted tool is available/);
-  assert.match(planner, /Runtime preserves the complete final response verbatim as opaque `planText`/);
+  assert.match(planner, /planText.*preserved byte-for-byte/i);
   assert.match(planner, /planText.*untrusted task data/);
 });
 
@@ -154,6 +164,7 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
   const requests = [];
   bus.on('prompt-template:subagent:request', request => {
     requests.push(request);
+    simulateSubmittedPlan(textPlan());
     bus.emit('prompt-template:subagent:response', {
       requestId: request.requestId,
       ownerRunId: request.ownerRunId,
@@ -176,6 +187,79 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
   assert.equal('evidenceBudget' in result, false);
 });
 
+test('real planner fail() abort retains its durable fallback class through delegation rejection', async t => {
+  t.mock.method(console, 'log', () => {});
+  for (const status of ['cancelled', 'failed']) {
+    const bus = new EventEmitter();
+    let didAbort = false;
+    bus.on('prompt-template:subagent:request', request => {
+      const handlers = new Map();
+      const child = { on: (type, handler) => handlers.set(type, handler),
+        setActiveTools: () => {}, registerTool: () => {} };
+      plannerEvidenceExtension(child);
+      const childContext = { model: { maxTokens: 2048 },
+        abort: () => { didAbort = true; } };
+      // Exercise the real phase-specific deterministic nudge then the real fail(),
+      // rather than manually writing a failureKind into the sidecar.
+      void (async () => {
+        for (let i = 0; i < 2; i++) {
+          await handlers.get('message_end')({ message: {
+            role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Plain final.' }],
+          } });
+          await handlers.get('turn_end')({ entries: [] }, childContext);
+        }
+        assert.equal(didAbort, true, 'internal ctx.abort was invoked');
+        bus.emit('prompt-template:subagent:response', {
+          requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId,
+          status, error: 'Planner child stopped after classified phase failure',
+          usage: { turns: 2, output: 23 },
+        });
+      })();
+    });
+    const pi = { events: {
+      on: (type, handler) => { bus.on(type, handler); return () => bus.off(type, handler); },
+      emit: (...args) => bus.emit(...args),
+    } };
+    const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+    const env = plannerEnv(t);
+    const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
+    assert.equal(result.status, 'fallback');
+    assert.equal(result.failureClass, 'planner_submission_not_started', status);
+    assert.equal(result.plannerUsage.output, 23);
+    assert.match(preparedImplementationBlock(result), /PREPARATION_FALLBACK/);
+  }
+});
+
+test('all classified planner child aborts survive the structured delegation catch', async t => {
+  const classes = [
+    'planner_no_progress', 'planner_submission_incomplete',
+    'planner_submission_budget_unavailable', 'planner_submission_context_exhausted',
+    'planner_submission_placeholder',
+  ];
+  const env = plannerEnv(t);
+  for (const failureKind of classes) {
+    const bus = new EventEmitter();
+    bus.on('prompt-template:subagent:request', req => {
+      const file = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
+      assert.ok(file);
+      fs.writeFileSync(file, JSON.stringify({ used: 3, facts: [], toolCounts: { read: 3 },
+        phase: 'failed', failureKind }) + '\n');
+      bus.emit('prompt-template:subagent:response', {
+        requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+        status: 'cancelled', error: 'child abort',
+      });
+    });
+    const pi = { events: {
+      on: (type, fn) => { bus.on(type, fn); return () => bus.off(type, fn); },
+      emit: (...args) => bus.emit(...args),
+    } };
+    const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+    const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
+    assert.equal(result.failureClass, failureKind);
+    assert.equal(result.plannerEvidenceActions, 3);
+  }
+});
+
 test('bootstrap launches planner only after session_start handlers have installed delegation context', async (t) => {
   const env = plannerEnv(t);
   const artifact = path.join(path.dirname(env.PI_ISSUE_CONTEXT), 'prepared.json');
@@ -196,6 +280,7 @@ test('bootstrap launches planner only after session_start handlers have installe
   let lastUiContext = null;
   on('session_start', (_event, c) => { lastUiContext = c; });
   bus.on('prompt-template:subagent:request', request => {
+    if (lastUiContext) simulateSubmittedPlan(textPlan({ reason: 'tiny' }));
     bus.emit('prompt-template:subagent:response', lastUiContext
       ? { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'completed', usage: { output: 5 },
           result: { kind: 'text', text: textPlan({ reason: 'tiny' }) } }
@@ -223,6 +308,7 @@ test('Orbit seed is resolved and embedded before Planner provider request #1', a
   bus.on('prompt-template:subagent:request', request => {
     requestSeen = request;
     assert.equal(seedResolved, true, 'seed must be ready before delegation/provider request');
+    simulateSubmittedPlan(textPlan({ steps: ['Update src/net.py'], facts: ['src/net.py is the target'], anchors: ['src/net.py'], reason: 'one bounded edit' }));
     bus.emit('prompt-template:subagent:response', {
       requestId: request.requestId,
       ownerRunId: request.ownerRunId,
@@ -286,6 +372,7 @@ test('absent Orbit seed still delegates Planner and returns PreparedImplementati
   let requestSeen = null;
   bus.on('prompt-template:subagent:request', request => {
     requestSeen = request;
+    simulateSubmittedPlan(textPlan());
     bus.emit('prompt-template:subagent:response', {
       requestId: request.requestId,
       ownerRunId: request.ownerRunId,
