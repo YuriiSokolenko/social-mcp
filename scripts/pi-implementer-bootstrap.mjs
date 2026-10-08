@@ -25,7 +25,6 @@ export default function (pi) {
       const prepared = await prepareImplementation(pi, ctx, config, undefined);
       writePreparedImplementation(file, prepared);
       const preparedImplementationBytes = Buffer.byteLength(JSON.stringify(prepared), 'utf8');
-      const planStepCount = Array.isArray(prepared.plan) ? prepared.plan.length : 0;
       const evidenceToolTypes = Object.keys(prepared.plannerEvidenceToolCounts ?? {}).sort();
       console.log(`[PI][planner] completed status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} evidence_tools=${evidenceToolTypes.join(',') || 'none'} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${prepared.plannerUsage?.input ?? 'unknown'} out=${prepared.plannerUsage?.output ?? 'unknown'} plan_bytes=${prepared.status === 'prepared' ? Buffer.byteLength(prepared.planText, 'utf8') : 0} bytes=${preparedImplementationBytes}`);
       console.log(`PI_BOOTSTRAP ${JSON.stringify({
@@ -39,7 +38,6 @@ export default function (pi) {
         inputTokens: prepared.plannerUsage?.input ?? null,
         outputTokens: prepared.plannerUsage?.output ?? null,
         planTextBytes: prepared.status === 'prepared' ? Buffer.byteLength(prepared.planText, 'utf8') : 0,
-        planStepCount,
         preparedImplementationBytes,
         ...(prepared.status === 'fallback' ? { failureClass: prepared.failureClass } : {}),
       })}`);
