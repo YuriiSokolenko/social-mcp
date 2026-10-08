@@ -92,7 +92,7 @@ def test_workflow_graph_and_local_references():
     assert found_control == CONTROL_JOBS, "A required bounded control-lane job moved or disappeared"
 
 
-@pytest.mark.parametrize("file_name", ["ci.yml", "pi-automation-control.yml", "pi-usage.yml"])
+@pytest.mark.parametrize("file_name", ["pi-automation-control.yml", "pi-usage.yml"])
 def test_privileged_entry_points_use_trusted_dev(file_name):
     document = workflows()[file_name]
     checkouts = [
@@ -108,3 +108,13 @@ def test_privileged_entry_points_use_trusted_dev(file_name):
         assert options.get("persist-credentials") == "false", (
             f"{file_name}: checkout must not persist job token"
         )
+
+def test_ci_pr_validation_uses_event_revision_and_post_dev_wake_uses_trusted_dev():
+    jobs = workflows()["ci.yml"]["jobs"]
+    for job_name in ("test", "docker"):
+        checkout = next(step for step in jobs[job_name]["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        assert "ref" not in checkout.get("with", {}), f"{job_name}: PR checks must test the event commit"
+        assert checkout["with"]["persist-credentials"] == "false"
+    wake = next(step for step in jobs["wake-merge-gate"]["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    assert wake["with"]["ref"] == "dev"
+    assert wake["with"]["persist-credentials"] == "false"
