@@ -1043,7 +1043,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
 
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
   assert.match(repoSearchSource, /\['grep', '-n', '-I', '-F'/);
-  assert.match(planner, /inheritSkills: true/);
+  assert.match(planner, /inheritSkills: false/);
   assert.match(planner, /plain-text or Markdown assistant response/i);
   assert.match(planner, /harness owns complexity defaults, mutation-budget decisions/i);
   assert.doesNotMatch(planner, /required_mutation_anchors|trivial \| nontrivial/);
