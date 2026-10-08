@@ -8,6 +8,7 @@ ARG ACTIONS_RUNNER_VERSION=2.338.0
 ARG ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
 ARG PI_CODING_AGENT_VERSION=1.1.0
 ARG PI_MCP_ADAPTER_VERSION=5.1.0
+ARG MCP_SEARXNG_VERSION=2.5.1
 ARG PI_SUBAGENTS_VERSION=0.76.1
 ARG ORBIT_VERSION=0.138.0
 ARG LSP_MCP_SERVER_VERSION=1.1.26
@@ -22,6 +23,7 @@ USER root
 COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/runner-entrypoint
 COPY infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs /tmp/lsp-mcp-server-wrapper.mjs
 COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /tmp/patch-pi-mcp-adapter.mjs
+COPY infra/github-runner-autoscaler/check-pi-searxng-mcp.mjs /usr/local/bin/check-pi-searxng-mcp
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sqlite3 sudo tar gzip xz-utils \
       libatomic1 libcurl4 libgcc-s1 libicu72 libkrb5-3 liblttng-ust1 libssl3 libstdc++6 libunwind8 zlib1g \
@@ -44,6 +46,7 @@ RUN apt-get update \
     && chown -R runner:runner /home/runner/actions-runner /opt/kotlin-lsp \
     && npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
       "@gitlab/orbit@${ORBIT_VERSION}" "lsp-mcp-server@${LSP_MCP_SERVER_VERSION}" "git-context-mcp@${GIT_CONTEXT_MCP_VERSION}" \
+      "mcp-searxng@${MCP_SEARXNG_VERSION}" \
     && npm install --prefix /opt/ast-grep "@ast-grep/cli@${AST_GREP_VERSION}" \
     && ln -s /opt/ast-grep/node_modules/.bin/ast-grep /usr/local/bin/ast-grep \
     && python3 -m venv /opt/basedpyright \
@@ -67,6 +70,7 @@ RUN apt-get update \
     && install -m 0755 /tmp/lsp-mcp-server-wrapper.mjs /usr/local/bin/lsp-mcp-server \
     && rm /tmp/lsp-mcp-server-wrapper.mjs \
     && pi --version \
+    && test -x "$(command -v mcp-searxng)" \
     && node --version \
     && npm --version \
     && ast-grep --version \
