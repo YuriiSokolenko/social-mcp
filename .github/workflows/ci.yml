@@ -112,6 +112,8 @@ jobs:
             set -euo pipefail
             test "$(id -u runner)" = 1001
             test "$(./bin/Runner.Listener --version)" = 2.338.0
+            test "$(node --version)" = v26.11.1
+            test "$(npm --version)" = 12.2.0
             python3 --version
             python3 -c "import sys; assert sys.version_info >= (3, 12), sys.version"
             python_temp="$(mktemp -d)"
@@ -129,7 +131,9 @@ jobs:
             set -euo pipefail
             test "$(id -u runner)" = 1001
             test "$(./bin/Runner.Listener --version)" = 2.338.0
-            test "$(pi --version)" = "1.0.4"
+            test "$(node --version)" = v26.11.1
+            test "$(npm --version)" = 12.2.0
+            test "$(pi --version)" = "1.1.0"
             orbit version
             ast-grep --version
             basedpyright --version
@@ -146,6 +150,9 @@ jobs:
             for (const [name, version] of [["pi-mcp-adapter", "5.1.0"], ["pi-subagents", "0.76.1"]]) {
               const metadata = JSON.parse(fs.readFileSync(`${extensionRoot}/${name}/package.json`, "utf8"));
               if (metadata.version !== version) throw new Error(`${name} version mismatch: ${metadata.version}`);
+              if (name === "pi-mcp-adapter" && !metadata.peerDependencies["@earendil-works/pi-ai"].includes("^1.1.0")) {
+                throw new Error("pi-mcp-adapter does not declare tested Pi 1.1 compatibility");
+              }
             }
           '
 
@@ -164,7 +171,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           if [ "${1:-}" = "--version" ]; then
-            printf '2.337.0\n'
+            printf '2.338.0\n'
             exit 0
           fi
           [ "${1:-}" = "run" ] || exit 2
@@ -195,12 +202,9 @@ jobs:
           docker run --rm --entrypoint bash "$base_image" -lc '
             set -euo pipefail
             git --version >/dev/null
-            node_version="$(node --version)"
-            case "$node_version" in
-              v24.*) ;;
-              *) echo "unexpected Node.js version: $node_version" >&2; exit 1 ;;
-            esac
-            test "$(./bin/Runner.Listener --version)" = "2.337.0"
+            test "$(node --version)" = v26.11.1
+            test "$(npm --version)" = 12.2.0
+            test "$(./bin/Runner.Listener --version)" = "2.338.0"
           '
           docker build --build-arg "BASE_IMAGE=$base_image" -t "$fixture_image" "$fixture"
 

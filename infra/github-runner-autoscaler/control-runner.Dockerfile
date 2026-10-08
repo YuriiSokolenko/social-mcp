@@ -1,14 +1,22 @@
-FROM node:24-bookworm-slim
+FROM debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91
 
-ARG ACTIONS_RUNNER_VERSION=2.337.0
-ARG ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+ARG NODE_VERSION=26.11.1
+ARG NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651
+ARG NPM_VERSION=12.2.0
+ARG ACTIONS_RUNNER_VERSION=2.338.0
+ARG ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
 ENV ACTIONS_RUNNER_BASELINE_VERSION=${ACTIONS_RUNNER_VERSION}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git gosu jq tar gzip \
+      bash ca-certificates curl git gosu jq tar gzip xz-utils \
       libcurl4 libicu72 libkrb5-3 liblttng-ust1 libssl3 libunwind8 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
+    && rm /tmp/node.tar.xz \
+    && npm install --global "npm@${NPM_VERSION}" \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && install -d -o runner -g runner \
       /opt/actions-runner-baseline \
