@@ -22,7 +22,6 @@ ARG MINI_SWE_AGENT_VERSION=2.4.6
 USER root
 COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/runner-entrypoint
 COPY infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs /tmp/lsp-mcp-server-wrapper.mjs
-COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /usr/local/lib/patch-pi-mcp-adapter.mjs
 COPY infra/github-runner-autoscaler/check-pi-searxng-mcp.mjs /usr/local/bin/check-pi-searxng-mcp
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sqlite3 sudo tar gzip xz-utils \
@@ -36,7 +35,7 @@ RUN apt-get update \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && printf 'runner ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/runner \
     && chmod 0440 /etc/sudoers.d/runner \
-    && install -d -o runner -g runner /home/runner/actions-runner /opt/kotlin-lsp \
+    && install -d -o runner -g runner /home/runner/actions-runner /home/runner/build-tools /opt/kotlin-lsp \
     && curl -fsSL \
       "https://github.com/actions/runner/releases/download/v${ACTIONS_RUNNER_VERSION}/actions-runner-linux-x64-${ACTIONS_RUNNER_VERSION}.tar.gz" \
       -o /tmp/actions-runner.tar.gz \
@@ -77,6 +76,8 @@ RUN apt-get update \
     && orbit version \
     && mini --help >/dev/null
 
+COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /home/runner/build-tools/patch-pi-mcp-adapter.mjs
+
 USER runner
 ENV HOME=/home/runner \
     npm_config_cache=/tmp/pi-runner-npm-cache \
@@ -84,12 +85,12 @@ ENV HOME=/home/runner \
     PI_SUBAGENTS_VERSION=${PI_SUBAGENTS_VERSION}
 RUN pi install --no-approve "npm:pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
     && pi install --no-approve "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
-    && node /usr/local/lib/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
+    && node /home/runner/build-tools/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
     && mkdir -p /opt/pi-package-seed \
     && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/
 USER root
 RUN chmod -R a+rX /opt/pi-package-seed \
-    && rm /usr/local/lib/patch-pi-mcp-adapter.mjs
+    && rm /home/runner/build-tools/patch-pi-mcp-adapter.mjs
 
 USER runner
 WORKDIR /home/runner/actions-runner
