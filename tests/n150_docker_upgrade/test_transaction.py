@@ -180,7 +180,14 @@ cp "$N150_CLI_ARCHIVE" "${@: -1}"
         f'''#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${{CLI_INSTALL_FAIL:-}}" == yes && "${{@: -1}}" == "$N150_NEW_DOCKER" ]]; then exit 31; fi
-exec {real_install} "$@"
+args=()
+while (($#)); do
+  case "$1" in
+    -o|-g) shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+exec {real_install} "${{args[@]}}"
 ''',
     )
 
@@ -202,13 +209,25 @@ exec {real_install} "$@"
     source = source.replace("readonly CLI_ROOT='/usr/local/lib/docker-cli/29.8.2'", f"readonly CLI_ROOT='{cli_root}'")
     source = source.replace("readonly CLI_BINARY=\"$CLI_ROOT/docker\"", f"readonly CLI_BINARY='{cli_root}/docker'")
     source = source.replace("readonly CLI_LINK='/usr/local/bin/docker'", f"readonly CLI_LINK='{local_bin}/docker'")
+    source = source.replace(
+        'install -d -o root -g root -m 0755 /usr/local/lib/docker-cli "$CLI_ROOT"',
+        f'install -d -o root -g root -m 0755 {root / "usr/local/lib/docker-cli"} "$CLI_ROOT"',
+    )
     archive_hash = hashlib.sha256((root / "cli.tgz").read_bytes()).hexdigest()
     import re
 
     source = re.sub(r"readonly CLI_SHA256='[0-9a-f]{64}'", f"readonly CLI_SHA256='{archive_hash}'", source)
+    source = source.replace(
+        '  [[ "$(stat -c \'%u\' -- "$path")" == 0 ]] || return 1',
+        '  [[ -d "$path" ]] || return 1 # fixture directories belong to the test user',
+    )
+    source = source.replace(
+        '  [[ "$EUID" -eq 0 ]] || { printf \'Rollback requires root. Backups retained at %s\\n\' "$dir" >&2; return 1; }',
+        '  : # fixture simulates the root-only rollback operation',
+    )
 
-    # Preserve the installer from candidate/version planning onward, while
-    # replacing only the host-specific root/OS/daemon preflight with fixtures.
+    # Keep transaction logic intact while redirecting managed paths and
+    # simulating root-only ownership checks for unprivileged test runners.
     preflight_start = source.index('[[ "$(hostname -s)"')
     recover_start = source.index("# Recover an interrupted previous run")
     fixture_preflight = '''PATH_DOCKER="$(command -v docker)"
