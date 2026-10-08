@@ -29,6 +29,27 @@ function replaceSteerText(message, text) {
   };
 }
 
+// The provider hook owns the current state and tool snapshot. Keep the selection
+// policy explicit and independently testable for repair, recovery and ceiling turns.
+export function applicableRuntimeActionSteer({
+  stage,
+  productiveState,
+  executableTools,
+  ceilingWithoutToolTurns = 0,
+  terminalRecoveryActive = false,
+  codingRepairWindowActive = false,
+  buildDirective,
+}) {
+  if (stage !== 'implementer' ||
+      productiveState !== 'action_required' ||
+      !Array.isArray(executableTools) ||
+      executableTools.length === 0 ||
+      ceilingWithoutToolTurns !== 0 ||
+      terminalRecoveryActive ||
+      codingRepairWindowActive) return null;
+  return buildDirective(executableTools);
+}
+
 // Only remove exact runtime-generated action steer shapes. Never compact a user message
 // with tool linkage, a multi-part user turn, or an unrelated directive. A suspected
 // tool-linked action steer blocks the whole rewrite rather than risking tool-call pairing.
@@ -59,6 +80,8 @@ export function compactRuntimeActionSteers(payload, currentDirective = null) {
 
   // Expired state removes all old steers; active state keeps only the newest one
   // and refreshes its tool/verification guidance for the actual outbound surface.
+  // Keep that newest steer's original chronological position; moving it across
+  // intervening assistant/tool messages could silently change conversation order.
   const last = currentDirective == null ? -1 : indices[indices.length - 1];
   const targetIndices = new Set(indices);
   const compacted = history.flatMap((message, index) => {
