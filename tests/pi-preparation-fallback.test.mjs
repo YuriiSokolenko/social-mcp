@@ -264,7 +264,8 @@ function runtimeScenario(mode) {
         assert.equal(request.result.kind, 'text');
         assert.equal('schema' in request.result, false);
         assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, '2048');
-        assert.match(request.task, /plain-text or Markdown assistant response/i);
+        assert.match(request.task, /begin_plan_submission/);
+        assert.match(request.task, /submit_plan/);
         assert.doesNotMatch(request.task, /<plan|XML REPAIR|canonical valid XML/i);
         if (mode === 'layout-aware') {
           assert.match(request.task, /Add smoke widget parser/);
@@ -287,6 +288,12 @@ function runtimeScenario(mode) {
           reply = { status: 'completed', finishReason: 'length', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: 'partial plan' } };
         } else {
           reply = { status: 'completed', finishReason: 'stop', usage: { turns: 1, input: 20, output: 40 }, result: { kind: 'text', text: finalText } };
+        }
+        if (mode === 'success' || mode === 'layout-aware') {
+          const stateFile = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
+          assert.ok(stateFile, 'Planner has a per-child state file');
+          fs.writeFileSync(stateFile, JSON.stringify({ used: 0, facts: [], toolCounts: {},
+            phase: 'submitted', submissionBudget: 4096, planText: finalText }));
         }
         bus.emit('prompt-template:subagent:response', {
           requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, ...reply,
@@ -317,11 +324,11 @@ function runtimeScenario(mode) {
       } else if (mode === 'empty') {
         assert.equal(attempts, 1);
         assert.equal(artifact.status, 'fallback');
-        assert.equal(artifact.failureClass, 'planner_empty_final');
+        assert.equal(artifact.failureClass, 'planner_submission_not_started');
       } else if (mode === 'truncated') {
         assert.equal(attempts, 1);
         assert.equal(artifact.status, 'fallback');
-        assert.equal(artifact.failureClass, 'planner_truncated_final');
+        assert.equal(artifact.failureClass, 'planner_submission_not_started');
       } else if (mode === 'transport-timeout') {
         assert.equal(attempts, 1);
         assert.equal(artifact.status, 'fallback');
@@ -383,7 +390,7 @@ function runtimeScenario(mode) {
 }
 
 for (const mode of ['success', 'layout-aware', 'abort']) {
-  test('runtime accepts plain-text Planner lifecycle: ' + mode, () => {
+  test('runtime accepts explicit submitted Planner lifecycle: ' + mode, () => {
     const logs = runtimeScenario(mode);
     assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK/);
     assert.doesNotMatch(logs, /PI_PLANNER_XML_|XML REPAIR/);
@@ -408,15 +415,15 @@ test('invalid issue context enters preparation fallback without invoking Planner
   assert.doesNotMatch(logs, /PI_PLAN |PI_COMPLEXITY /);
 });
 
-test('empty Planner final text falls back after one request with no format repair', () => {
+test('plain empty response is not accepted as Planner submission', () => {
   const logs = runtimeScenario('empty');
-  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_empty_final"/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_submission_not_started"/);
   assert.doesNotMatch(logs, /PI_PLANNER_XML_|XML REPAIR|PI_SUBAGENT_RETRY/);
 });
 
-test('truncated Planner final text falls back after one request with no format repair', () => {
+test('truncated plain response never produces accepted plan text', () => {
   const logs = runtimeScenario('truncated');
-  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_truncated_final"/);
+  assert.match(logs, /PI_PREPARATION_FALLBACK .*"failureClass":"planner_submission_not_started"/);
   assert.doesNotMatch(logs, /PI_PLANNER_XML_|XML REPAIR|PI_SUBAGENT_RETRY/);
 });
 
