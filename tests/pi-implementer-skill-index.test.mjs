@@ -63,7 +63,7 @@ test('#593 malformed skill missing location cannot steal the following skill pat
     malformed,
     'fail open: do not merge two entries or lose docker-compose and its path',
   );
-  const missingDescription = valid.replace(/<description>[\\s\\S]*?<\\/description>/, '');
+  const missingDescription = valid.replace(/<description>[\s\S]*?<\/description>/, '');
   assert.equal(compactImplementerSkillPrompt(missingDescription), missingDescription);
 });
 
