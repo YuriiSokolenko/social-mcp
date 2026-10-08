@@ -74,7 +74,7 @@ test('terminal plan exemption fails closed on invalid state, transport, tool and
 test('pinned pi-subagents source patch is narrow, deterministic, and detects drift', () => {
   const source = [
     'import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";',
-    'const artifactOutputByResult = new WeakMap<SingleResult, string>();',
+    'const artifactOutputByResult = new WeakMap();',
     '\t\tconst missingOutput = !finalText?.trim() && !validatedStructuredOutput;',
     '\t\tif ((missingOutput || terminalEmptyAfterUsefulWork) && (!errInfo.hasError || hasEmptyTerminalAssistantResponse(messages))) {',
     '\t\t\tresult.exitCode = 1;',
