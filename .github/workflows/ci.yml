@@ -8,11 +8,10 @@ on:
   push:
     branches: [dev]
 
+# Untrusted PR code runs in test/docker. Grant write access only to the
+# trusted post-dev control-plane continuation, never to validation jobs.
 permissions:
-  actions: write
-  contents: write
-  issues: write
-  pull-requests: read
+  contents: read
 
 concurrency:
   # PR updates share one group, so a newer synchronize cancels stale queued/in-progress CI.
@@ -315,6 +314,11 @@ jobs:
       needs.test.result == 'success' &&
       needs.docker.result == 'success'
     needs: [test, docker]
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: read
     # Dedicated persistent control-plane lane; intentionally not n150/general.
     runs-on: [self-hosted, n150, control]
     timeout-minutes: 2
