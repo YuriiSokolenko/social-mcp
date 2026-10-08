@@ -201,28 +201,55 @@ function updatePlannerProtocolState(patch, env = process.env) {
   fs.writeFileSync(file, JSON.stringify({ ...previous, ...patch }) + '\n', { mode: 0o600 });
 }
 
+// Admission is deliberately minimal; observability signals are not a semantic judge.
+// Check ALL available verified paths (including the last evidence action), plus explicit
+// issue targets. Never truncate the candidates based on investigation order.
+function plannerNamedTargets(text) {
+  if (typeof text !== 'string') return [];
+  const paths = text.match(/(?<![A-Za-z0-9:/])(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+/g) ?? [];
+  const rootFiles = text.match(/\b(?:package\.json|README\.md|Makefile|gradlew|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|pyproject\.toml)\b/g) ?? [];
+  return [...paths, ...rootFiles];
+}
+
+function plannerCapabilityBlocker(text) {
+  // A generic "blocked" or "cannot" in an implementation description is NOT
+  // evidence that a GitHub/PR/permission/tool capability is unavailable.
+  return /\b(?:missing|unavailable|not exposed|without|lack(?:ing|s)?|insufficient|no)\s+(?:(?:required|available|necessary|write|appropriate)\s+)?(?:github\s+(?:api|access|permissions?|tools?)|(?:api|tool|capability|permission|credentials?|access)\b)/i.test(text) ||
+    /\b(?:cannot|unable to|blocked from|out.of.scope(?:\s+for)?)\b[^.\n]{0,120}\b(?:github|pull request|PR\b|issues?\b|api\b|permissions?\b|tools?\b|capability|orchestration)\b/i.test(text);
+}
+
 export function plannerPlanAdmission(planText, facts = [], issue = null) {
   if (typeof planText !== 'string' || !planText.trim()) return { ok: false, failureKind: 'planner_submission_invalid' };
   if (planText.split(/\r?\n/).some(line => /^\s*(?:\[INSERT PLAN HERE\]|<TODO:\s*write plan>)\s*$/i.test(line))) {
     return { ok: false, failureKind: 'planner_submission_placeholder' };
   }
-  const paths = facts.flatMap(fact => String(fact).match(/(?:src|tests|scripts|agents|\.pi|\.github)\/[A-Za-z0-9_./-]+/g) ?? []);
-  const knownTargets = [...new Set(paths)].slice(0, 8);
+  const issueText = [issue?.title, issue?.body].filter(value => typeof value === 'string').join('\n');
+  const knownTargets = [...new Set([
+    ...plannerNamedTargets(issueText),
+    ...facts.flatMap(fact => plannerNamedTargets(String(fact))),
+  ])];
   const targetMentioned = knownTargets.some(target => planText.includes(target));
-  const blocker = /\b(blocked|unavailable|out.of.scope|missing (?:access|permission|tool|capability)|cannot|not exposed|requires github)\b/i.test(planText);
-  // A verified concrete repository target should survive in the handoff, unless the Planner
-  // explicitly explains why implementing it is outside the available tool surface.
-  if (knownTargets.length && !targetMentioned && !blocker) {
+  const blocker = plannerCapabilityBlocker(planText);
+  const title = String(issue?.title ?? '').trim();
+  const issueTerms = [...new Set((title.toLowerCase().match(/[a-z0-9_-]{5,}/g) ?? [])
+    .filter(word => !new Set(['issue', 'create', 'update', 'change', 'implement', 'review', 'task', 'tests', 'planner']).has(word)))];
+  const issueAlignment = issueTerms.some(word => planText.toLowerCase().includes(word));
+  // An actual target outweighs superficial issue-keyword matching. When paths exist,
+  // the submitted plan must mention ANY of them, or explicitly state a capability blocker.
+  // Non-code orchestration tasks can have no legitimate repository paths.
+  if (knownTargets.length > 0 && !targetMentioned && !blocker) {
     return { ok: false, failureKind: 'planner_submission_missing_verified_target' };
   }
-  const title = String(issue?.title ?? '').trim();
+  if (knownTargets.length === 0 && issueTerms.length > 0 && !issueAlignment && !blocker) {
+    return { ok: false, failureKind: 'planner_submission_missing_issue_alignment' };
+  }
   return {
     ok: true,
     qualitySignals: {
       verifiedTargets: knownTargets.length,
       targetMentioned,
       capabilityBlocker: blocker,
-      issueAlignment: Boolean(title && title.split(/\s+/).some(word => word.length > 4 && planText.toLowerCase().includes(word.toLowerCase()))),
+      issueAlignment,
       actionableSteps: /\b(update|modify|add|remove|test|verify|inspect|implement|review|create|check)\b/i.test(planText),
       verification: /\b(test|verification|verify|check|CI)\b/i.test(planText),
       uncertainty: /\b(assum|unknown|unverified|uncertain|blocker)\b/i.test(planText),
