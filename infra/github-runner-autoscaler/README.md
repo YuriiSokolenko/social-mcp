@@ -151,7 +151,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 
 ```bash
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.9 .
-docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r1 .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r2 .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.7 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.2 .
@@ -166,9 +166,9 @@ pins Python `3.12.15`, GitHub CLI `2.102.0`, Docker CLI `29.8.2`, Buildx
 not use locally built N150 images as build stages, so BuildKit can resolve
 every base independently in a clean builder. The manager and general worker
 retry a failed Docker daemon check once after five seconds before quarantining
-the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe-r1`
+the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe-r2`
 pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit `@gitlab/orbit@0.138.0`,
-`pi-mcp-adapter@5.1.0`, `pi-subagents@0.76.1`, `mini-swe-agent==2.4.6`,
+`pi-mcp-adapter@5.1.0`, `mcp-searxng@2.5.1`, `pi-subagents@0.76.1`, `mini-swe-agent==2.4.6`,
 `lsp-mcp-server@1.1.26`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`,
 BasedPyright `1.40.2`, and JetBrains Kotlin LSP `263.6379.0`. The image tag is
 independent of the Pi package version.
@@ -190,14 +190,30 @@ the package. The adapter passed its type checks and regression suite against
 Pi `1.1.0` with strict peer resolution. The experimental `mini-swe`
 Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded
 local model endpoint; Pi remains the default backend. The Pi and general worker
-image tags are `1.1.0-mini-swe-r1` and `0.87.10`. Pi itself remains version
-`1.1.0`; `r1` records the image-only Python alias fix. `run_check` tooling remains in
-the separate `0.1.2` sandbox image. System-package changes must use a new image
-tag rather than silently reusing an already-built local tag. The sandbox
+image tags are `1.1.0-mini-swe-r2` and `0.87.10`. Pi itself remains version
+`1.1.0`; `r1` records the image-only Python alias fix and `r2` adds the required
+SearXNG MCP runtime. `run_check` tooling remains in the separate `0.1.2` sandbox
+image. System-package changes must use a new image tag rather than silently
+reusing an already-built local tag. The sandbox
 image independently contains Python 3.12, the repository's pinned Ruff and
 pytest tooling, Node for the configured `node_tests` profile, and Git for
 repository tests; it contains no runner registration, GitHub CLI, SSH client,
 or agent runtime.
+
+The Pi worker installs `mcp-searxng` in the image because the mounted global Pi
+MCP configuration starts `mcp-searxng` by executable name. The host's
+`~/.pi/agent/mcp.json` is migrated to the adapter's `mcp-adapter.json` at worker
+startup, preserving the `searxng` server and its `SEARXNG_URL`; the URL stays in
+the host-managed config and is never printed by the startup check. Pi's built-in
+MCP extension is explicitly disabled in worker settings so the installed
+`pi-mcp-adapter` owns `/mcp` without colliding with `builtin:mcp`.
+
+Before runner registration, `check-pi-searxng-mcp` checks the effective adapter
+config, starts the configured executable, completes MCP initialize and tool
+discovery, then calls the read-only `searxng_web_search` tool with a fixed safe
+query. It reports missing config, executable, tool, timeout, or backend failure
+without printing endpoint values or child stderr. Planner remains isolated by
+its stage tool allowlist; the startup check does not add tools to Planner.
 
 To roll the Pi pool back, set the previous image tag in the N150 host's
 untracked `.env` and recreate only `pi-runner-manager` after confirming the

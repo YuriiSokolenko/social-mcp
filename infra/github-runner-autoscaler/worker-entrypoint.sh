@@ -32,6 +32,7 @@ try {
   if (error.code !== 'ENOENT') throw error;
 }
 const packages = Array.isArray(settings.packages) ? settings.packages : [];
+const extensions = Array.isArray(settings.extensions) ? settings.extensions : [];
 const adapterVersion = process.env.PI_MCP_ADAPTER_VERSION;
 const subagentsVersion = process.env.PI_SUBAGENTS_VERSION;
 if (!adapterVersion || !subagentsVersion) throw new Error('Pi extension versions are required');
@@ -41,6 +42,9 @@ const withoutPinnedPackages = packages.filter((item) => {
   return typeof source !== 'string' || !/^npm:pi-(?:mcp-adapter|subagents)(?:@|$)/.test(source);
 });
 settings.packages = [...pinnedPackages, ...withoutPinnedPackages];
+// pi-mcp-adapter owns the /mcp command in this image. Disable Pi's built-in
+// MCP extension explicitly so clean and migrated host configs use one adapter.
+settings.extensions = [...extensions.filter((item) => item !== 'builtin:mcp' && item !== '-builtin:mcp'), '-builtin:mcp'];
 // Jobs run in a disposable, per-job container. Trust that job's checkout so
 // Pi's headless CI mode loads its project .mcp.json and other project config.
 settings.defaultProjectTrust = 'always';
@@ -71,6 +75,7 @@ try {
 adapterConfig.settings = { ...(adapterConfig.settings ?? {}), projectServers: 'allow' };
 fs.writeFileSync(adapterConfigFile, `${JSON.stringify(adapterConfig, null, 2)}\n`, { mode: 0o600 });
 NODE
+  node /usr/local/bin/check-pi-searxng-mcp
 fi
 
 # Best-effort durable evidence (#437): this container is --rm, so keep a bounded
