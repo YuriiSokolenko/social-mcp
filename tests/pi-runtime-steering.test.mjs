@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { compactRuntimeActionSteers, ACTION_REQUIRED_STEER_LEAD } from '../scripts/pi-common/runtime-steering.mjs';
+import { applicableRuntimeActionSteer, compactRuntimeActionSteers, ACTION_REQUIRED_STEER_LEAD } from '../scripts/pi-common/runtime-steering.mjs';
 
 const directive = (tools, verification = 'not yet available') =>
   `${ACTION_REQUIRED_STEER_LEAD}CURRENTLY EXPOSED TOOLS (authoritative): ${tools}. Verification status: ${verification}.`;
@@ -122,6 +122,46 @@ test('#594 supports provider text parts, but leaves ambiguous multipart or tool-
   assert.equal(compactRuntimeActionSteers({ messages: [old] }, 'bad').blocked, 'invalid_replacement');
 });
 
+test('#594 current directive expires in terminal recovery, coding repair, ceiling and non-Implementer stages', () => {
+  const history = { messages: [user('Issue requirements'), user(directive('stale_tool')), user('RUNTIME UNAVAILABLE CAPABILITY CORRECTION: still active')] };
+  let builds = 0;
+  const base = {
+    stage: 'implementer',
+    productiveState: 'action_required',
+    executableTools: ['safe_edit', 'submit_result'],
+    buildDirective: names => { builds++; return directive(names.join(', ')); },
+  };
+  const active = applicableRuntimeActionSteer(base);
+  assert.match(active, /safe_edit/);
+  assert.equal(builds, 1);
+  const inactiveCases = [
+    { terminalRecoveryActive: true },
+    { codingRepairWindowActive: true },
+    { ceilingWithoutToolTurns: 1 },
+    { productiveState: 'evidence_allowed' },
+    { executableTools: [] },
+    { stage: 'reviewer' },
+  ];
+  for (const gate of inactiveCases) {
+    const current = applicableRuntimeActionSteer({ ...base, ...gate });
+    assert.equal(current, null, JSON.stringify(gate));
+    const result = compactRuntimeActionSteers(history, current);
+    assert.equal(result.removed, 1, JSON.stringify(gate));
+    assert.equal(count(result.payload), 0);
+    assert.equal(result.payload.messages.length, 2);
+    assert.match(result.payload.messages[1].content, /RUNTIME UNAVAILABLE CAPABILITY/);
+  }
+  assert.equal(builds, 1, 'expired directives must never be rebuilt');
+  assert.equal(history.messages.length, 3, 'stored session is immutable');
+});
+
+test('#594 the latest retained directive stays in its chronological position', () => {
+  const later = user('Later normal user message');
+  const result = compactRuntimeActionSteers({ messages: [user(directive('old')), later] }, directive('current'));
+  assert.equal(result.payload.messages[0].content, directive('current'));
+  assert.equal(result.payload.messages[1], later);
+});
+
 test('#594 keeps a bounded outbound byte footprint instead of repeated 1.2KB steering blocks', () => {
   const long = directive('safe_edit, submit_result') + ' Additional action guidance.'.repeat(48);
   const history = Array.from({ length: 5 }, () => user(long));
@@ -186,6 +226,23 @@ test('#594 actual Implementer provider hook drops historical steers without rewr
       // apply afresh rather than mutating the transcript only on the first request.
       const retry = handlers.get('before_provider_request')({ payload: { model: 'test', messages: history, tools } });
       assert.equal(retry.messages.filter(m => m.content?.startsWith?.('RUNTIME ACTION REQUIRED:')).length, 1);
+
+      // A malformed/ambiguous compaction candidate logs a warning and forwards
+      // the original content rather than breaking the Implementer provider call.
+      const ambiguous = { model: 'test', messages: history, input: [{ role: 'user', content: 'separate input' }], tools };
+      const passthrough = handlers.get('before_provider_request')({ payload: ambiguous });
+      assert.equal(passthrough.messages, history);
+      assert.equal(passthrough.input, ambiguous.input);
+      const linked = [{ role: 'user', content: old, tool_call_id: 'linked-call' }];
+      const linkedRequest = handlers.get('before_provider_request')({ payload: { model: 'test', messages: linked, tools } });
+      assert.equal(linkedRequest.messages, linked);
+
+      // A turn without executable actions cannot renew action-required guidance.
+      // Expire every historical action steer, preserving other ongoing obligations.
+      const noActionTools = handlers.get('before_provider_request')({ payload: { model: 'test', messages: history, tools: [] } });
+      assert.equal(noActionTools.messages.filter(m => m.content?.startsWith?.('RUNTIME ACTION REQUIRED:')).length, 0);
+      assert.equal(noActionTools.messages.filter(m => m.content?.startsWith?.('RUNTIME UNAVAILABLE CAPABILITY')).length, 1);
+      assert.equal(history.length, 5);
     `;
     const child = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
@@ -196,6 +253,8 @@ test('#594 actual Implementer provider hook drops historical steers without rewr
     });
     assert.equal(child.status, 0, child.stderr + child.stdout);
     assert.match(child.stdout, /PI_RUNTIME_STEERING_COMPACTION/);
+    assert.match(child.stderr, /PI_RUNTIME_STEERING_COMPACTION_BLOCKED.*ambiguous_history_fields/);
+    assert.match(child.stderr, /PI_RUNTIME_STEERING_COMPACTION_BLOCKED.*tool_linked_steer/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
