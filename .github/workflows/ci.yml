@@ -113,7 +113,7 @@ jobs:
             test "$(id -u runner)" = 1001
             test -x ./bin/Runner.Listener
             python3 --version
-            python3 -c 'import sys; assert sys.version_info >= (3, 12), sys.version'
+            python3 -c "import sys; assert sys.version_info >= (3, 12), sys.version"
             python_temp="$(mktemp -d)"
             python3 -m venv "$python_temp/venv"
             "$python_temp/venv/bin/python" --version
