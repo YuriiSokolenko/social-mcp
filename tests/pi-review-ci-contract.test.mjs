@@ -1087,7 +1087,7 @@ test('fresh implementer uses one planner/classifier result while restored and re
 
   const bootstrapPlanner = readScript('scripts/pi-common/implementation-planner.mjs', 'utf8');
   assert.match(bootstrapPlanner, /runTextSubagent/);
-  assert.match(bootstrapPlanner, /acceptedPlannerText/);
+  assert.match(bootstrapPlanner, /acceptedPlannerSubmission/);
   assert.doesNotMatch(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA|PLANNER_RESULT_TOOL/);
   assert.match(bootstrapPlanner, /planText/);
   assert.doesNotMatch(bootstrapPlanner, /parsePlannerXml|FINALIZATION-ONLY XML REPAIR|planner_xml_finalization_failed/);
@@ -1111,8 +1111,9 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.match(repoSearchSource, /\['ls-files', '-z'\]/);
   assert.match(repoSearchSource, /\['grep', '-n', '-I', '-F'/);
   assert.match(planner, /inheritSkills: false/);
-  assert.match(planner, /plain-text or Markdown assistant response/i);
-  assert.match(planner, /harness owns complexity defaults, mutation-budget decisions/i);
+  assert.match(planner, /begin_plan_submission/);
+   assert.match(planner, /submit_plan/);
+  assert.match(planner, /The harness owns complexity defaults/i);
   assert.doesNotMatch(planner, /required_mutation_anchors|trivial \| nontrivial/);
   assert.doesNotMatch(settings, /complexity-classifier/);
   assert.match(backend, /if \(spec\.stage === 'architect'\) extensions\.push\(REPOMAP_PACKAGE\)/);
