@@ -16,6 +16,10 @@ export function rememberPlannerModelLimit(pi, maxTokens) {
   fs.writeFileSync(file, JSON.stringify({ ...previous, originalModelMaxTokens: maxTokens }) + '\n', { mode: 0o600 });
 }
 export function plannerModelLimit(pi) {
+  // Prefer the owner extension's own session-local value for concurrent in-process
+  // execution; fall back to the child sidecar for distinct Pi extension API handles.
+  const local = originalModelLimits.get(pi);
+  if (local != null) return local;
   const file = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
   if (file) {
     try {
