@@ -2,9 +2,12 @@ ARG RUNNER_PLATFORM=linux/amd64
 FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS python-runtime
 FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
-ARG ACTIONS_RUNNER_VERSION=2.337.0
-ARG ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+ARG ACTIONS_RUNNER_VERSION=2.338.0
+ARG ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
 ARG DOCKER_BUILDX_VERSION=0.37.1-1~debian.12~bookworm
+ARG DOCKER_CLI_VERSION=5:29.8.2-1~debian.12~bookworm
+ARG DOCKER_COMPOSE_VERSION=5.6.0-1~debian.12~bookworm
+ARG GH_CLI_VERSION=2.102.0
 ARG GH_CLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
 ENV HOME=/home/runner \
     ACTIONS_RUNNER_VERSION=${ACTIONS_RUNNER_VERSION}
@@ -24,7 +27,9 @@ RUN apt-get update \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gh docker-ce-cli docker-compose-plugin "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
+    && apt-get install -y --no-install-recommends \
+      "gh=${GH_CLI_VERSION}" "docker-ce-cli=${DOCKER_CLI_VERSION}" \
+      "docker-compose-plugin=${DOCKER_COMPOSE_VERSION}" "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && groupadd --gid 983 hostdocker \

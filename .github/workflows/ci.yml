@@ -111,13 +111,13 @@ jobs:
           docker run --rm --entrypoint bash "$worker_image" -lc '
             set -euo pipefail
             test "$(id -u runner)" = 1001
-            test -x ./bin/Runner.Listener
+            test "$(./bin/Runner.Listener --version)" = 2.338.0
             python3 --version
             python3 -c "import sys; assert sys.version_info >= (3, 12), sys.version"
             python_temp="$(mktemp -d)"
             python3 -m venv "$python_temp/venv"
             "$python_temp/venv/bin/python" --version
-            gh --version
+            test "$(gh --version | head -n 1)" = "gh version 2.102.0 (2026-09-30)"
             gh variable set --help >/dev/null
             docker --version
             docker buildx version
@@ -128,8 +128,8 @@ jobs:
           docker run --rm --entrypoint bash "$pi_worker_image" -lc '
             set -euo pipefail
             test "$(id -u runner)" = 1001
-            test -x ./bin/Runner.Listener
-            pi --version
+            test "$(./bin/Runner.Listener --version)" = 2.338.0
+            test "$(pi --version)" = "1.0.4"
             orbit version
             ast-grep --version
             basedpyright --version
@@ -142,6 +142,11 @@ jobs:
             import fs from "node:fs";
             const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
             fs.accessSync(root + "/lsp-mcp-server/dist/index.js");
+            const extensionRoot = "/opt/pi-package-seed/npm/node_modules";
+            for (const [name, version] of [["pi-mcp-adapter", "5.1.0"], ["pi-subagents", "0.76.1"]]) {
+              const metadata = JSON.parse(fs.readFileSync(`${extensionRoot}/${name}/package.json`, "utf8"));
+              if (metadata.version !== version) throw new Error(`${name} version mismatch: ${metadata.version}`);
+            }
           '
 
       - name: Control runner capability and graceful-stop smoke

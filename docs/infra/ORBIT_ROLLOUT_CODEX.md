@@ -4,7 +4,7 @@ This document covers only host-side deployment that cannot be performed through 
 
 ## Goal
 
-Deploy the repository's updated `pi-agent` image so Architect and Implementer can use GitLab Orbit Local through Pi MCP. Keep Zoekt enabled; Orbit complements it.
+Deploy the repository's updated `pi-agent` image so Architect and Implementer can use GitLab Orbit Local through Pi MCP. Keep Zoekt enabled; Orbit complements it. Pi and general image deployments are separate pool operations; never restart a manager while its pool has an active job.
 
 ## Non-negotiable secret-safety rules
 
@@ -19,12 +19,12 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
 
 ## Steps
 
-1. Work in the existing N150 checkout for `YuriiSokolenko/social-mcp`. Fetch and fast-forward to the current `dev`. Do not discard unrelated local host configuration.
+1. Inspect the N150 checkout and active jobs first. If the checkout has unrelated dirty changes, preserve them and use a separate clean checkout of the merged `dev` commit for image builds. Do not force-stop busy workers or proceed while a safe drain cannot be established.
 
 2. Confirm the tracked worker image now installs the pinned Orbit package:
 
    ```bash
-   grep -n '@gitlab/orbit@0.130.0' infra/github-runner-autoscaler/worker.Dockerfile
+   grep -n 'ORBIT_VERSION=0.138.0' infra/github-runner-autoscaler/worker.Dockerfile
    ```
 
 3. Rebuild the Pi ephemeral worker image:
@@ -32,7 +32,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker build \
      -f infra/github-runner-autoscaler/worker.Dockerfile \
-     -t n150/github-pi-runner-ephemeral:0.89.2-mini-swe \
+     -t n150/github-pi-runner-ephemeral:1.0.5-mini-swe \
      .
    ```
 
@@ -41,17 +41,17 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker run --rm \
      --entrypoint orbit \
-     n150/github-pi-runner-ephemeral:0.89.2-mini-swe \
+     n150/github-pi-runner-ephemeral:1.0.5-mini-swe \
      version
    ```
 
-   Expected: a version matching the pinned package. Do not print container environment variables.
+   Expected: `0.138.0`. Do not print container environment variables.
 
-5. Restart only the Pi runner manager so newly spawned ephemeral runners use the rebuilt image:
+5. After confirming the Pi pool is drained and the general pool remains untouched, update only the Pi image reference in the host `.env`, then recreate only the Pi manager so newly spawned ephemeral runners use the rebuilt image:
 
    ```bash
    cd infra/github-runner-autoscaler
-   docker compose --env-file .env up -d --build pi-runner-manager
+   docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
    ```
 
 6. Verify manager health without printing its environment:
@@ -63,7 +63,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
 
    Confirm normal polling resumes. Do not use `docker inspect` to dump env.
 
-7. Run one controlled Architect or Implementer workflow. In the job steps verify:
+7. Confirm the new runner registration and its image ID, then run one controlled Architect or Implementer workflow. In the job steps verify:
 
    - `Prepare Orbit Local code graph` succeeds.
    - the log shows `orbit version`;
@@ -75,7 +75,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
 
 9. Confirm Zoekt remains available and unchanged. Orbit is for structural code-graph questions; Zoekt remains the fast shared literal/path/symbol index.
 
-10. Run the repository control-plane tests from the current `dev` checkout:
+10. Run the repository control-plane tests from the merged `dev` checkout:
 
     ```bash
     node --test tests/*.test.mjs

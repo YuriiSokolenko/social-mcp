@@ -1,16 +1,18 @@
 ARG RUNNER_PLATFORM=linux/amd64
 FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
-ARG ACTIONS_RUNNER_VERSION=2.337.0
-ARG ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
-ARG PI_CODING_AGENT_VERSION=0.87.1
-ARG PI_MCP_ADAPTER_VERSION=3.2.0
-ARG LSP_MCP_SERVER_VERSION=1.1.25
+ARG ACTIONS_RUNNER_VERSION=2.338.0
+ARG ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
+ARG PI_CODING_AGENT_VERSION=1.0.4
+ARG PI_MCP_ADAPTER_VERSION=5.1.0
+ARG PI_SUBAGENTS_VERSION=0.76.1
+ARG ORBIT_VERSION=0.138.0
+ARG LSP_MCP_SERVER_VERSION=1.1.26
 ARG GIT_CONTEXT_MCP_VERSION=1.0.0
 ARG AST_GREP_VERSION=0.45.3
-ARG BASEDPYRIGHT_VERSION=1.40.1
-ARG KOTLIN_LSP_VERSION=263.4702.0
-ARG KOTLIN_LSP_SHA256=1e11d2e5fefbf9ea215ad8dd6be95f2222897cd086e8cb7a661a52084a590405
+ARG BASEDPYRIGHT_VERSION=1.40.2
+ARG KOTLIN_LSP_VERSION=263.6379.0
+ARG KOTLIN_LSP_SHA256=ab8ca4455dc2fc5fe1a24db2bccc46c104254d2c465155c4251ee65df8f3f7cc
 ARG MINI_SWE_AGENT_VERSION=2.4.6
 
 USER root
@@ -32,7 +34,7 @@ RUN apt-get update \
     && rm /tmp/actions-runner.tar.gz \
     && chown -R runner:runner /home/runner/actions-runner /opt/kotlin-lsp \
     && npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
-      @gitlab/orbit@0.130.0 "lsp-mcp-server@${LSP_MCP_SERVER_VERSION}" "git-context-mcp@${GIT_CONTEXT_MCP_VERSION}" \
+      "@gitlab/orbit@${ORBIT_VERSION}" "lsp-mcp-server@${LSP_MCP_SERVER_VERSION}" "git-context-mcp@${GIT_CONTEXT_MCP_VERSION}" \
     && npm install --prefix /opt/ast-grep "@ast-grep/cli@${AST_GREP_VERSION}" \
     && ln -s /opt/ast-grep/node_modules/.bin/ast-grep /usr/local/bin/ast-grep \
     && python3 -m venv /opt/basedpyright \
@@ -47,7 +49,7 @@ RUN apt-get update \
     && tar -xzf /tmp/kotlin-lsp.tar.gz --strip-components=1 -C /opt/kotlin-lsp \
     && rm /tmp/kotlin-lsp.tar.gz \
     && ln -s /opt/kotlin-lsp/bin/intellij-server /usr/local/bin/kotlin-lsp \
-    && install -d -o runner -g runner /opt/pi-adapter-seed \
+    && install -d -o runner -g runner /opt/pi-package-seed \
     && chmod 0755 /usr/local/bin/runner-entrypoint \
     && rm -f /usr/local/bin/lsp-mcp-server \
     && install -m 0755 /tmp/lsp-mcp-server-wrapper.mjs /usr/local/bin/lsp-mcp-server \
@@ -60,12 +62,14 @@ RUN apt-get update \
 USER runner
 ENV HOME=/home/runner \
     npm_config_cache=/tmp/pi-runner-npm-cache \
-    PI_MCP_ADAPTER_VERSION=${PI_MCP_ADAPTER_VERSION}
+    PI_MCP_ADAPTER_VERSION=${PI_MCP_ADAPTER_VERSION} \
+    PI_SUBAGENTS_VERSION=${PI_SUBAGENTS_VERSION}
 RUN pi install --no-approve "npm:pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
-    && mkdir -p /opt/pi-adapter-seed \
-    && cp -a /home/runner/.pi/agent/npm /opt/pi-adapter-seed/
+    && pi install --no-approve "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
+    && mkdir -p /opt/pi-package-seed \
+    && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/
 USER root
-RUN chmod -R a+rX /opt/pi-adapter-seed
+RUN chmod -R a+rX /opt/pi-package-seed
 
 USER runner
 WORKDIR /home/runner/actions-runner
