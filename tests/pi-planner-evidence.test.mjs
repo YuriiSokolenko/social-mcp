@@ -273,10 +273,9 @@ test('equivalent repository action is stopped only after it demonstrates no prog
 
   const blocked = await call('e3');
   assert.equal(blocked.block, true);
-  assert.match(blocked.reason, /semantic no-progress/i);
-  assert.equal(harness.aborted(), true);
+  assert.match(blocked.reason, /no progress/i);
+  assert.equal(harness.aborted(), false, 'first stall is nudged rather than aborting without a transition chance');
   const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.failureKind, 'semantic_no_progress');
   assert.equal(state.used, 2, 'the blocked third call is not counted as an admitted evidence action');
   assert.ok(harness.logs().some(line => line.startsWith('PI_PLANNER_NO_PROGRESS ')));
 });
