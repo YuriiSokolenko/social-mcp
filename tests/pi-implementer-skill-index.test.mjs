@@ -51,6 +51,22 @@ test('#593 unfamiliar skill schemas and non-skill prompts remain unchanged', () 
   assert.equal(compactImplementerSkillPrompt(duplicated), duplicated);
 });
 
+test('#593 malformed skill missing location cannot steal the following skill path', () => {
+  const valid = catalog(['python-testing-patterns', 'docker-compose']);
+  assert.notEqual(compactImplementerSkillPrompt(valid), valid, 'valid long descriptions should compact');
+
+  const firstPath = '<location>/work/.agents/skills/python-testing-patterns/SKILL.md</location>';
+  const malformed = valid.replace(firstPath, '');
+  assert.notEqual(malformed, valid, 'the fixture must remove the first skill location');
+  assert.equal(
+    compactImplementerSkillPrompt(malformed),
+    malformed,
+    'fail open: do not merge two entries or lose docker-compose and its path',
+  );
+  const missingDescription = valid.replace(/<description>[\\s\\S]*?<\\/description>/, '');
+  assert.equal(compactImplementerSkillPrompt(missingDescription), missingDescription);
+});
+
 test('#593 XML escapes in skill summaries are valid after truncation', () => {
   const long = `<skills><available_skills><skill><name>special</name><description>${'Automation &amp; tools '.repeat(20)}</description><location>/tmp/SKILL.md</location></skill></available_skills></skills>`;
   const compact = compactImplementerSkillPrompt(long);
@@ -94,19 +110,18 @@ test('#593 hook only modifies Main, and pi invocation leaves Planner and child i
 });
 
 test('#593 provider-side Main metadata measures exact UTF-8 skills bytes on first and later requests', () => {
-  const compressed = compactImplementerSkillPrompt('<role>safe</role>\\n' + catalog(allNames));
+  const compressed = compactImplementerSkillPrompt('<role>safe</role>\n' + catalog(allNames));
   const first = {
     messages: [
       { role: 'system', content: compressed },
-      { role: 'user', content: '<shared_agent_contract/>\\n<role_contract/>' },
+      { role: 'user', content: '<shared_agent_contract/>\n<role_contract/>' },
     ],
     tools: [],
   };
   const firstMetrics = mainPromptRequestMetadata(first);
   assert.equal(firstMetrics.systemTextBytes, Buffer.byteLength(compressed, 'utf8'));
   assert.equal(firstMetrics.skillCount, allNames.length);
-  assert.equal(firstMetrics.skillNames.length, allNames.length);
-  assert.equal(firstMetrics.skillNames.at(-1), 'github-actions-hardening');
+  assert.equal('skillNames' in firstMetrics, false, 'names are logged once by PI_MAIN_SKILLS, not per request');
   assert.ok(firstMetrics.skillCatalogBytes > 0);
   const next = mainPromptRequestMetadata({
     ...first,
