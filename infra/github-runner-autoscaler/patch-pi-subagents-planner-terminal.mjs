@@ -38,7 +38,7 @@ export function acceptedTerminalPlannerReceipt(messages, state, lifecycleId) {
 
 export function patchPiSubagentsSource(source) {
   const importAnchor = 'import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";';
-  const helperAnchor = 'const artifactOutputByResult = new WeakMap<SingleResult, string>();';
+  const helperAnchor = 'const artifactOutputByResult = new WeakMap();';
   const decisionAnchor = 'const missingOutput = !finalText?.trim() && !validatedStructuredOutput;';
   const conditionAnchor = 'if ((missingOutput || terminalEmptyAfterUsefulWork) && (!errInfo.hasError || hasEmptyTerminalAssistantResponse(messages))) {';
   const ensureOnce = (text, fragment) => {
@@ -48,15 +48,12 @@ export function patchPiSubagentsSource(source) {
   ensureOnce(source, helperAnchor);
   ensureOnce(source, decisionAnchor);
   ensureOnce(source, conditionAnchor);
-  const policy = acceptedTerminalPlannerReceipt.toString().replace(
-    'function acceptedTerminalPlannerReceipt(messages, state, lifecycleId)',
-    'function acceptedTerminalPlannerReceipt(messages: any[], state: any, lifecycleId: string): boolean',
-  );
+  const policy = acceptedTerminalPlannerReceipt.toString();
   const guard = [
     '// Planner-only exception to the upstream mandatory final-text rule.',
     '// An actual executed tool result AND a current-lifecycle durable receipt are required.',
     policy,
-    'function trustedPlannerTerminalToolUse(messages: Message[], agentName: string): boolean {',
+    'function trustedPlannerTerminalToolUse(messages, agentName) {',
     '  if (agentName !== "implementation-planner") return false;',
     '  const sidecar = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;',
     '  const lifecycleId = process.env.PI_PLANNER_LIFECYCLE_ID;',
@@ -81,7 +78,8 @@ function main() {
   if (pkg.name !== 'pi-subagents' || pkg.version !== PINNED_VERSION) {
     throw new Error('Expected pi-subagents@' + PINNED_VERSION + ', got ' + pkg.name + '@' + pkg.version);
   }
-  const target = path.join(root, 'src/runs/foreground/execution.ts');
+  // npm publishes compiled JavaScript in dist-pkg; the GitHub tag contains TypeScript only.
+  const target = path.join(root, 'src/runs/foreground/execution.js');
   const original = fs.readFileSync(target, 'utf8');
   const patched = patchPiSubagentsSource(original);
   fs.writeFileSync(target, patched);
