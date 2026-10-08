@@ -1,6 +1,15 @@
-FROM docker:28-cli
+FROM docker:29.8.2-cli@sha256:35cfcf893c20f2931f4909151b5407aaaeab711277de7ce8b8f521f095d54c32
 
-RUN apk add --no-cache bash curl jq coreutils nodejs
+ARG NODE_VERSION=26.11.1
+ARG NODE_SHA256=8d31c2180212503799c3c93924db216e236de769b4ca1fdfe85a33ebacae510c
+ARG NPM_VERSION=12.2.0
+RUN apk add --no-cache bash curl jq coreutils xz libatomic libgcc libstdc++ \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64-musl.tar.xz" -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
+    && rm /tmp/node.tar.xz \
+    && npm install --global "npm@${NPM_VERSION}" \
+    && node --version && npm --version
 
 COPY infra/github-runner-autoscaler/manager.sh /usr/local/bin/pi-runner-manager
 COPY infra/github-runner-autoscaler/run-check-executor.mjs /usr/local/lib/run-check-executor.mjs

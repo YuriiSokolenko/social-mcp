@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.8}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.9}
     container_name: pi-runner-manager
     restart: unless-stopped
     environment:
@@ -13,7 +13,7 @@ services:
       MODEL_MAX_CONCURRENCY: ${MODEL_MAX_CONCURRENCY:-}
       POLL_SECONDS: ${POLL_SECONDS:-}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-}
-      RUN_CHECK_SANDBOX_IMAGE: ${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.1}
+      RUN_CHECK_SANDBOX_IMAGE: ${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.2}
       RUN_CHECK_EXECUTOR_URL: ${RUN_CHECK_EXECUTOR_URL:-http://127.0.0.1:17343}
       RUN_CHECK_EXECUTOR_PORT: ${RUN_CHECK_EXECUTOR_PORT:-17343}
       RUN_CHECK_STAGE_VOLUME: ${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}
@@ -46,7 +46,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/manager.Dockerfile
-    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.8}
+    image: ${PI_RUNNER_MANAGER_IMAGE:-n150/pi-runner-manager:run-check-docker-0.1.9}
     container_name: general-runner-manager
     restart: unless-stopped
     environment:
@@ -54,7 +54,7 @@ services:
       GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}
       MAX_RUNNERS: ${GENERAL_MAX_RUNNERS:-3}
       POLL_SECONDS: ${GENERAL_POLL_SECONDS:-6}
-      RUNNER_IMAGE: ${GENERAL_RUNNER_IMAGE:-n150/github-general-runner-ephemeral:0.87.6}
+      RUNNER_IMAGE: ${GENERAL_RUNNER_IMAGE:-n150/github-general-runner-ephemeral:0.87.10}
       RUNNER_PREFIX: ${GENERAL_RUNNER_PREFIX:-n150-gen-eph}
       RUNNER_LABELS: ${GENERAL_RUNNER_LABELS:-n150,general}
       WORKFLOW_FILES: ${GENERAL_WORKFLOW_FILES:-ci.yml,pi-auto-merge.yml,pi-automation-control.yml,pi-pr-review.yml,pi-reconcile.yml,pi-usage.yml}
@@ -81,7 +81,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/github-runner-autoscaler/control-runner.Dockerfile
-    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.6}
+    image: ${CONTROL_RUNNER_IMAGE:-n150/github-control-runner:0.1.7}
     container_name: ${CONTROL_RUNNER_NAME:-n150-control}
     restart: unless-stopped
     stop_grace_period: 120s

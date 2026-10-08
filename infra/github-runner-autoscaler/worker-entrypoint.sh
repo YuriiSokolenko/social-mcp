@@ -15,12 +15,12 @@ if [ -d /pi-config-ro ]; then
   cp -a /pi-config-ro/. /home/runner/.pi/agent/
 fi
 
-# The host-mounted Pi config may have an older unpinned adapter installation.
-# Overlay the version baked into this image, then pin the package and permit
-# project MCP servers for the headless `pi` invocations used by GitHub Actions.
-if [ -d /opt/pi-adapter-seed/npm ]; then
+# The host-mounted Pi config may have older adapter/extension installations.
+# Overlay packages baked into this image, pin their versions, and permit
+# project MCP servers for headless `pi` invocations used by GitHub Actions.
+if [ -d /opt/pi-package-seed/npm ]; then
   mkdir -p /home/runner/.pi/agent/npm
-  cp -a /opt/pi-adapter-seed/npm/. /home/runner/.pi/agent/npm/
+  cp -a /opt/pi-package-seed/npm/. /home/runner/.pi/agent/npm/
   node --input-type=module <<'NODE'
 import fs from 'node:fs';
 
@@ -32,14 +32,15 @@ try {
   if (error.code !== 'ENOENT') throw error;
 }
 const packages = Array.isArray(settings.packages) ? settings.packages : [];
-const version = process.env.PI_MCP_ADAPTER_VERSION;
-if (!version) throw new Error('PI_MCP_ADAPTER_VERSION is required');
-const adapter = `npm:pi-mcp-adapter@${version}`;
-const withoutAdapter = packages.filter((item) => {
+const adapterVersion = process.env.PI_MCP_ADAPTER_VERSION;
+const subagentsVersion = process.env.PI_SUBAGENTS_VERSION;
+if (!adapterVersion || !subagentsVersion) throw new Error('Pi extension versions are required');
+const pinnedPackages = [`npm:pi-mcp-adapter@${adapterVersion}`, `npm:pi-subagents@${subagentsVersion}`];
+const withoutPinnedPackages = packages.filter((item) => {
   const source = typeof item === 'string' ? item : item?.source;
-  return typeof source !== 'string' || !/^npm:pi-mcp-adapter(?:@|$)/.test(source);
+  return typeof source !== 'string' || !/^npm:pi-(?:mcp-adapter|subagents)(?:@|$)/.test(source);
 });
-settings.packages = [adapter, ...withoutAdapter];
+settings.packages = [...pinnedPackages, ...withoutPinnedPackages];
 // Jobs run in a disposable, per-job container. Trust that job's checkout so
 // Pi's headless CI mode loads its project .mcp.json and other project config.
 settings.defaultProjectTrust = 'always';

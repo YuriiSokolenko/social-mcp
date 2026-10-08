@@ -55,7 +55,7 @@ jobs:
 
       - name: Install the Pi runtime TypeBox contract dependency
         # Mirrors dependencies.typebox in @earendil-works/pi-coding-agent.
-        run: npm install --prefix "$RUNNER_TEMP/pi-typebox-contract" --no-save --no-package-lock typebox@1.3.27
+        run: npm_config_cache="$RUNNER_TEMP/npm-cache" npm install --prefix "$RUNNER_TEMP/pi-typebox-contract" --no-save --no-package-lock typebox@1.3.27
 
       - name: Validate the registered submit_result schema with real TypeBox
         env:
@@ -75,6 +75,7 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: social-mcp-ci-${{ github.run_id }}-${{ github.run_attempt }}
       DOCKER_BUILDKIT: "1"
+      DOCKER_CONFIG: /tmp/social-mcp-docker-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout
@@ -84,6 +85,7 @@ jobs:
 
       - name: Set up BuildKit
         run: |
+          mkdir -p "$DOCKER_CONFIG"
           if ! docker buildx version >/dev/null 2>&1; then
             version=0.37.1
             package="docker-buildx-plugin_${version}-1~ubuntu.24.04~noble_amd64.deb"
@@ -103,10 +105,65 @@ jobs:
         run: |
           image="${COMPOSE_PROJECT_NAME}-manager-import-check:latest"
           worker_image="${COMPOSE_PROJECT_NAME}-general-worker-check:latest"
-          trap 'docker image rm "$image" "$worker_image" >/dev/null 2>&1 || true' EXIT
+          pi_worker_image="${COMPOSE_PROJECT_NAME}-pi-worker-check:latest"
+          trap 'docker image rm "$image" "$worker_image" "$pi_worker_image" >/dev/null 2>&1 || true' EXIT
           docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t "$image" .
           docker run --rm --entrypoint node "$image" -e "import('/opt/social-mcp/scripts/pi-common/run-check.mjs').then(() => console.log('run-check import ok'))"
           docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t "$worker_image" .
+          docker run --rm --entrypoint bash "$worker_image" -lc '
+            set -euo pipefail
+            test "$(id -u runner)" = 1001
+            test "$(stat -c "%u:%g" "$HOME")" = 1001:1001
+            test -w "$HOME"
+            test ! -e "$HOME/.npm" || test -w "$HOME/.npm"
+            test "$(./bin/Runner.Listener --version)" = 2.338.0
+            test "$(node --version)" = v26.11.1
+            test "$(npm --version)" = 12.2.0
+            python3 --version
+            python3 -c "import sys; assert sys.version_info >= (3, 12), sys.version"
+            python_temp="$(mktemp -d)"
+            python3 -m venv "$python_temp/venv"
+            "$python_temp/venv/bin/python" --version
+            test "$(gh --version | head -n 1)" = "gh version 2.102.0 (2026-09-30)"
+            gh variable set --help >/dev/null
+            docker --version
+            docker buildx version
+            docker compose version
+            sudo -n true
+          '
+          docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t "$pi_worker_image" .
+          docker run --rm --entrypoint bash "$pi_worker_image" -lc '
+            set -euo pipefail
+            test "$(id -u runner)" = 1001
+            test "$(./bin/Runner.Listener --version)" = 2.338.0
+            test "$(node --version)" = v26.11.1
+            test "$(npm --version)" = 12.2.0
+            test "$(pi --version)" = "1.1.0"
+            python -c "import sys; assert sys.version_info >= (3, 12)"
+            python --version
+            python -m venv /tmp/pi-python-alias-smoke
+            sqlite3 --version
+            orbit version
+            ast-grep --version
+            basedpyright --version
+            mini --help >/dev/null
+            test -x "$(command -v kotlin-lsp)"
+            sudo -n true
+          '
+          docker run --rm --entrypoint node "$pi_worker_image" --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            import fs from "node:fs";
+            const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+            fs.accessSync(root + "/lsp-mcp-server/dist/index.js");
+            const extensionRoot = "/opt/pi-package-seed/npm/node_modules";
+            for (const [name, version] of [["pi-mcp-adapter", "5.1.0"], ["pi-subagents", "0.76.1"]]) {
+              const metadata = JSON.parse(fs.readFileSync(`${extensionRoot}/${name}/package.json`, "utf8"));
+              if (metadata.version !== version) throw new Error(`${name} version mismatch: ${metadata.version}`);
+              if (name === "pi-mcp-adapter" && !metadata.peerDependencies["@earendil-works/pi-ai"].includes("^1.1.0")) {
+                throw new Error("pi-mcp-adapter does not declare tested Pi 1.1 compatibility");
+              }
+            }
+          '
 
       - name: Control runner capability and graceful-stop smoke
         shell: bash
@@ -123,7 +180,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           if [ "${1:-}" = "--version" ]; then
-            printf '2.337.0\n'
+            printf '2.338.0\n'
             exit 0
           fi
           [ "${1:-}" = "run" ] || exit 2
@@ -154,12 +211,9 @@ jobs:
           docker run --rm --entrypoint bash "$base_image" -lc '
             set -euo pipefail
             git --version >/dev/null
-            node_version="$(node --version)"
-            case "$node_version" in
-              v24.*) ;;
-              *) echo "unexpected Node.js version: $node_version" >&2; exit 1 ;;
-            esac
-            test "$(./bin/Runner.Listener --version)" = "2.337.0"
+            test "$(node --version)" = v26.11.1
+            test "$(npm --version)" = 12.2.0
+            test "$(./bin/Runner.Listener --version)" = "2.338.0"
           '
           docker build --build-arg "BASE_IMAGE=$base_image" -t "$fixture_image" "$fixture"
 

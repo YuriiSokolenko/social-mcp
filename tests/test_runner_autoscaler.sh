@@ -9,6 +9,21 @@ assert_failure() { if "$@" >/dev/null 2>&1; then fail "expected failure: $*"; fi
 
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+patch_fixture="$(mktemp -d)"
+cat > "$patch_fixture/package.json" <<'JSON'
+{
+  "name": "pi-mcp-adapter",
+  "version": "5.1.0",
+  "peerDependencies": {"@earendil-works/pi-ai": "^0.84.1 || ^0.85.0 || ^0.86.0 || ^0.87.0 || ^0.99.0 || ^1.0.0"}
+}
+JSON
+node "$repo_root/infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs" "$patch_fixture/package.json"
+node -e 'const p=require(process.argv[1]); if (!p.peerDependencies["@earendil-works/pi-ai"].endsWith("|| ^1.1.0")) process.exit(1)' "$patch_fixture/package.json"
+node "$repo_root/infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs" "$patch_fixture/package.json"
+sed 's/"5.1.0"/"5.0.0"/' "$patch_fixture/package.json" > "$patch_fixture/wrong-version.json"
+assert_failure node "$repo_root/infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs" "$patch_fixture/wrong-version.json"
+rm -rf "$patch_fixture"
+
 grep -q 'DOCKER_DEEP_PROBE_INTERVAL_SECONDS: ${GENERAL_DOCKER_DEEP_PROBE_INTERVAL_SECONDS:-300}' "$repo_root/infra/github-runner-autoscaler/compose.yaml" \
   || fail 'general manager deep-probe interval must be configurable'
 grep -q '^GENERAL_DOCKER_DEEP_PROBE_INTERVAL_SECONDS=300$' "$repo_root/infra/github-runner-autoscaler/.env.example" \
@@ -35,11 +50,51 @@ grep -q 'no-new-privileges:true' <<<"$control_compose" || fail 'control runner n
 ! grep -q '/var/run/docker.sock' <<<"$control_compose" || fail 'control runner must never receive Docker socket'
 ! grep -q 'MODEL_STATUS_URL\|PI_HOME\|PI_CONFIG\|MOUNT_PI_CONFIG' <<<"$control_compose" || fail 'control runner must not depend on Pi/model runtime'
 
-grep -q '^FROM node:24-bookworm-slim$' <<<"$control_dockerfile" || fail 'control runner must use slim Debian/glibc base'
+grep -q '^FROM debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91$' <<<"$control_dockerfile" || fail 'control runner must use a pinned slim Debian/glibc base'
 ! grep -qi 'alpine\|docker-ce\|docker-compose' <<<"$control_dockerfile" || fail 'control runner image must stay free of Alpine and Docker tooling'
-grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
-grep -q 'ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
+grep -q 'ACTIONS_RUNNER_VERSION=2.338.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
+grep -q 'ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
+grep -q 'NODE_VERSION=26.11.1' <<<"$control_dockerfile" || fail 'control runner Node version must be pinned'
+grep -q 'NPM_VERSION=12.2.0' <<<"$control_dockerfile" || fail 'control runner npm version must be pinned'
 grep -q 'ENV ACTIONS_RUNNER_BASELINE_VERSION=' <<<"$control_dockerfile" || fail 'control image must expose its verified runner baseline version'
+
+general_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker-general.Dockerfile)"
+pi_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker.Dockerfile)"
+for worker_dockerfile in "$general_worker_dockerfile" "$pi_worker_dockerfile"; do
+  grep -q '^ARG RUNNER_PLATFORM=linux/amd64' <<<"$worker_dockerfile" || fail 'worker images must default to the supported amd64 runner platform'
+  grep -Eq '^FROM --platform=\$\{RUNNER_PLATFORM\} [^@]+@sha256:[0-9a-f]{64}$' <<<"$worker_dockerfile" || fail 'worker images must use a public, pinned base image'
+  grep -q 'NODE_VERSION=26.11.1' <<<"$worker_dockerfile" || fail 'worker Node.js version must be pinned'
+  grep -q 'NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651' <<<"$worker_dockerfile" || fail 'worker Node.js archive checksum must be pinned'
+  grep -q 'NPM_VERSION=12.2.0' <<<"$worker_dockerfile" || fail 'worker npm version must be pinned'
+  grep -q 'ACTIONS_RUNNER_VERSION=2.338.0' <<<"$worker_dockerfile" || fail 'worker Actions Runner version must be pinned'
+  grep -q 'af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32' <<<"$worker_dockerfile" || fail 'worker Actions Runner archive checksum must be pinned'
+  ! grep -q 'n150/github-pi-runner' <<<"$worker_dockerfile" || fail 'worker build must not depend on an unpublished N150 base image'
+done
+grep -q '^FROM --platform=\${RUNNER_PLATFORM} debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91$' <<<"$general_worker_dockerfile" || fail 'general worker must use its pinned Debian base image'
+grep -q '^FROM --platform=\${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258$' <<<"$pi_worker_dockerfile" || fail 'Pi worker must use its pinned Python 3.12 base image'
+grep -q '^FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:' <<<"$general_worker_dockerfile" || fail 'general worker must use a digest-pinned Python 3.12 runtime'
+grep -q '"gh=${GH_CLI_VERSION}"' <<<"$general_worker_dockerfile" || fail 'general worker must include the pinned GitHub CLI'
+grep -q 'GH_CLI_KEYRING_SHA256=' <<<"$general_worker_dockerfile" || fail 'general worker must verify the official GitHub CLI package keyring'
+grep -q 'docker-ce-cli=${DOCKER_CLI_VERSION}' <<<"$general_worker_dockerfile" || fail 'general worker must include Docker CLI'
+grep -q 'docker-compose-plugin=${DOCKER_COMPOSE_VERSION}' <<<"$general_worker_dockerfile" || fail 'general worker must include Compose'
+grep -q 'docker-buildx-plugin' <<<"$general_worker_dockerfile" || fail 'general worker must include Buildx'
+grep -q 'DOCKER_CLI_VERSION=5:29.8.2-1~debian.12~bookworm' <<<"$general_worker_dockerfile" || fail 'general worker Docker CLI version must be pinned'
+grep -q 'DOCKER_COMPOSE_VERSION=5.6.0-1~debian.12~bookworm' <<<"$general_worker_dockerfile" || fail 'general worker Compose version must be pinned'
+grep -q 'GH_CLI_VERSION=2.102.0' <<<"$general_worker_dockerfile" || fail 'general worker GitHub CLI version must be pinned'
+grep -q 'groupadd --gid 983 hostdocker' <<<"$general_worker_dockerfile" || fail 'general worker socket group must preserve the host docker GID'
+grep -q 'PI_CODING_AGENT_VERSION=1.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current stable Pi runtime'
+grep -q 'PI_MCP_ADAPTER_VERSION=5.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current MCP adapter'
+grep -q 'PI_SUBAGENTS_VERSION=0.76.1' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current subagents extension'
+grep -q 'ORBIT_VERSION=0.138.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current Orbit version'
+grep -q 'LSP_MCP_SERVER_VERSION=1.1.26' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current LSP MCP server'
+grep -q 'BASEDPYRIGHT_VERSION=1.40.2' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current BasedPyright version'
+grep -q 'ln -sf /usr/local/bin/node' <<<"$pi_worker_dockerfile" || fail 'BasedPyright must use the pinned shared Node runtime'
+grep -q 'KOTLIN_LSP_VERSION=263.6379.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current Kotlin LSP version'
+grep -q '@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must install the pinned Pi runtime directly'
+grep -q 'npm:pi-subagents@${PI_SUBAGENTS_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must seed the pinned subagents extension'
+grep -Fq 'npm:pi-subagents@${subagentsVersion}' infra/github-runner-autoscaler/worker-entrypoint.sh || fail 'Pi worker entrypoint must pin subagents in writable job config'
+grep -q "npm', \['root', '-g'\]" infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs || fail 'LSP wrapper must resolve the npm global path for the public Node base'
+grep -q 'RUNNER_IMAGE:.*github-general-runner-ephemeral:0.87.10' infra/github-runner-autoscaler/compose.yaml || fail 'Compose must use the rebuilt general worker tag'
 grep -q '/opt/actions-runner-baseline' <<<"$control_dockerfile" || fail 'control image must keep baseline package outside the persistent runner root'
 grep -q 'cp -a /opt/actions-runner-baseline/. /home/runner/actions-runner/' <<<"$control_dockerfile" || fail 'new control volume must be seeded with the runner package'
 
@@ -249,13 +304,13 @@ LISTENER
 
 start_control_case() {
   local case_name="$1" sequence="$2" api_mode="$3" registration_mode="${4:-complete}" config_mode="${5:-success}"
-  local runtime_version="${6:-2.337.0}" retry_seconds="${7:-0}" update_delay_ms="${8:-20}"
+  local runtime_version="${6:-2.338.0}" retry_seconds="${7:-0}" update_delay_ms="${8:-20}"
   local case_dir="$control_harness/$case_name"
 
   mkdir -p "$case_dir/runner" "$case_dir/baseline" "$case_dir/bin"
   cp "$control_harness/basebin/gosu" "$case_dir/bin/gosu"
   write_fake_runtime "$case_dir/runner" "$runtime_version"
-  write_fake_runtime "$case_dir/baseline" "2.337.0"
+  write_fake_runtime "$case_dir/baseline" "2.338.0"
   : > "$case_dir/curl.log"
   : > "$case_dir/config.log"
   printf '0\n' > "$case_dir/listener-index"
@@ -304,7 +359,7 @@ CURL
     PATH="$case_dir/bin:$PATH" \
     RUNNER_HOME="$case_dir/runner" \
     RUNNER_BASELINE_HOME="$case_dir/baseline" \
-    ACTIONS_RUNNER_BASELINE_VERSION=2.337.0 \
+    ACTIONS_RUNNER_BASELINE_VERSION=2.338.0 \
     GH_ADMIN_TOKEN=test-token \
     GITHUB_REPOSITORY=example/repo \
     CONTROL_RETRY_SECONDS="$retry_seconds" \
@@ -390,7 +445,7 @@ grep -q 'incomplete control runner registration state' "$CASE_DIR/stderr" || fai
 [[ -s "$CASE_DIR/runner/.runner" && -s "$CASE_DIR/runner/.credentials" ]] || fail 'partial-start: registration was not rebuilt'
 
 # A failed first registration clears partial files before the retry sleep.
-start_control_case failed-registration wait healthy none fail 2.337.0 5
+start_control_case failed-registration wait healthy none fail 2.338.0 5
 wait_for_text "$CASE_DIR/stderr" 'registration failed status=9' || fail 'failed-registration: failure not observed'
 wait_for_registration_cleanup "$CASE_DIR/runner" || fail 'failed registration left partial local state'
 stop_control_case failed-registration
@@ -399,7 +454,7 @@ stop_control_case failed-registration
 # baseline without discarding persistent registration state.
 start_control_case baseline-upgrade 0 error complete success 2.100.0
 wait_control_exit baseline-upgrade
-grep -q 'upgrading persisted runner runtime 2.100.0 -> baseline 2.337.0' "$CASE_DIR/stderr" || fail 'baseline-upgrade: persisted runtime was not upgraded'
+grep -q 'upgrading persisted runner runtime 2.100.0 -> baseline 2.338.0' "$CASE_DIR/stderr" || fail 'baseline-upgrade: persisted runtime was not upgraded'
 [[ -s "$CASE_DIR/runner/.runner" && -s "$CASE_DIR/runner/.credentials" ]] || fail 'baseline-upgrade: registration state was lost'
 
 # Normal Docker stop SIGINTs the full listener/worker process group and does
@@ -426,7 +481,7 @@ wait_control_exit registration-stop
 
 # TERM while wait_for_update is active waits for the in-flight update child
 # instead of tearing the container down immediately.
-start_control_case update-shutdown 3,wait error complete success 2.337.0 0 300
+start_control_case update-shutdown 3,wait error complete success 2.338.0 0 300
 wait_for_text "$CASE_DIR/stderr" 'waiting for update completion' || fail 'update-shutdown: update wait not entered'
 kill -TERM "$control_pid"
 wait_control_exit update-shutdown
