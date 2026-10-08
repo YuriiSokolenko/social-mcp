@@ -5,7 +5,9 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 
-import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools } from '../scripts/pi-planner-evidence.mjs';
+import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools, plannerPlanAdmission } from '../scripts/pi-planner-evidence.mjs';
+import { rememberPlannerModelLimit } from '../scripts/pi-common/planner-request-budget.mjs';
+import { acceptedPlannerSubmission, preparedImplementationBlock } from '../scripts/pi-common/implementation-planner.mjs';
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
@@ -48,19 +50,29 @@ function stateFileFor(t, prefix = 'pi-planner-state') {
 
 function extensionHarness(t, { stateFile = stateFileFor(t), mockLog = true } = {}) {
   const handlers = new Map();
-  let activeTools = [...PLANNER_EVIDENCE_TOOLS];
+  let activeTools = [...PLANNER_EVIDENCE_TOOLS, 'begin_plan_submission'];
+  const registeredTools = new Map();
+  const model = { id: 'test-model', maxTokens: 2048, contextWindow: 32768 };
+  const models = [];
   let aborted = false;
   const messages = [];
   const logs = mockLog ? t.mock.method(console, 'log', () => {}) : null;
-  plannerEvidenceExtension({
+  const pi = {
+    registerTool: tool => registeredTools.set(tool.name, tool),
+    setModel: async next => { Object.assign(model, next); models.push(next.maxTokens); return true; },
     on: (event, fn) => handlers.set(event, fn),
     getActiveTools: () => activeTools,
     setActiveTools: value => { activeTools = [...value]; },
     sendUserMessage: async (message, options) => { messages.push({ message, options }); },
-  });
+  };
+  plannerEvidenceExtension(pi);
+  rememberPlannerModelLimit(pi, 32768);
   return {
     handlers,
     stateFile,
+    registeredTools,
+    model,
+    models,
     activeTools: () => activeTools,
     abortContext: { abort: () => { aborted = true; } },
     aborted: () => aborted,
@@ -117,7 +129,7 @@ Verification: run the focused sender tests.`;
 }
 
 test('planner surface remains strictly read-only while evidence admission has no numeric cap', () => {
-  assert.deepEqual(agentTools(), [...PLANNER_EVIDENCE_TOOLS]);
+  assert.deepEqual(agentTools(), [...PLANNER_EVIDENCE_TOOLS, 'begin_plan_submission', 'submit_plan']);
   const gate = createPlannerEvidenceGate();
   for (let index = 0; index < 12; index += 1) {
     const verdict = gate.admit(PLANNER_EVIDENCE_TOOLS[index % PLANNER_EVIDENCE_TOOLS.length]);
@@ -133,18 +145,17 @@ test('planner surface remains strictly read-only while evidence admission has no
   }
 });
 
-test('planner prompt and agent contract require plain text without a model-visible schema', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-prompt-'));
-  const issue = path.join(dir, '.issue.json');
-  fs.writeFileSync(issue, JSON.stringify({ title: 'Plan it', body: 'Use social_mcp.diagnostics.<module>.' }));
-  const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
+test('effective planner prompts use tool completion and no obsolete plain-final instructions', (t) => {
+  const { env } = fixture(t);
+  const task = plannerTask(env);
   const agent = agentSource();
-  assert.match(task, /ordinary plain-text or Markdown assistant response/i);
-  assert.match(task, /preserved verbatim.*opaque planText/i);
-  assert.match(agent, /ordinary nonempty plain-text or Markdown assistant response/i);
-  assert.match(agent, /no required JSON, XML, tool call, result schema, heading, field list, or Markdown template/i);
-  assert.doesNotMatch(task, /<plan|XML REPAIR|structured_output|canonical valid XML/i);
-  assert.doesNotMatch(agent, /<plan|XML finalization|Canonical valid XML|structured_output/i);
+  for (const prompt of [task, agent]) {
+    assert.match(prompt, /begin_plan_submission\(\)/);
+    assert.match(prompt, /submit_plan/);
+    assert.match(prompt, /4096/);
+    assert.match(prompt, /8192/);
+    assert.doesNotMatch(prompt, /return one ordinary plain-text|Do not call a result tool|Return only the final natural-language plan/);
+  }
 });
 
 test('planner target policy separates immutable resolved targets from convention fallbacks', () => {
@@ -291,9 +302,8 @@ test('alternating and slightly varied no-progress evidence cannot loop forever',
   await run('a3', 'src/a.py');
   await run('b3', 'src/b.py');
 
-  assert.equal(harness.aborted(), true);
+  assert.equal(harness.aborted(), false);
   const state = JSON.parse(fs.readFileSync(harness.stateFile, 'utf8'));
-  assert.equal(state.failureKind, 'semantic_no_progress');
   assert.equal(state.used, 6);
   assert.ok(harness.logs().some(line => line.includes('"kind":"evidence_streak"')));
 });
@@ -329,290 +339,151 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
   assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
 });
 
-test('multiple evidence facts queue one continuation before terminal text finalization', async (t) => {
-  const harness = extensionHarness(t);
-  let providerRequests = 0;
-  const providerRequest = async () => {
-    providerRequests += 1;
-    return harness.handlers.get('before_provider_request')({
-      payload: {
-        model: 'qwen',
-        tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
-        tool_choice: 'auto',
-      },
-    }, harness.abortContext);
-  };
-
-  await providerRequest();
-  for (let index = 0; index < 3; index += 1) {
-    const toolCallId = `parallel-evidence-${index}`;
-    await harness.handlers.get('tool_call')({
-      toolName: 'read',
-      toolCallId,
-      input: { path: `src/evidence-${index}.py` },
-    }, harness.abortContext);
-    await harness.handlers.get('tool_execution_end')({
-      toolName: 'read',
-      toolCallId,
-      isError: false,
-      result: { content: [{ type: 'text', text: `fact ${index}` }] },
-    }, harness.abortContext);
+// Production-equivalent event replay: real Planner extension handlers, actual tool contracts,
+// request-phase model budgets and sidecar; provider outputs are fixed/sanitized fixtures.
+async function plannerTurn(h, name, input = {}, { stopReason = 'toolUse', outputTokens = 100, inputTokens = 1000, extraCalls = [] } = {}) {
+  const id = `${name}-${Math.random().toString(36).slice(2)}`;
+  const content = [{ type: 'toolCall', name, id, arguments: input }, ...extraCalls];
+  await h.handlers.get('message_end')({
+    message: { role: 'assistant', stopReason, usage: { outputTokens, inputTokens }, content },
+  });
+  const ctx = { model: h.model, abort: () => {} };
+  const verdict = await h.handlers.get('tool_call')({ toolName: name, toolCallId: id, input }, ctx);
+  if (!verdict?.block) {
+    const tool = h.registeredTools.get(name);
+    if (tool) await tool.execute(id, input, undefined, undefined, { cwd: '/tmp' });
+    await h.handlers.get('tool_execution_end')({
+      toolName: name, toolCallId: id, isError: false, result: { content: [{ type: 'text', text: 'acknowledged' }] },
+    }, ctx);
   }
+  const continuation = await h.handlers.get('turn_end')({ entries: [] }, ctx);
+  return { verdict, continuation };
+}
 
-  assert.equal(harness.messages().length, 0, 'same-turn evidence must not enter Pi\'s steer queue');
-  const continuation = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
-  assert.equal(continuation.continue, true);
-  assert.equal(
-    continuation.entries.filter(entry => entry.type === 'custom_message' && entry.customType === 'planner-evidence-progress').length,
-    1,
-    'same-turn evidence coalesces to one lifecycle continuation',
-  );
-  if (continuation.continue) await providerRequest();
+function protocolState(h) { return JSON.parse(fs.readFileSync(h.stateFile, 'utf8')); }
 
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerText() }],
-    },
-  }, harness.abortContext);
-  const afterTerminal = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
-  if (afterTerminal?.continue) await providerRequest();
-
-  assert.equal(providerRequests, 2, 'terminal text cannot schedule an additional provider request');
-  assert.equal(afterTerminal, undefined);
-  assert.deepEqual(harness.activeTools(), []);
-  assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_FINALIZATION_TRANSITION') && line.includes('"source":"assistant_content"')));
+test('begin is not completion; only a subsequent complete submit_plan accepts exact Markdown >2048 tokens', async t => {
+  const h = extensionHarness(t);
+  const plan = '# Sender repair\n' + 'Inspect src/net.py, verify invariants and write focused tests. Ω \\" <foo> &\n'.repeat(145);
+  const research = h.handlers.get('before_provider_request')({ payload: {
+    tools: [...PLANNER_EVIDENCE_TOOLS, 'begin_plan_submission', 'submit_plan'].map(name => ({ type: 'function', function: { name } })),
+    max_tokens: 2048,
+  } });
+  assert.equal(research.tools.some(tool => tool.function.name === 'submit_plan'), false);
+  const first = await plannerTurn(h, 'begin_plan_submission');
+  assert.equal(first.verdict, undefined);
+  assert.equal(first.continuation.continue, true);
+  assert.equal(h.model.maxTokens, 4096);
+  assert.equal(protocolState(h).phase, 'submission_pending');
+  assert.throws(() => acceptedPlannerSubmission(protocolState(h), { result: { kind: 'text', text: 'ignored' } }), /never completed/);
+  assert.deepEqual(h.activeTools(), ['submit_plan']);
+  const second = h.handlers.get('before_provider_request')({ payload: {
+    tools: [...PLANNER_EVIDENCE_TOOLS, 'submit_plan'].map(name => ({ type: 'function', function: { name } })),
+    max_tokens: 4096,
+  } });
+  assert.deepEqual(second.tools.map(tool => tool.function.name), ['submit_plan']);
+  await plannerTurn(h, 'submit_plan', { planText: plan }, { outputTokens: 3000 });
+  const state = protocolState(h);
+  assert.equal(state.phase, 'submitted');
+  assert.equal(state.planText, plan);
+  assert.equal(state.submissionBudget, 4096);
+  assert.equal(acceptedPlannerSubmission(state, { result: { kind: 'text', text: '' } }), plan);
+  const block = preparedImplementationBlock({
+    version: 1, status: 'prepared', baseRef: 'origin/dev', workspaceRoot: '/tmp', freshBaseCommit: 'abc',
+    complexity: 'nontrivial', requiredMutationAnchors: [], largeMutation: false, reason: 'accepted', planText: plan,
+  });
+  assert.ok(block.includes('\\u003cfoo\\u003e'));
+  const match = block.match(/<untrusted_planner_handoff_json>\s*(\{[^\n]+\})/);
+  assert.equal(JSON.parse(match[1]).planText, plan);
 });
 
-test('terminal assistant text explicitly cancels a pending evidence continuation before another provider request', async (t) => {
-  const harness = extensionHarness(t);
-  let providerRequests = 0;
-  const providerRequest = async () => {
-    providerRequests += 1;
-    return harness.handlers.get('before_provider_request')({
-      payload: {
-        model: 'qwen',
-        tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
-        tool_choice: 'auto',
-      },
-    }, harness.abortContext);
-  };
-
-  await providerRequest();
-  await harness.handlers.get('tool_call')({
-    toolName: 'read',
-    toolCallId: 'pre-finalization-evidence',
-    input: { path: 'src/pre-finalization.py' },
-  }, harness.abortContext);
-  await harness.handlers.get('tool_execution_end')({
-    toolName: 'read',
-    toolCallId: 'pre-finalization-evidence',
-    isError: false,
-    result: { content: [{ type: 'text', text: 'grounded fact' }] },
-  }, harness.abortContext);
-
-  assert.ok(harness.logs().some(line =>
-    line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') && line.includes('"action":"queued"')
-  ));
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerText() }],
-    },
-  }, harness.abortContext);
-
-  assert.ok(harness.logs().some(line =>
-    line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') &&
-    line.includes('"action":"cancelled"') &&
-    line.includes('"source":"assistant_content"')
-  ));
-
-  const afterTerminal = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
-  if (afterTerminal?.continue) await providerRequest();
-
-  assert.equal(afterTerminal, undefined, 'the pre-finalization continuation is invalidated before turn_end');
-  assert.equal(providerRequests, 1, 'terminal text does not trigger another provider request');
-  assert.ok(!harness.logs().some(line =>
-    line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') && line.includes('"action":"delivered"')
-  ));
-  assert.deepEqual(harness.messages(), []);
-  assert.deepEqual(harness.activeTools(), []);
+test('early final prose produces one deterministic nudge then classified fallback', async t => {
+  const h = extensionHarness(t);
+  const ctx = { model: h.model, abort: () => {} };
+  for (let i = 0; i < 2; i++) {
+    await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'stop',
+      content: [{ type: 'text', text: 'I will finish using plain prose.' }] } });
+    const result = await h.handlers.get('turn_end')({ entries: [] }, ctx);
+    assert.equal(Boolean(result?.continue), i === 0);
+  }
+  assert.equal(protocolState(h).phase, 'failed');
+  assert.equal(protocolState(h).failureKind, 'planner_submission_not_started');
 });
 
-test('evidence completion cannot queue a progress steer after finalization starts', async (t) => {
-  const harness = extensionHarness(t);
-  await harness.handlers.get('tool_call')({
-    toolName: 'read',
-    toolCallId: 'late-evidence',
-    input: { path: 'src/late.py' },
-  }, harness.abortContext);
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerText() }],
-    },
-  }, harness.abortContext);
-  await harness.handlers.get('tool_execution_end')({
-    toolName: 'read',
-    toolCallId: 'late-evidence',
-    isError: false,
-    result: { content: [{ type: 'text', text: 'late fact' }] },
-  }, harness.abortContext);
-
-  const continuation = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
-  assert.equal(continuation, undefined);
-  assert.equal(harness.messages().length, 0);
-  assert.deepEqual(harness.activeTools(), []);
+test('truncated begin cannot switch phase or consume submission budget', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission', {}, { stopReason: 'length', outputTokens: 2048 });
+  assert.equal(protocolState(h).phase, 'researching');
+  assert.deepEqual(h.models, []);
 });
 
-test('assistant narration followed by a tool call keeps repository tools open', async (t) => {
-  const harness = extensionHarness(t);
-  assert.equal(harness.handlers.has('message_update'), false, 'streaming text must not trigger finalization');
-
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'toolUse',
-      content: [
-        { type: 'text', text: 'Let me inspect src/net.py first.' },
-        { type: 'toolCall', id: 'inspect-net', name: 'read', arguments: { path: 'src/net.py' } },
-      ],
-    },
-  }, harness.abortContext);
-
-  assert.deepEqual(harness.activeTools(), PLANNER_EVIDENCE_TOOLS);
-  assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_FINALIZATION_TRANSITION ')));
-
-  const admitted = await harness.handlers.get('tool_call')({
-    toolName: 'read',
-    toolCallId: 'inspect-net',
-    input: { path: 'src/net.py' },
-  }, harness.abortContext);
-  assert.equal(admitted, undefined);
-});
-
-test('completed assistant text closes repository tools at message end and strips provider tool fields', async (t) => {
-  const harness = extensionHarness(t);
-  await harness.handlers.get('message_end')({
-    message: {
-      role: 'assistant',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerText() }],
-    },
-  }, harness.abortContext);
-
-  assert.deepEqual(harness.activeTools(), []);
-  assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_FINALIZATION_TRANSITION') && line.includes('"source":"assistant_content"')));
-
-  const blocked = await harness.handlers.get('tool_call')({
-    toolName: 'read',
-    toolCallId: 'after-finalization',
-    input: { path: 'src/net.py' },
-  }, harness.abortContext);
+test('explicit length on parseable submit_plan requires one 8192-only retry', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  const incomplete = await plannerTurn(h, 'submit_plan', { planText: 'Partial src/net.py' }, { stopReason: 'length', outputTokens: 4096 });
+  assert.equal(incomplete.continuation.continue, true);
+  assert.equal(h.model.maxTokens, 8192);
+  assert.equal(protocolState(h).phase, 'submission_pending');
+  const blocked = await h.handlers.get('tool_call')({ toolName: 'read', toolCallId: 'late', input: { path: 'src/net.py' } });
   assert.equal(blocked.block, true);
-  assert.match(blocked.reason, /repository evidence is closed/i);
-
-  const request = await harness.handlers.get('before_provider_request')({
-    payload: {
-      model: 'qwen',
-      tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
-      tool_choice: 'auto',
-    },
-  }, harness.abortContext);
-  assert.equal('tools' in request, false);
-  assert.equal('tool_choice' in request, false);
-  assert.equal(request.model, 'qwen');
+  await plannerTurn(h, 'submit_plan', { planText: 'Update src/net.py and verify focused tests.' }, { outputTokens: 6000 });
+  assert.equal(protocolState(h).phase, 'submitted');
+  assert.equal(protocolState(h).submissionBudget, 8192);
+  assert.deepEqual(h.models, [4096, 8192]);
 });
 
-test('plain Planner final text is preserved verbatim with Markdown, Unicode, quotes, and angle brackets', async (t) => {
-  const { dir, env } = fixture(t);
-  const planText = ['## Plan — naïve Ω', '', '- Update `social_mcp.diagnostics.<module>` without escaping it.', '- Preserve "quoted values", <tag-like-text>, ampersands & Markdown **bold**.', '- Run the focused diagnostics tests.'].join('\n');
-  let calls = 0;
-  const logs = [];
-  t.mock.method(console, 'log', line => logs.push(String(line)));
-  const host = plannerHost({ cwd: dir, driveChild: async request => {
-    calls += 1;
-    assert.equal(request.result.kind, 'text');
-    assert.equal('schema' in request.result, false);
-    assert.doesNotMatch(request.task, /<plan|XML REPAIR|canonical XML/i);
-    return { status: 'completed', finishReason: 'stop', usage: { turns: 1, input: 20, output: 80 }, result: { kind: 'text', text: planText } };
-  }});
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(calls, 1);
-  assert.equal(prepared.status, 'prepared');
-  assert.equal(prepared.planText, planText);
-  assert.equal(prepared.complexity, 'nontrivial');
-  assert.deepEqual(prepared.requiredMutationAnchors, []);
-  assert.equal(prepared.largeMutation, false);
-  assert.ok(logs.some(line => line.startsWith('PI_PLANNER_FINAL_TEXT_ACCEPTED ')));
-  assert.ok(logs.some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
+test('malformed or missing submission tool args are never accepted', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  const bad = await plannerTurn(h, 'submit_plan', { planText: '[INSERT PLAN HERE]' });
+  assert.equal(bad.verdict.block, true);
+  assert.equal(protocolState(h).phase, 'submission_pending');
+  await plannerTurn(h, 'submit_plan', { planText: '<TODO: write plan>' });
+  assert.equal(protocolState(h).phase, 'failed');
+  assert.notEqual(protocolState(h).phase, 'submitted');
+  assert.deepEqual(h.models, [4096, 8192]);
 });
 
-test('successful Planner handoff has no harness character or byte cap', async (t) => {
-  const { dir, env } = fixture(t);
-  const planText = `# Plan\n${'x'.repeat(20000)}\nKeep \`social_mcp.diagnostics.<module>\` literal.`;
-  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', finishReason: 'stop', usage: { turns: 1, output: 1000 }, result: { kind: 'text', text: planText } }) });
-  t.mock.method(console, 'log', () => {});
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'prepared');
-  assert.equal(prepared.planText, planText);
-  assert.ok(Buffer.byteLength(prepared.planText, 'utf8') > 12000);
+test('second attempt fails closed when model output capability or context is insufficient', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  h.model.contextWindow = 10000;
+  await plannerTurn(h, 'submit_plan', { planText: 'partial' }, { stopReason: 'length', inputTokens: 4000 });
+  assert.equal(protocolState(h).phase, 'failed');
+  assert.equal(protocolState(h).failureKind, 'planner_submission_context_exhausted');
 });
 
-test('empty Planner final text fails closed without a format-repair request', async (t) => {
-  const { dir, env } = fixture(t); let calls = 0;
-  const host = plannerHost({ cwd: dir, driveChild: async () => { calls += 1; return { status: 'completed', finishReason: 'stop', usage: { turns: 1, output: 1 }, result: { kind: 'text', text: '   \n\t' } }; } });
-  t.mock.method(console, 'log', () => {});
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(calls, 1); assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_empty_final');
+test('admission is minimal: valid issue-specific code and orchestration blockers, no rigid schema', () => {
+  assert.equal(plannerPlanAdmission('Change src/net.py, run tests.', ['read src/net.py: facts']).ok, true);
+  assert.equal(plannerPlanAdmission('Cannot complete GitHub PR orchestration: required github tool not exposed.', [], { title: 'Audit PRs' }).ok, true);
+  assert.equal(plannerPlanAdmission('Do changes.', ['read src/net.py: facts']).ok, false);
+  assert.equal(plannerPlanAdmission('  ', []).ok, false);
+  assert.equal(plannerPlanAdmission('[INSERT PLAN HERE]', []).ok, false);
+  assert.equal(plannerPlanAdmission('Document TODO in src/net.py; verify tests', []).ok, true);
 });
 
-test('explicit provider length termination is rejected as truncated with one Planner request', async (t) => {
-  const { dir, env } = fixture(t); let calls = 0;
-  const host = plannerHost({ cwd: dir, driveChild: async () => { calls += 1; return { status: 'completed', finishReason: 'length', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: 'partial plan' } }; } });
-  t.mock.method(console, 'log', () => {});
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(calls, 1); assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_truncated_final');
-});
-
-test('completed envelope at the token ceiling without a stop reason is conservatively rejected', async (t) => {
-  const { dir, env } = fixture(t);
-  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: 'possibly truncated plan' } }) });
-  t.mock.method(console, 'log', () => {});
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_truncated_final');
-});
-
-test('an explicit successful stop remains authoritative even when usage equals the transport ceiling', async (t) => {
-  const { dir, env } = fixture(t); const planText = 'Complete plan at the provider accounting boundary.';
-  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', stopReason: 'stop', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: planText } }) });
-  t.mock.method(console, 'log', () => {});
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'prepared'); assert.equal(prepared.planText, planText);
-});
-
-test('explicit non-success termination fails closed as an incomplete final', async (t) => {
-  const { dir, env } = fixture(t);
-  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', finish_reason: 'tool_calls', usage: { turns: 1, output: 20 }, result: { kind: 'text', text: 'not actually final' } }) });
-  t.mock.method(console, 'log', () => {});
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_incomplete_final');
-});
-
-test('planner observability uses plain-text handoff fields and has no obsolete XML telemetry', () => {
-  const bootstrap = fs.readFileSync('scripts/pi-implementer-bootstrap.mjs', 'utf8');
-  const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const planner = fs.readFileSync('scripts/pi-common/implementation-planner.mjs', 'utf8');
-  const combined = `${bootstrap}\n${runtime}\n${planner}`;
-  assert.match(combined, /plannerEvidenceActions/);
-  assert.match(combined, /planTextBytes|planText/);
-  assert.match(combined, /PI_PLANNER_FINAL_TEXT_ACCEPTED/);
-  assert.doesNotMatch(combined, /plannerFinalizationAttempts|plannerXmlRepairNeeded|PI_PLANNER_XML_|planner_xml_finalization_failed/);
-  assert.doesNotMatch(combined, /plannerEvidenceCap|evidenceCap:/);
+test('sanitized #607-like 12-response replay can preserve >2048-token plan without re-research', async t => {
+  const h = extensionHarness(t);
+  for (let i = 0; i < 20; i++) {
+    const id = `evidence-${i}`;
+    await h.handlers.get('tool_call')({ toolName: 'read', toolCallId: id, input: { path: `src/module-${i}.py` } });
+    await h.handlers.get('tool_execution_end')({ toolCallId: id, isError: false,
+      result: { content: [{ type: 'text', text: `verified src/module-${i}.py target` }] } });
+    if (i % 2 === 0) {
+      await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'toolUse',
+        content: [{ type: 'toolCall', id, name: 'read' }] } });
+      await h.handlers.get('turn_end')({ entries: [] }, { model: h.model });
+    }
+  }
+  assert.equal(protocolState(h).used, 20);
+  await plannerTurn(h, 'begin_plan_submission');
+  const plan = 'Implement src/module-0.py and verify focused tests.\n' + 'Preserve verified constraints. '.repeat(550);
+  await plannerTurn(h, 'submit_plan', { planText: plan }, { outputTokens: 3200 });
+  assert.equal(protocolState(h).planText, plan);
+  assert.equal(h.model.maxTokens, 4096);
+  assert.equal(protocolState(h).used, 20);
+  assert.equal(protocolState(h).budgetHistory.some(item => item.phase === 'submission_pending'), false,
+    'fixture has no fabricated provider request: budget checked in dedicated request test');
 });
 
 test('repo_search and planner_code_graph remain the only custom read-only planner tools', async () => {
