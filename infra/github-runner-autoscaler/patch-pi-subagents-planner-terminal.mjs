@@ -41,7 +41,7 @@ export function patchPiSubagentsSource(source) {
   const helperAnchor = 'const artifactOutputByResult = new WeakMap();';
   const decisionAnchor = 'const missingOutput = !finalText?.trim() && !validatedStructuredOutput;';
   const conditionAnchor = 'if ((missingOutput || terminalEmptyAfterUsefulWork) && (!errInfo.hasError || hasEmptyTerminalAssistantResponse(messages))) {';
-  const errorConditionAnchor = '} else if (errInfo.hasError) {';
+  const errorConditionAnchor = 'else if (errInfo.hasError) {';
   const ensureOnce = (text, fragment) => {
     if (text.split(fragment).length !== 2) throw new Error('pi-subagents 0.76.1 source drift: ' + fragment);
   };
@@ -79,7 +79,7 @@ export function patchPiSubagentsSource(source) {
     // An earlier recoverable evidence-tool failure must not override a verified
     // successful terminal submission. Without the exact receipt, preserve the
     // original upstream hidden-error classification.
-    .replace(errorConditionAnchor, () => '} else if (!acceptedTerminalPlan && errInfo.hasError) {');
+    .replace(errorConditionAnchor, () => 'else if (!acceptedTerminalPlan && errInfo.hasError) {');
 }
 
 function main() {
