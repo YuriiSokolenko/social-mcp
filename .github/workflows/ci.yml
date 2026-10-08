@@ -142,6 +142,7 @@ jobs:
             test "$(python --version)" = "$(python3 --version)"
             python --version
             python3 -m venv /tmp/pi-python-alias-smoke
+            sqlite3 --version
             orbit version
             ast-grep --version
             basedpyright --version
