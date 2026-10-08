@@ -219,7 +219,19 @@ test('automation mode transitions run on the always-on control lane without a mo
   assert.match(workflow, /PI_CONTROL_TOKEN/);
   const generalWatch = compose.match(/GENERAL_WORKFLOW_FILES:-([^}]+)/)?.[1]?.split(',') ?? [];
   assert.deepEqual(generalWatch, ['ci.yml', 'pi-auto-merge.yml', 'pi-reconcile.yml', 'pi-usage.yml']);
-  assert.ok(!generalWatch.includes('pi-pr-review.yml'));
+
+  // A copied host .env overrides Compose defaults: keep the documented host
+  // example in sync and reject dead or no-longer-general workflow entries.
+  const hostExample = fs.readFileSync('infra/github-runner-autoscaler/.env.example', 'utf8');
+  const explicitWatch = hostExample.match(/^GENERAL_WORKFLOW_FILES=(.*)$/m)?.[1]?.split(',') ?? [];
+  assert.deepEqual(explicitWatch, generalWatch, '.env.example must match Compose general-pool defaults');
+  for (const name of explicitWatch) {
+    const path = `.github/workflows/${name}`;
+    assert.ok(fs.existsSync(path), `general watcher references nonexistent workflow ${name}`);
+    const workflow = fs.readFileSync(path, 'utf8');
+    assert.match(workflow, /runs-on: \\[self-hosted, linux, x64, n150, general\\]/,
+      `general watcher references a workflow without a general-pool job: ${name}`);
+  }
 });
 
 test('usage collector checks out trusted dev without persisting its write token', () => {
