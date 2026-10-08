@@ -286,6 +286,10 @@ export function plannerProviderBudgetEvidence(payload, expected) {
 }
 
 export default function (pi) {
+  // Capture this child lifecycle's state identity exactly once. Parallel Planner
+  // extension instances must never consult a later process.env value for sidecar writes.
+  const stateEnv = { [PLANNER_EVIDENCE_STATE_FILE_ENV]: process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] };
+  const issueContextFile = process.env.PI_ISSUE_CONTEXT;
   registerPlannerEvidenceTools(pi);
   pi.registerTool?.({
     name: 'begin_plan_submission',
@@ -323,12 +327,12 @@ export default function (pi) {
   function setPhase(next, metadata = {}) {
     const prior = phase;
     phase = next;
-    updatePlannerProtocolState({ phase, submissionBudget: budget, budgetHistory, ...metadata });
+    updatePlannerProtocolState({ phase, submissionBudget: budget, budgetHistory, ...metadata }, stateEnv);
     console.log(`PI_PLANNER_PHASE ${JSON.stringify({ from: prior, to: next, budget, ...('failureKind' in metadata ? { failureKind: metadata.failureKind } : {}) })}`);
   }
   function fail(failureKind, reason, ctx) {
     const sanitized = sanitizeDiagnosticText(reason, 300);
-    recordEvidenceFailure({ failureKind, diagnostic: sanitized });
+    recordEvidenceFailure({ failureKind, diagnostic: sanitized, env: stateEnv });
     setPhase('failed', { failureKind });
     console.warn(`PI_PLANNER_SUBMISSION_REJECTED ${JSON.stringify({ failureKind, reason: sanitized, budget })}`);
     ctx?.abort?.();
@@ -358,8 +362,8 @@ export default function (pi) {
     return true;
   }
 
-  recordEvidenceState({ used: 0 });
-  updatePlannerProtocolState({ phase, submissionBudget: budget, budgetHistory });
+  recordEvidenceState({ used: 0 }, { env: stateEnv });
+  updatePlannerProtocolState({ phase, submissionBudget: budget, budgetHistory }, stateEnv);
   console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'start' })}`);
   pi.on('before_provider_request', event => {
     const payload = event?.payload;
@@ -377,7 +381,7 @@ export default function (pi) {
       fields: providerBudgetEvidence.fields, verified: providerBudgetEvidence.verified,
       reason: providerBudgetEvidence.reason,
     });
-    updatePlannerProtocolState({ budgetHistory, submissionBudget: budget });
+    updatePlannerProtocolState({ budgetHistory, submissionBudget: budget }, stateEnv);
     console.log(`PI_PLANNER_PROVIDER_REQUEST ${JSON.stringify({
       phase, requestedBudget: budget, effectiveBudget: providerBudgetEvidence.effective,
       providerFields: providerBudgetEvidence.fields, budgetVerified: providerBudgetEvidence.verified,
@@ -402,7 +406,7 @@ export default function (pi) {
     if (event.toolName === 'submit_plan') {
       if (phase !== 'submission_pending' || control) return { block: true, reason: 'submit_plan is allowed once in submission_pending only.' };
       const decision = plannerPlanAdmission(event.input?.planText, [...knownFacts], (() => {
-        try { return JSON.parse(fs.readFileSync(process.env.PI_ISSUE_CONTEXT, 'utf8')); } catch { return null; }
+        try { return JSON.parse(fs.readFileSync(issueContextFile, 'utf8')); } catch { return null; }
       })());
       if (!decision.ok) {
         control = { kind: 'invalid', failureKind: decision.failureKind };
@@ -423,7 +427,7 @@ export default function (pi) {
     }
     const admission = gate.admit(event.toolName);
     if (admission.allowed) {
-      recordEvidenceState(admission, { toolName: event.toolName });
+      recordEvidenceState(admission, { toolName: event.toolName, env: stateEnv });
       if (event.toolCallId) pendingEvidence.set(event.toolCallId, {
         toolName: event.toolName, input: structuredClone(event.input ?? {}), admission, signature,
       });
@@ -466,7 +470,7 @@ export default function (pi) {
     if (progress) {
       consecutiveNoProgressEvidence = 0;
       knownFacts.add(fact);
-      recordEvidenceState(pending.admission, { fact, toolName: pending.toolName });
+      recordEvidenceState(pending.admission, { fact, toolName: pending.toolName, env: stateEnv });
       console.log(`PI_PLANNER_EVIDENCE_FACT ${JSON.stringify({ tool: pending.toolName, fact })}`);
       console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'progress' })}`);
       if (phase === 'researching') evidenceProgressContinuationPending = true;
