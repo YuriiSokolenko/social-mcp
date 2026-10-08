@@ -151,7 +151,7 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 
 ```bash
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.9 .
-docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r1 .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.7 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.2 .
@@ -166,7 +166,7 @@ pins Python `3.12.15`, GitHub CLI `2.102.0`, Docker CLI `29.8.2`, Buildx
 not use locally built N150 images as build stages, so BuildKit can resolve
 every base independently in a clean builder. The manager and general worker
 retry a failed Docker daemon check once after five seconds before quarantining
-the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe`
+the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe-r1`
 pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit `@gitlab/orbit@0.138.0`,
 `pi-mcp-adapter@5.1.0`, `pi-subagents@0.76.1`, `mini-swe-agent==2.4.6`,
 `lsp-mcp-server@1.1.26`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`,
@@ -190,7 +190,8 @@ the package. The adapter passed its type checks and regression suite against
 Pi `1.1.0` with strict peer resolution. The experimental `mini-swe`
 Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded
 local model endpoint; Pi remains the default backend. The Pi and general worker
-image tags are `1.1.0-mini-swe` and `0.87.10`. `run_check` tooling remains in
+image tags are `1.1.0-mini-swe-r1` and `0.87.10`. Pi itself remains version
+`1.1.0`; `r1` records the image-only Python alias fix. `run_check` tooling remains in
 the separate `0.1.2` sandbox image. System-package changes must use a new image
 tag rather than silently reusing an already-built local tag. The sandbox
 image independently contains Python 3.12, the repository's pinned Ruff and

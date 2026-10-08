@@ -139,6 +139,9 @@ jobs:
             test "$(node --version)" = v26.11.1
             test "$(npm --version)" = 12.2.0
             test "$(pi --version)" = "1.1.0"
+            test "$(python --version)" = "$(python3 --version)"
+            python --version
+            python3 -m venv /tmp/pi-python-alias-smoke
             orbit version
             ast-grep --version
             basedpyright --version
