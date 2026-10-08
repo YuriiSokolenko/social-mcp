@@ -139,7 +139,7 @@ jobs:
             test "$(node --version)" = v26.11.1
             test "$(npm --version)" = 12.2.0
             test "$(pi --version)" = "1.1.0"
-            python -c 'import sys; assert sys.version_info >= (3, 12)'
+            python -c "import sys; assert sys.version_info >= (3, 12)"
             python --version
             python -m venv /tmp/pi-python-alias-smoke
             sqlite3 --version
