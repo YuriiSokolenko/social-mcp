@@ -265,9 +265,13 @@ else
   die "Zoekt updater missing at $ZOEKT_ROOT/update-index.sh"
 fi
 
+# Resolve the control runner ID through Compose rather than relying on
+# a container name, then reuse that ID for health and image verification.
+CONTROL_ID="$(compose ps -q control-runner)"
+[[ -n "$CONTROL_ID" ]] || die 'could not identify control runner container after restart'
 for service in pi-runner-manager general-runner-manager control-runner; do
   if [[ "$service" == control-runner ]]; then
-    service_id="$(compose ps -q control-runner)"
+    service_id="$CONTROL_ID"
   else
     service_id="$service"
   fi
