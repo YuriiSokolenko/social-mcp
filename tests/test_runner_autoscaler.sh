@@ -86,12 +86,12 @@ grep -q 'GH_CLI_VERSION=2.102.0' <<<"$general_worker_dockerfile" || fail 'genera
 grep -q 'groupadd --gid 983 hostdocker' <<<"$general_worker_dockerfile" || fail 'general worker socket group must preserve the host docker GID'
 grep -q 'PI_CODING_AGENT_VERSION=1.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current stable Pi runtime'
 grep -q 'PI_MCP_ADAPTER_VERSION=5.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current MCP adapter'
-grep -q '^COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /usr/local/lib/patch-pi-mcp-adapter.mjs$' <<<"$pi_worker_dockerfile" \
-  || fail 'MCP adapter patch helper must live in a runner-readable system path'
-grep -q 'node /usr/local/lib/patch-pi-mcp-adapter.mjs' <<<"$pi_worker_dockerfile" \
-  || fail 'Pi worker must invoke the patch helper from its readable path'
-! grep -q '/tmp/patch-pi-mcp-adapter.mjs' <<<"$pi_worker_dockerfile" \
-  || fail 'Pi worker must not invoke a root-owned helper from /tmp as runner'
+grep -q '^COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /home/runner/build-tools/patch-pi-mcp-adapter.mjs$' <<<"$pi_worker_dockerfile" \
+  || fail 'MCP adapter patch helper must be owned by the runner in its home directory'
+grep -q 'node /home/runner/build-tools/patch-pi-mcp-adapter.mjs' <<<"$pi_worker_dockerfile" \
+  || fail 'Pi worker must invoke the patch helper from the runner-owned path'
+grep -q 'install -d -o runner -g runner .* /home/runner/build-tools ' <<<"$pi_worker_dockerfile" \
+  || fail 'runner build-tools directory must be created with runner ownership'
 grep -q 'MCP_SEARXNG_VERSION=2.5.1' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the required SearXNG MCP server'
 grep -q 'mcp-searxng@${MCP_SEARXNG_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker image must install the pinned SearXNG MCP executable'
 ! grep -q '@gitlab/orbit@${ORBIT_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must use the GNU Orbit binary instead of the musl npm package'
