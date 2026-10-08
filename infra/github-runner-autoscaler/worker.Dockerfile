@@ -98,6 +98,7 @@ RUN apt-get update \
     && mini --help >/dev/null
 
 COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /home/runner/build-tools/patch-pi-mcp-adapter.mjs
+COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs /home/runner/build-tools/patch-pi-subagents-planner-terminal.mjs
 
 USER runner
 ENV HOME=/home/runner \
@@ -107,11 +108,12 @@ ENV HOME=/home/runner \
 RUN pi install --no-approve "npm:pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
     && pi install --no-approve "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
     && node /home/runner/build-tools/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
+    && node /home/runner/build-tools/patch-pi-subagents-planner-terminal.mjs /home/runner/.pi/agent/npm/node_modules/pi-subagents \
     && mkdir -p /opt/pi-package-seed \
     && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/
 USER root
 RUN chmod -R a+rX /opt/pi-package-seed \
-    && rm /home/runner/build-tools/patch-pi-mcp-adapter.mjs
+    && rm /home/runner/build-tools/patch-pi-mcp-adapter.mjs /home/runner/build-tools/patch-pi-subagents-planner-terminal.mjs
 
 USER runner
 WORKDIR /home/runner/actions-runner
