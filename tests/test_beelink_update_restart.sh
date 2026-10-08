@@ -25,6 +25,9 @@ fi
 grep -q 'active/queued Actions work' "$SCRIPT" || fail 'busy-work guard must fail closed'
 grep -q 'social-mcp.pi-runner=ephemeral' "$SCRIPT" || fail 'only labeled project ephemeral workers may be stopped'
 grep -q -- '--pull never' "$SCRIPT" || fail 'Beszel must not pull mutable external images during this restart'
+grep -Fq -- '--project-name "$RUNNER_COMPOSE_PROJECT"' "$SCRIPT" || fail 'runner Compose must reuse the active deployment project name'
+grep -Fq -- '--project-name "$ZOEKT_COMPOSE_PROJECT"' "$SCRIPT" || fail 'Zoekt Compose must reuse its active deployment project name'
+grep -q 'runner containers do not share one identifiable Compose project' "$SCRIPT" || fail 'runner project identity must be validated before recreation'
 grep -q 'docker inspect pi-runner-manager' "$SCRIPT" || fail 'GitHub API checks must use the manager credential when gh is unavailable'
 if grep -Eq 'for cmd .*\bgh\b|gh auth status|gh run list' "$SCRIPT"; then
   fail 'host GitHub CLI must not be required'

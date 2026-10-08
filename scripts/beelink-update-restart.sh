@@ -11,6 +11,7 @@ REPORT_DIR="${BEELINK_REPORT_DIR:-/var/log/beelink-update-restart}"
 FORCE_BUSY=0 DRY_RUN=0 ASSUME_YES=0
 ORIGINAL_USER="${SUDO_USER:-}"
 STAGE="" REPORT="" PLAN=""
+RUNNER_COMPOSE_PROJECT="" ZOEKT_COMPOSE_PROJECT=""
 REPO_SLUG="YuriiSokolenko/social-mcp"
 
 usage() {
@@ -41,8 +42,8 @@ run() {
   "$@"
 }
 as_user() { runuser -u "$ORIGINAL_USER" -- "$@"; }
-compose() { docker compose --project-directory "$STAGE" --env-file "$STAGE/$AUTOSCALER_REL/.env" --env-file "$STAGE/$AUTOSCALER_REL/latest-images.env" -f "$STAGE/$AUTOSCALER_REL/compose.yaml" "$@"; }
-zoekt_compose() { docker compose --project-directory "$STAGE" -f "$STAGE/infra/zoekt/compose.yaml" "$@"; }
+compose() { docker compose --project-name "$RUNNER_COMPOSE_PROJECT" --project-directory "$STAGE" --env-file "$STAGE/$AUTOSCALER_REL/.env" --env-file "$STAGE/$AUTOSCALER_REL/latest-images.env" -f "$STAGE/$AUTOSCALER_REL/compose.yaml" "$@"; }
+zoekt_compose() { docker compose --project-name "$ZOEKT_COMPOSE_PROJECT" --project-directory "$STAGE" -f "$STAGE/infra/zoekt/compose.yaml" "$@"; }
 beszel_compose() { docker compose --project-directory "$BESZEL_ROOT" -f "$BESZEL_ROOT/docker-compose.yml" "$@"; }
 
 while (($#)); do
@@ -114,6 +115,18 @@ EPHEMERAL_CONTAINERS="$(docker ps -a --filter label=social-mcp.pi-runner=ephemer
 [[ -n "$EPHEMERAL_CONTAINERS" ]] && CONTAINERS+=$'\n'"$EPHEMERAL_CONTAINERS"
 [[ -n "$CONTAINERS" ]] || CONTAINERS='No named N150 services detected by repository service names.'
 
+# Compose normally derives its project name from the checkout directory. The
+# updater builds from a uniquely named staging clone, so using that default
+# would create a second project and collide with fixed container_name values.
+# Reuse the live projects' recorded identity instead, and fail closed if the
+# related runner services do not agree on one project.
+RUNNER_COMPOSE_PROJECT="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' pi-runner-manager 2>/dev/null || true)"
+CONTROL_COMPOSE_PROJECT="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' n150-control 2>/dev/null || true)"
+GENERAL_COMPOSE_PROJECT="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' general-runner-manager 2>/dev/null || true)"
+[[ -n "$RUNNER_COMPOSE_PROJECT" && "$RUNNER_COMPOSE_PROJECT" == "$CONTROL_COMPOSE_PROJECT" && "$RUNNER_COMPOSE_PROJECT" == "$GENERAL_COMPOSE_PROJECT" ]] || die 'runner containers do not share one identifiable Compose project; refusing conflicting recreation'
+ZOEKT_COMPOSE_PROJECT="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' social-mcp-zoekt 2>/dev/null || true)"
+[[ -n "$ZOEKT_COMPOSE_PROJECT" ]] || die 'Zoekt container has no identifiable Compose project; refusing conflicting recreation'
+
 # Beszel is external to this Git repository, but is included only when its live
 # Compose metadata, expected image names, and persistent host bind mounts match
 # the known deployment. Never print its Compose config or environment values.
@@ -157,6 +170,7 @@ BUSY="$(jq '[.runners[] | select(.busy == true)] | length' <<<"$RUNNERS_JSON")"
 unset RUNNERS_JSON RUNS_JSON GH_TOKEN
 
 PLAN="Repository $REPO_DIR ($BRANCH @ ${CURRENT_COMMIT:0:12}, dirty paths: $DIRTY); target origin/dev. Build manager, Pi worker, general worker, control runner, and run-check sandbox before stopping the documented managers, control runner, labeled ephemeral workers, and Zoekt. Keep all named volumes. Recreate those services and reindex Zoekt."
+PLAN+=" Reuse existing Compose projects: runners=$RUNNER_COMPOSE_PROJECT, Zoekt=$ZOEKT_COMPOSE_PROJECT."
 if (( BESZEL_SAFE )); then PLAN+=" Beszel and Beszel Agent are safely identified; recreate them from their existing local images without pulling and preserve their host data directories."; else PLAN+=" Beszel was not safely identifiable and will be left untouched."; fi
 printf 'Beelink N150 update plan\n%s\n\nCurrent named containers:\n%s\nDocker images in n150 namespace: %s\nGitHub active/queued runs: %s / %s busy self-hosted runners.\n' "$PLAN" "$CONTAINERS" "$DISK_IMAGES" "$ACTIVE" "$BUSY"
 log "preflight current=$CURRENT_COMMIT branch=$BRANCH dirty_paths=$DIRTY n150_images=$DISK_IMAGES active_runs=$ACTIVE queued_runs=$QUEUED busy_runners=$BUSY"
