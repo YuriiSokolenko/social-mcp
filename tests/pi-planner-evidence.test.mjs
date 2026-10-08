@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 
-import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools, plannerPlanAdmission } from '../scripts/pi-planner-evidence.mjs';
+import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools, plannerPlanAdmission, plannerProviderBudgetEvidence } from '../scripts/pi-planner-evidence.mjs';
 import { rememberPlannerModelLimit } from '../scripts/pi-common/planner-request-budget.mjs';
 import { acceptedPlannerSubmission, preparedImplementationBlock } from '../scripts/pi-common/implementation-planner.mjs';
 import {
@@ -340,7 +340,17 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
 
 // Production-equivalent event replay: real Planner extension handlers, actual tool contracts,
 // request-phase model budgets and sidecar; provider outputs are fixed/sanitized fixtures.
-async function plannerTurn(h, name, input = {}, { stopReason = 'toolUse', outputTokens = 100, inputTokens = 1000, extraCalls = [] } = {}) {
+async function plannerTurn(h, name, input = {}, {
+  stopReason = 'toolUse', outputTokens = 100, inputTokens = 1000, extraCalls = [],
+  providerPayload = null,
+} = {}) {
+  // The mock provider must exercise the real serialization boundary on EVERY turn.
+  const actualRequest = providerPayload ?? { max_completion_tokens: h.model.maxTokens };
+  h.handlers.get('before_provider_request')({ payload: {
+    tools: [...PLANNER_EVIDENCE_TOOLS, 'begin_plan_submission', 'submit_plan']
+      .map(tool => ({ type: 'function', function: { name: tool } })),
+    ...actualRequest,
+  } });
   const id = `${name}-${Math.random().toString(36).slice(2)}`;
   const content = [{ type: 'toolCall', name, id, arguments: input }, ...extraCalls];
   await h.handlers.get('message_end')({
@@ -436,11 +446,9 @@ test('malformed or missing submission tool args are never accepted', async t => 
   await plannerTurn(h, 'begin_plan_submission');
   const bad = await plannerTurn(h, 'submit_plan', { planText: '[INSERT PLAN HERE]' });
   assert.equal(bad.verdict.block, true);
-  assert.equal(protocolState(h).phase, 'submission_pending');
-  await plannerTurn(h, 'submit_plan', { planText: '<TODO: write plan>' });
   assert.equal(protocolState(h).phase, 'failed');
-  assert.notEqual(protocolState(h).phase, 'submitted');
-  assert.deepEqual(h.models, [4096, 8192]);
+  assert.equal(protocolState(h).failureKind, 'planner_submission_placeholder');
+  assert.deepEqual(h.models, [4096], 'complete invalid plans must not consume transport recovery');
 });
 
 test('second attempt fails closed when model output capability or context is insufficient', async t => {
@@ -459,6 +467,86 @@ test('admission is minimal: valid issue-specific code and orchestration blockers
   assert.equal(plannerPlanAdmission('  ', []).ok, false);
   assert.equal(plannerPlanAdmission('[INSERT PLAN HERE]', []).ok, false);
   assert.equal(plannerPlanAdmission('Document TODO in src/net.py; verify tests', []).ok, true);
+});
+
+test('late verified target is accepted; generic blocked/cannot cannot bypass missing targets', () => {
+  const facts = Array.from({ length: 20 }, (_, i) => 'read docs/module-' + i + '.md: verified');
+  assert.equal(plannerPlanAdmission('Update docs/module-19.md and run focused checks.', facts).ok, true);
+  assert.equal(plannerPlanAdmission('Cannot assume the server is blocked; update unrelated file.', facts).failureKind,
+    'planner_submission_missing_verified_target');
+  assert.equal(plannerPlanAdmission('Blocked by missing GitHub API permission to update the PR.', facts).ok, true);
+  assert.equal(plannerPlanAdmission('Update package.json and run the tests.', [], { title: 'Update package.json' }).ok, true);
+  assert.equal(plannerPlanAdmission('Update unrelated file.', [], { title: 'Update package.json' }).ok, false);
+  assert.equal(plannerPlanAdmission('Run changes.', [], { title: 'Audit deployment orchestration' }).ok, false);
+  assert.equal(plannerPlanAdmission('Cannot access GitHub PR API for deployment orchestration.', [], { title: 'Audit deployment orchestration' }).ok, true);
+});
+
+test('provider boundary recognizes real budget fields and never treats missing as verified', () => {
+  for (const payload of [
+    { max_completion_tokens: 4096 }, { max_output_tokens: 4096 }, { max_tokens: 4096 },
+    { generationConfig: { maxOutputTokens: 4096 } },
+    { generation_config: { max_output_tokens: 4096 } },
+  ]) {
+    assert.equal(plannerProviderBudgetEvidence(payload, 4096).verified, true);
+  }
+  assert.equal(plannerProviderBudgetEvidence({}, 4096).effective, null);
+  assert.equal(plannerProviderBudgetEvidence({}, 4096).verified, false);
+  assert.equal(plannerProviderBudgetEvidence({ max_tokens: 2048 }, 4096).verified, false);
+  assert.equal(plannerProviderBudgetEvidence({ max_tokens: 4096, max_completion_tokens: 8192 }, 4096).verified, false);
+  assert.equal(plannerProviderBudgetEvidence({ max_tokens: '4096' }, 4096).verified, false);
+});
+
+test('serialized provider budget mismatch/unverified fails closed without consuming retry', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  await plannerTurn(h, 'submit_plan', { planText: 'Update src/net.py and verify.' },
+    { providerPayload: {} });
+  assert.equal(protocolState(h).phase, 'failed');
+  assert.equal(protocolState(h).failureKind, 'planner_submission_budget_unavailable');
+  assert.deepEqual(h.models, [4096]);
+  const request = protocolState(h).budgetHistory.at(-1);
+  assert.equal(request.effective, null);
+  assert.equal(request.verified, false);
+  assert.equal(request.reason, 'provider_budget_unverified');
+});
+
+test('an incomplete JSON-style tool argument is retryable once; complete bad plan is not', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  await plannerTurn(h, 'submit_plan', {});
+  assert.deepEqual(h.models, [4096, 8192]);
+  await plannerTurn(h, 'submit_plan', { planText: '[INSERT PLAN HERE]' });
+  assert.equal(protocolState(h).phase, 'failed');
+  assert.equal(protocolState(h).failureKind, 'planner_submission_placeholder');
+  assert.notEqual(protocolState(h).phase, 'submitted');
+});
+
+test('one malformed provider turn cannot complete a duplicate submit_plan', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  const out = await plannerTurn(h, 'submit_plan', { planText: 'Update src/net.py and test.' }, {
+    extraCalls: [{ type: 'toolCall', name: 'submit_plan', id: 'duplicate', arguments: { planText: 'Other' } }],
+  });
+  assert.equal(out.continuation, undefined);
+  assert.equal(protocolState(h).phase, 'failed');
+  assert.equal(protocolState(h).failureKind, 'planner_submission_invalid_transition');
+  assert.deepEqual(h.models, [4096]);
+});
+
+test('provider request budget stays isolated between concurrent Planner extension instances', async t => {
+  const a = extensionHarness(t);
+  const b = extensionHarness(t);
+  await plannerTurn(a, 'begin_plan_submission');
+  assert.equal(a.model.maxTokens, 4096);
+  assert.equal(b.model.maxTokens, 2048);
+  await plannerTurn(a, 'submit_plan', { planText: 'Update src/a.py and test.' }, { stopReason: 'length' });
+  assert.equal(a.model.maxTokens, 8192);
+  assert.equal(b.model.maxTokens, 2048);
+  const requestB = b.handlers.get('before_provider_request')({ payload: { max_tokens: 2048 } });
+  assert.equal(requestB.max_tokens, 2048);
+  assert.equal(protocolState(b).budgetHistory.at(-1).verified, true);
+  assert.equal(protocolState(a).submissionBudget, 8192);
+  assert.equal(process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, undefined);
 });
 
 test('sanitized #607-like 12-response replay can preserve >2048-token plan without re-research', async t => {
@@ -481,8 +569,8 @@ test('sanitized #607-like 12-response replay can preserve >2048-token plan witho
   assert.equal(protocolState(h).planText, plan);
   assert.equal(h.model.maxTokens, 4096);
   assert.equal(protocolState(h).used, 20);
-  assert.equal(protocolState(h).budgetHistory.some(item => item.phase === 'submission_pending'), false,
-    'fixture has no fabricated provider request: budget checked in dedicated request test');
+  assert.equal(protocolState(h).budgetHistory.some(item => item.phase === 'submission_pending' && item.effective === 4096 && item.verified), true,
+    'the fixture checks the actual dedicated provider-request payload');
 });
 
 test('repo_search and planner_code_graph remain the only custom read-only planner tools', async () => {
