@@ -21,7 +21,7 @@ import {
 } from './pi-common/progress-controller.mjs';
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
-import { compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
+import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
 import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
@@ -2163,14 +2163,17 @@ export default function (pi) {
       // Other steers, including validation/terminal recovery and capability corrections,
       // have separate lifetimes and are intentionally not compacted.
       const executableActionTools = providerToolNames(patched);
-      const liveActionDirective =
-        productiveState === 'action_required' &&
-        executableActionTools.length > 0 &&
-        ceilingWithoutToolTurns === 0 &&
-        !terminalRecoveryState &&
-        !(codingSession && codingRepairWindowActive())
-          ? currentImplementerActionSteer(executableActionTools)
-          : null;
+      const liveActionDirective = applicableRuntimeActionSteer({
+        // This hook is registered only for Implementer; retain a guard at the
+        // decision boundary to prevent accidental use by other stages.
+        stage,
+        productiveState,
+        executableTools: executableActionTools,
+        ceilingWithoutToolTurns,
+        terminalRecoveryActive: Boolean(terminalRecoveryState),
+        codingRepairWindowActive: Boolean(codingSession && codingRepairWindowActive()),
+        buildDirective: currentImplementerActionSteer,
+      });
       const steerCompaction = compactRuntimeActionSteers(patched, liveActionDirective);
       if (steerCompaction.blocked) {
         // An unsafe/ambiguous rewrite must preserve the original provider payload.
