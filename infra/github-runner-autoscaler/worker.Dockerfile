@@ -25,7 +25,9 @@ ARG MINI_SWE_AGENT_VERSION=2.4.6
 USER root
 COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/runner-entrypoint
 COPY infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs /tmp/lsp-mcp-server-wrapper.mjs
-COPY infra/github-runner-autoscaler/check-pi-searxng-mcp.mjs /usr/local/bin/check-pi-searxng-mcp
+# The build context can contain mode 0600 files; allow the unprivileged runner
+# to read its startup preflight script regardless of source checkout modes.
+COPY --chmod=0755 infra/github-runner-autoscaler/check-pi-searxng-mcp.mjs /usr/local/bin/check-pi-searxng-mcp
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sqlite3 sudo tar gzip xz-utils \
       libatomic1 libcurl4 libgcc-s1 libicu76 libkrb5-3 liblttng-ust1 libssl3t64 libstdc++6 libunwind8 zlib1g \

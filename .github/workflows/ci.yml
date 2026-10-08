@@ -143,6 +143,10 @@ jobs:
             python -m venv /tmp/pi-python-alias-smoke
             sqlite3 --version
             orbit version
+            # Run as UID 1001. This caught a production startup crash when
+            # the preflight script was copied root-only (0600).
+            test -r /usr/local/bin/check-pi-searxng-mcp
+            node -e "require(\"node:fs\").readFileSync(process.argv[1], \"utf8\")" /usr/local/bin/check-pi-searxng-mcp
             ast-grep --version
             basedpyright --version
             mini --help >/dev/null
