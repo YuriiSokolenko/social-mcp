@@ -10,7 +10,9 @@ sudo bash scripts/beelink-update-restart.sh
 
 Use `--yes` only when the update plan has already been reviewed. The script
 checks GitHub Actions runs and self-hosted runner busy state and refuses to
-interrupt work by default. `--force-busy` explicitly permits that interruption.
+interrupt work by default. It queries the read-only GitHub API with the
+existing runner manager credential, so GitHub CLI does not need to be installed
+on the host. `--force-busy` explicitly permits interruption.
 The script fetches `origin/dev` into a separate user-owned checkout, copies the
 host autoscaler `.env` without printing its contents, builds all required images
 before stopping services, and preserves the current checkout, configuration,

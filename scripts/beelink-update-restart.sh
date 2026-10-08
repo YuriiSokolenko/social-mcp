@@ -67,10 +67,9 @@ trap 'rc=$?; log "finished exit=$rc"; if (( rc != 0 )); then printf "\nUpdate st
 [[ -n "$ORIGINAL_USER" && "$ORIGINAL_USER" != root ]] || die 'SUDO_USER must identify the invoking non-root user'
 id "$ORIGINAL_USER" >/dev/null 2>&1 || die 'SUDO_USER is not a valid account'
 
-for cmd in docker git gh jq df runuser curl; do command -v "$cmd" >/dev/null 2>&1 || die "required command is missing: $cmd"; done
+for cmd in docker git jq df runuser curl; do command -v "$cmd" >/dev/null 2>&1 || die "required command is missing: $cmd"; done
 docker info >/dev/null 2>&1 || die 'Docker Engine is unavailable to root'
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin is unavailable'
-as_user gh auth status >/dev/null 2>&1 || die 'GitHub CLI is not authenticated for the invoking account; authenticate gh and retry'
 
 # The script may be installed in a sibling n150-deploy directory. Prefer the
 # exact checkout backing the active runner managers; this avoids guessing among
@@ -133,11 +132,27 @@ if (( BESZEL_SAFE )); then
   beszel_compose config --quiet || die 'identified Beszel Compose configuration is invalid'
 fi
 
-ACTIVE="$(as_user gh run list --repo "$REPO_SLUG" --limit 100 --json status --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null)" || die 'cannot query GitHub Actions active and queued jobs; refusing to restart blindly'
-RUNNERS_JSON="$(as_user gh api "repos/$REPO_SLUG/actions/runners?per_page=100" 2>/dev/null)" || die 'cannot query GitHub self-hosted runner state; refusing to restart blindly'
-BUSY="$(jq '[.runners[]? | select(.busy == true)] | length' <<<"$RUNNERS_JSON")"
-QUEUED="$(as_user gh run list --repo "$REPO_SLUG" --limit 100 --json status --jq '[.[] | select(.status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null)" || die 'cannot query queued GitHub Actions jobs'
-unset RUNNERS_JSON
+# Reuse the already-running manager's token for read-only GitHub API checks;
+# do not require gh on the host and never echo token-bearing inspect output.
+GH_TOKEN="$(docker inspect pi-runner-manager | jq -er '.[0].Config.Env[] | select(startswith("GH_ADMIN_TOKEN=")) | sub("^GH_ADMIN_TOKEN="; "") | select(length > 0)' 2>/dev/null)" || die 'cannot read the runner manager API credential; refusing to restart blindly'
+github_api() {
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+    -K <(printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\nheader = "X-GitHub-Api-Version: 2022-11-28"\n' "$GH_TOKEN") \
+    "https://api.github.com/$1"
+}
+ACTIVE=0 QUEUED=0
+for run_status in queued in_progress waiting requested pending; do
+  RUNS_JSON="$(github_api "repos/$REPO_SLUG/actions/runs?status=$run_status&per_page=100" 2>/dev/null)" || die 'cannot query GitHub Actions active and queued jobs; refusing to restart blindly'
+  RUN_COUNT="$(jq -er 'if (.total_count|type)=="number" and (.workflow_runs|type)=="array" then .total_count else error("invalid actions response") end' <<<"$RUNS_JSON")" || die 'GitHub Actions response was invalid; refusing to restart blindly'
+  (( RUN_COUNT <= 100 )) || die 'more than 100 runs are in one active state; refusing an incomplete busy check'
+  ACTIVE=$((ACTIVE + RUN_COUNT))
+  [[ "$run_status" == queued || "$run_status" == waiting || "$run_status" == requested || "$run_status" == pending ]] && QUEUED=$((QUEUED + RUN_COUNT))
+done
+RUNNERS_JSON="$(github_api "repos/$REPO_SLUG/actions/runners?per_page=100" 2>/dev/null)" || die 'cannot query GitHub self-hosted runner state; refusing to restart blindly'
+RUNNER_TOTAL="$(jq -er 'if (.total_count|type)=="number" and (.runners|type)=="array" then .total_count else error("invalid runner response") end' <<<"$RUNNERS_JSON")" || die 'GitHub runner response was invalid; refusing to restart blindly'
+(( RUNNER_TOTAL <= 100 )) || die 'more than 100 registered runners; refusing an incomplete busy check'
+BUSY="$(jq '[.runners[] | select(.busy == true)] | length' <<<"$RUNNERS_JSON")"
+unset RUNNERS_JSON RUNS_JSON GH_TOKEN
 
 PLAN="Repository $REPO_DIR ($BRANCH @ ${CURRENT_COMMIT:0:12}, dirty paths: $DIRTY); target origin/dev. Build manager, Pi worker, general worker, control runner, and run-check sandbox before stopping the documented managers, control runner, labeled ephemeral workers, and Zoekt. Keep all named volumes. Recreate those services and reindex Zoekt."
 if (( BESZEL_SAFE )); then PLAN+=" Beszel and Beszel Agent are safely identified; recreate them from their existing local images without pulling and preserve their host data directories."; else PLAN+=" Beszel was not safely identifiable and will be left untouched."; fi
