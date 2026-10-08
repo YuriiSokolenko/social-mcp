@@ -483,12 +483,15 @@ export async function runImplementationPlanner(pi, ctx, config, signal, layoutHi
     };
   } catch (error) {
     const evidenceState = readPlannerEvidenceState(evidenceStateFile);
-    const plannerFailureClass = error?.plannerFailureClass
-      ?? (evidenceState?.failureKind === 'semantic_no_progress'
-        ? 'planner_semantic_no_progress'
-        : error?.delegationStatus === 'timed_out'
-          ? 'planner_transport_timeout'
-          : 'preparation_infrastructure_failure');
+    // A Planner-internal ctx.abort() terminates child delegation without a successful
+    // envelope. Its durable classified failure must survive that transport status.
+    // This is NOT the external parent's AbortSignal (which prepareImplementation propagates).
+    const durableFailure = typeof evidenceState?.failureKind === 'string' &&
+      /^planner_[a-z0-9_]+$/.test(evidenceState.failureKind)
+      ? evidenceState.failureKind
+      : evidenceState?.failureKind === 'semantic_no_progress' ? 'planner_no_progress' : null;
+    const plannerFailureClass = durableFailure ?? error?.plannerFailureClass ??
+      (error?.delegationStatus === 'timed_out' ? 'planner_transport_timeout' : 'preparation_infrastructure_failure');
     if (error && typeof error === 'object') {
       error.delegationUsage = usage ?? error.delegationUsage ?? null;
       error.plannerEvidenceActions = evidenceState?.used ?? null;
@@ -527,7 +530,7 @@ export async function prepareImplementation(pi, ctx, config, signal, {
       complexity: 'nontrivial',
       requiredMutationAnchors: [],
       largeMutation: false,
-      reason: 'Planner completed with a plain-text handoff.',
+      reason: 'Planner completed an explicit submit_plan handoff.',
       layoutHint,
       plannerUsage: planned.usage,
       plannerEvidenceActions: planned.evidenceActions,
