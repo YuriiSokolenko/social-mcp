@@ -37,8 +37,8 @@ services:
     ports:
       - "127.0.0.1:${RUN_CHECK_EXECUTOR_PORT:-17343}:17343"
 
-  # Second, independent pool: plain CI (ci.yml's `test`/`docker`/`wake-merge-gate`
-  # jobs) with no Pi/LLM agent involved. Kept as a separate manager instance
+  # Second, independent pool: CI validation (ci.yml's `test`/`docker`
+  # jobs) and non-model recovery/accounting jobs. Kept as a separate manager instance
   # rather than folded into one multi-pool process, so the two pools scale,
   # fail, and get restarted independently -- a stuck GitHub/model call in one
   # pool's loop can never block the other's.
@@ -57,7 +57,7 @@ services:
       RUNNER_IMAGE: ${GENERAL_RUNNER_IMAGE:-n150/github-general-runner-ephemeral:0.87.10}
       RUNNER_PREFIX: ${GENERAL_RUNNER_PREFIX:-n150-gen-eph}
       RUNNER_LABELS: ${GENERAL_RUNNER_LABELS:-n150,general}
-      WORKFLOW_FILES: ${GENERAL_WORKFLOW_FILES:-ci.yml,pi-auto-merge.yml,pi-automation-control.yml,pi-pr-review.yml,pi-reconcile.yml,pi-usage.yml}
+      WORKFLOW_FILES: ${GENERAL_WORKFLOW_FILES:-ci.yml,pi-auto-merge.yml,pi-reconcile.yml,pi-usage.yml}
       MODEL_STATUS_URL: ""
       MOUNT_PI_CONFIG: "false"
       MOUNT_DOCKER_SOCKET: "true"

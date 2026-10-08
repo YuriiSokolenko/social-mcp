@@ -197,6 +197,48 @@ test('terminal PR CI wakes only from completed workflow_run while authoritative 
   assert.doesNotMatch(ci, /contains\(github\.event\.head_commit\.message/);
 });
 
+test('CI validation jobs inherit read-only token permissions while post-dev continuation is explicitly privileged', () => {
+  const workflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+  const header = workflow.split('\njobs:')[0];
+  assert.match(header, /permissions:\n  contents: read\n/);
+  assert.doesNotMatch(header, /^  (actions|contents|issues|pull-requests): write$/m);
+  const testJob = workflow.split('\n  test:')[1].split('\n  docker:')[0];
+  const dockerJob = workflow.split('\n  docker:')[1].split('\n  wake-merge-gate:')[0];
+  assert.doesNotMatch(testJob, /^    permissions:/m);
+  assert.doesNotMatch(dockerJob, /^    permissions:/m);
+  const wakeJob = workflow.split('\n  wake-merge-gate:')[1];
+  assert.match(wakeJob, /permissions:\n      actions: write\n      contents: write\n      issues: write\n      pull-requests: read/);
+  assert.match(wakeJob, /needs: \[test, docker\]/);
+});
+
+test('automation mode transitions run on the always-on control lane without a model or general runner', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-automation-control.yml', 'utf8');
+  const compose = fs.readFileSync('infra/github-runner-autoscaler/compose.yaml', 'utf8');
+  assert.match(workflow, /runs-on: \[self-hosted, n150, control\]/);
+  assert.match(workflow, /if: inputs.mode == 'RUNNING'/);
+  assert.match(workflow, /PI_CONTROL_TOKEN/);
+  const generalWatch = compose.match(/GENERAL_WORKFLOW_FILES:-([^}]+)/)?.[1]?.split(',') ?? [];
+  assert.deepEqual(generalWatch, ['ci.yml', 'pi-auto-merge.yml', 'pi-reconcile.yml', 'pi-usage.yml']);
+
+  // A copied host .env overrides Compose defaults: keep the documented host
+  // example in sync and reject dead or no-longer-general workflow entries.
+  const hostExample = fs.readFileSync('infra/github-runner-autoscaler/.env.example', 'utf8');
+  const explicitWatch = hostExample.match(/^GENERAL_WORKFLOW_FILES=(.*)$/m)?.[1]?.split(',') ?? [];
+  assert.deepEqual(explicitWatch, generalWatch, '.env.example must match Compose general-pool defaults');
+  for (const name of explicitWatch) {
+    const path = `.github/workflows/${name}`;
+    assert.ok(fs.existsSync(path), `general watcher references nonexistent workflow ${name}`);
+    const workflow = fs.readFileSync(path, 'utf8');
+    assert.match(workflow, /runs-on: \[self-hosted, linux, x64, n150, general\]/,
+      `general watcher references a workflow without a general-pool job: ${name}`);
+  }
+});
+
+test('usage collector checks out trusted dev without persisting its write token', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-usage.yml', 'utf8');
+  assert.match(workflow, /uses: actions\/checkout@v5\n\s+with:\n\s+ref: dev\n\s+persist-credentials: false/);
+});
+
 test('control runner watchdog alerts independently when the post-dev wake queue stalls', () => {
   const workflow = fs.readFileSync('.github/workflows/control-runner-watch.yml', 'utf8');
   assert.match(workflow, /cron: '\*\/5 \* \* \* \*'/);
@@ -211,7 +253,7 @@ test('control runner watchdog alerts independently when the post-dev wake queue 
   assert.doesNotMatch(workflow, /runs-on:\s*\[?self-hosted/);
 });
 
-test('dedicated control runner label is reserved for bounded wake orchestration', () => {
+test('dedicated control runner label is reserved for bounded control-plane orchestration', () => {
   const workflowDir = '.github/workflows';
 
   const stripComment = (value) => value.replace(/\s+#.*$/, '').trim();
@@ -519,6 +561,7 @@ test('dedicated control runner label is reserved for bounded wake orchestration'
   const controlJobsByWorkflow = new Map([
     ['ci-terminal-wake.yml', new Set(['wake-pr-merge-gate'])],
     ['ci.yml', new Set(['wake-merge-gate'])],
+    ['pi-automation-control.yml', new Set(['control'])],
   ]);
 
   const workflowNames = fs.readdirSync(workflowDir).filter(name => /\.ya?ml$/.test(name));
