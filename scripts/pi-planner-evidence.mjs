@@ -303,7 +303,15 @@ export default function (pi) {
     label: 'Submit complete plan',
     description: 'Only successful Planner terminal operation. Supply the full actionable Markdown/plain-text plan in planText on the dedicated larger-budget request.',
     parameters: { type: 'object', properties: { planText: { type: 'string', minLength: 1 } }, required: ['planText'], additionalProperties: false },
-    async execute() { return { content: [{ type: 'text', text: 'Plan submission received; the runtime will validate complete provider termination before acceptance.' }] }; },
+    async execute(toolCallId) {
+      // Pi applies this after the completed tool batch and turn_end, so the
+      // normal success path can durably persist the validated plan first.
+      // Invalid, partial or unverified submissions must keep their recovery turn.
+      return {
+        content: [{ type: 'text', text: 'Plan submission received; the runtime will validate complete provider termination before acceptance.' }],
+        terminate: canTerminateSubmittedPlan(toolCallId),
+      };
+    },
   });
 
   const gate = createPlannerEvidenceGate();
@@ -323,6 +331,17 @@ export default function (pi) {
   let lastProviderInputTokens = null;
   let providerBudgetEvidence = { effective: null, fields: [], verified: false, reason: 'no_provider_request' };
   const budgetHistory = [];
+
+  function canTerminateSubmittedPlan(toolCallId) {
+    // message_end precedes tool execution in Pi; the full provider response and
+    // its serialized budget must be verified before asking Pi to skip follow-up.
+    return phase === 'submission_pending' && providerBudgetEvidence.verified &&
+      control?.kind === 'submit' && control.toolCallId === toolCallId &&
+      lastAssistant?.complete && lastAssistant.reason === 'tooluse' &&
+      lastAssistant.calls.length === 1 &&
+      lastAssistant.calls[0].name === 'submit_plan' &&
+      lastAssistant.calls[0].id === toolCallId;
+  }
 
   function setPhase(next, metadata = {}) {
     const prior = phase;
@@ -532,10 +551,7 @@ export default function (pi) {
       return undefined;
     }
     if (phase !== 'submission_pending') return undefined;
-    const accepted = providerBudgetEvidence.verified && control?.kind === 'submit' && control.executed &&
-      lastAssistant?.reason === 'tooluse' && lastAssistant.complete &&
-      lastAssistant.calls.length === 1 && lastAssistant.calls[0].name === 'submit_plan' &&
-      lastAssistant.calls[0].id === control.toolCallId;
+    const accepted = control?.executed && canTerminateSubmittedPlan(control.toolCallId);
     if (accepted) {
       const planText = control.planText;
       const qualitySignals = control.qualitySignals;
