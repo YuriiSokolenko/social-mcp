@@ -13,7 +13,7 @@ export function rememberPlannerModelLimit(pi, maxTokens) {
   if (!file) return;
   let previous = {};
   try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* new session */ }
-  fs.writeFileSync(file, JSON.stringify({ ...previous, originalModelMaxTokens: maxTokens }) + '\\n', { mode: 0o600 });
+  fs.writeFileSync(file, JSON.stringify({ ...previous, originalModelMaxTokens: maxTokens }) + '\n', { mode: 0o600 });
 }
 export function plannerModelLimit(pi) {
   const file = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
