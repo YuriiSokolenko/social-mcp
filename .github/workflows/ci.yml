@@ -75,6 +75,7 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: social-mcp-ci-${{ github.run_id }}-${{ github.run_attempt }}
       DOCKER_BUILDKIT: "1"
+      DOCKER_CONFIG: ${{ runner.temp }}/docker-config
 
     steps:
       - name: Checkout
@@ -84,7 +85,6 @@ jobs:
 
       - name: Set up BuildKit
         run: |
-          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
           mkdir -p "$DOCKER_CONFIG"
           if ! docker buildx version >/dev/null 2>&1; then
             version=0.37.1
