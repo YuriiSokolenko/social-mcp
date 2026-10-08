@@ -37,7 +37,7 @@ export function mainPromptRequestMetadata(payload, previous = null) {
   const initialUserText = messageText(initialUser);
   const systemText = systemMessages.map(messageText).join('\n');
   const skillsBlock = systemText.match(/<skills>[\s\S]*?<\/skills>/)?.[0] ?? '';
-  const skillNames = [...skillsBlock.matchAll(/<name>([^<]+)<\/name>/g)].map(match => match[1]);
+  const skillCount = (skillsBlock.match(/<skill>/g) ?? []).length;
 
   return {
     systemMessageCount: systemMessages.length,
@@ -46,8 +46,7 @@ export function mainPromptRequestMetadata(payload, previous = null) {
     // Raw UTF-8 message bytes (rather than the JSON-serialized fingerprint bytes).
     systemTextBytes: Buffer.byteLength(systemText, 'utf8'),
     skillCatalogBytes: Buffer.byteLength(skillsBlock, 'utf8'),
-    skillCount: skillNames.length,
-    skillNames,
+    skillCount,
     initialUserContextBytes: user.bytes,
     initialUserContextHash: user.hash,
     sharedContractCount: (initialUserText.match(/<shared_agent_contract\b/g) ?? []).length,
