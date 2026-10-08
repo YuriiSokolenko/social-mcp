@@ -7,7 +7,7 @@ readonly TARGET_HOSTNAME='n150'
 readonly BACKUP_ROOT='/var/backups/n150-docker-client-upgrade'
 readonly BUILDX_PACKAGE='docker-buildx-plugin'
 readonly COMPOSE_PACKAGE='docker-compose-plugin'
-readonly BUILDX_TARGET='0.37.1-1~ubuntu.26.04~resolute'
+readonly BUILDX_TARGET='0.38.0-1~ubuntu.26.04~resolute'
 readonly COMPOSE_TARGET='5.6.0-1~ubuntu.26.04~resolute'
 readonly BUILDX_PREVIOUS='0.34.1-1~ubuntu.26.04~resolute'
 readonly COMPOSE_PREVIOUS='5.1.4-1~ubuntu.26.04~resolute'
@@ -24,7 +24,6 @@ BACKUP_DIR=''
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 package_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
-candidate_version() { apt-cache policy "$1" | awk '$1 == "Candidate:" { print $2; exit }'; }
 version_hash() { apt-cache show "$1=$2" | awk '/^SHA256: / { print $2; exit }'; }
 sha256_file() { sha256sum -- "$1" | awk '{ print $1 }'; }
 secure_root_directory() {
@@ -39,7 +38,7 @@ verify_installed_versions() {
   [[ "$(docker --version)" == 'Docker version 29.8.2,'* ]] || return 1
   [[ "$(package_version "$BUILDX_PACKAGE")" == "$BUILDX_TARGET" ]] || return 1
   [[ "$(package_version "$COMPOSE_PACKAGE")" == "$COMPOSE_TARGET" ]] || return 1
-  [[ "$(docker buildx version)" == *'v0.37.1'* ]] || return 1
+  [[ "$(docker buildx version)" == *'v0.38.0'* ]] || return 1
   [[ "$(docker compose version --short)" == '5.6.0' ]] || return 1
   [[ "$(readlink -f -- "$CLI_LINK")" == "$CLI_BINARY" ]] || return 1
   [[ "$(command -v docker)" == "$CLI_LINK" ]] || return 1
@@ -50,24 +49,27 @@ rollback() {
   local dir="$1" rc=0 previous_link previous_link_text recorded_cli effective_cli recorded_command
   local -a buildx_deb compose_deb
   [[ "$EUID" -eq 0 ]] || { printf 'Rollback requires root. Backups retained at %s\n' "$dir" >&2; return 1; }
-  [[ -d "$dir" && ! -L "$dir" && "$(realpath -e -- "$dir")" == "$dir" ]] || {
+  if ! { [[ -d "$BACKUP_ROOT" && ! -L "$BACKUP_ROOT" ]] && secure_root_directory "$BACKUP_ROOT" \
+    && [[ "$dir" == "$BACKUP_ROOT/"* && "${dir#"$BACKUP_ROOT/"}" != */* ]] \
+    && [[ -d "$dir" && ! -L "$dir" && "$(realpath -e -- "$dir")" == "$dir" ]] \
+    && secure_root_directory "$dir"; }; then
     printf 'Invalid backup directory; backups retained: %s\n' "$dir" >&2; return 1;
-  }
+  fi
   [[ -f "$dir/manifest" && ! -L "$dir/manifest" && -f "$dir/SHA256SUMS" && ! -L "$dir/SHA256SUMS" ]] || {
     printf 'Rollback metadata missing; backups retained: %s\n' "$dir" >&2; return 1;
   }
   (cd "$dir" && sha256sum --check --status SHA256SUMS) || {
     printf 'Rollback artifact checksum verification failed; backups retained: %s\n' "$dir" >&2; return 1;
   }
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090,SC1091
   source "$dir/manifest"
   previous_link="$PREVIOUS_LINK_PRESENT"
   previous_link_text="$PREVIOUS_LINK_TEXT"
   recorded_cli="$PREVIOUS_CLI_VERSION"
   effective_cli="$PREVIOUS_CLI_EFFECTIVE"
   recorded_command="$PREVIOUS_COMMAND"
-  mapfile -t buildx_deb < <(find "$dir/installed" -maxdepth 1 -type f -name "$BUILDX_PACKAGE"'_'*.deb -print)
-  mapfile -t compose_deb < <(find "$dir/installed" -maxdepth 1 -type f -name "$COMPOSE_PACKAGE"'_'*.deb -print)
+  mapfile -t buildx_deb < <(find "$dir/installed" -maxdepth 1 -type f -name "${BUILDX_PACKAGE}_*.deb" -print)
+  mapfile -t compose_deb < <(find "$dir/installed" -maxdepth 1 -type f -name "${COMPOSE_PACKAGE}_*.deb" -print)
   [[ "${#buildx_deb[@]}" -eq 1 && "${#compose_deb[@]}" -eq 1 ]] || {
     printf 'Rollback packages are incomplete; backups retained: %s\n' "$dir" >&2; return 1;
   }
@@ -234,12 +236,11 @@ if [[ "$current_buildx" == "$BUILDX_TARGET" && "$current_compose" == "$COMPOSE_T
 fi
 
 apt-get update
-[[ "$(candidate_version "$BUILDX_PACKAGE")" == "$BUILDX_TARGET" ]] || die "$BUILDX_PACKAGE target is unavailable"
-[[ "$(candidate_version "$COMPOSE_PACKAGE")" == "$COMPOSE_TARGET" ]] || die "$COMPOSE_PACKAGE target is unavailable"
 for spec in "$BUILDX_PACKAGE:$BUILDX_TARGET" "$COMPOSE_PACKAGE:$COMPOSE_TARGET" \
   "$BUILDX_PACKAGE:$current_buildx" "$COMPOSE_PACKAGE:$current_compose"; do
   package="${spec%%:*}" version="${spec#*:}"
-  [[ -n "$(version_hash "$package" "$version")" ]] || die "checksum metadata unavailable for $package=$version"
+  package_sha256="$(version_hash "$package" "$version")"
+  [[ "$package_sha256" =~ ^[[:xdigit:]]{64}$ ]] || die "exact package version or SHA-256 metadata unavailable for $package=$version"
 done
 
 plugin_args=("$BUILDX_PACKAGE=$BUILDX_TARGET" "$COMPOSE_PACKAGE=$COMPOSE_TARGET")
@@ -280,7 +281,7 @@ download_package() {
   local -a files
   expected="$(version_hash "$package" "$version")"
   (cd "$directory" && apt-get download "$package=$version")
-  mapfile -t files < <(find "$directory" -maxdepth 1 -type f -name "$package"'_'*.deb -print)
+  mapfile -t files < <(find "$directory" -maxdepth 1 -type f -name "${package}_*.deb" -print)
   [[ "${#files[@]}" -eq 1 ]] || die "could not identify exactly one archive for $package=$version"
   file="${files[0]}"
   actual="$(sha256_file "$file")"
