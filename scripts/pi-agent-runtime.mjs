@@ -2173,8 +2173,13 @@ export default function (pi) {
           : null;
       const steerCompaction = compactRuntimeActionSteers(patched, liveActionDirective);
       if (steerCompaction.blocked) {
-        // Fail closed if a candidate would require changing tool-linked messages.
-        throw new Error(`PI_RUNTIME_STEERING_COMPACTION_BLOCKED: ${steerCompaction.blocked}`);
+        // An unsafe/ambiguous rewrite must preserve the original provider payload.
+        // Compaction is optional: failing it must not abort a valid Implementer run.
+        console.warn(`PI_RUNTIME_STEERING_COMPACTION_BLOCKED ${JSON.stringify({
+          stage,
+          request: providerCapabilitySnapshot?.request ?? null,
+          reason: steerCompaction.blocked,
+        })}`);
       }
       if (steerCompaction.removed > 0) {
         console.log(`PI_RUNTIME_STEERING_COMPACTION ${JSON.stringify({
