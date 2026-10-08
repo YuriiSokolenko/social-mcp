@@ -56,8 +56,17 @@ function textPlan({ steps = ['Do it'], facts = [], reason = 'done' } = {}) {
 function simulateSubmittedPlan(planText) {
   const file = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
   assert.ok(file, 'delegated Planner sidecar must be set before child launch');
-  fs.writeFileSync(file, JSON.stringify({ used: 0, facts: [], toolCounts: {}, phase: 'submitted',
-    submissionBudget: 4096, planText }) + '\n');
+  const lifecycleId = process.env.PI_PLANNER_LIFECYCLE_ID;
+  assert.ok(lifecycleId, 'delegated Planner must carry its current lifecycle identity');
+  fs.writeFileSync(file, JSON.stringify({
+    used: 0, facts: [], toolCounts: {}, phase: 'submitted', submissionBudget: 4096, planText,
+    budgetHistory: [{ phase: 'submission_pending', expected: 4096, effective: 4096, verified: true }],
+    submissionReceipt: {
+      lifecycleId, toolCallId: 'complete-submit-plan', admitted: true, executed: true,
+      providerComplete: true, stopReason: 'tooluse', providerBudgetVerified: true,
+      submissionBudget: 4096, planTextBytes: Buffer.byteLength(planText, 'utf8'),
+    },
+  }) + '\n');
 }
 
 test('implementer stage has no planner evidence cap, lifecycle deadline, or configurable format-retry knob', () => {

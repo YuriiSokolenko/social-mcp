@@ -13,6 +13,7 @@ import { buildPlannerOrbitSeed } from './planner-orbit.mjs';
 const PLANNER_EVIDENCE_FINGERPRINT_MAX_LENGTH = 200;
 
 export const PLANNER_EVIDENCE_STATE_FILE_ENV = 'PI_PLANNER_EVIDENCE_STATE_FILE';
+export const PLANNER_LIFECYCLE_ID_ENV = 'PI_PLANNER_LIFECYCLE_ID';
 
 export const PLANNER_EVIDENCE_TOOLS = Object.freeze([
   'read',
@@ -97,6 +98,7 @@ export function readPlannerEvidenceState(file) {
       ...(typeof state?.failureKind === 'string' ? { failureKind: state.failureKind } : {}),
       ...(typeof state?.phase === 'string' ? { phase: state.phase } : {}),
       ...(typeof state?.planText === 'string' ? { planText: state.planText } : {}),
+      ...(state?.submissionReceipt && typeof state.submissionReceipt === 'object' ? { submissionReceipt: state.submissionReceipt } : {}),
       ...(Number.isSafeInteger(state?.submissionBudget) ? { submissionBudget: state.submissionBudget } : {}),
       ...(Array.isArray(state?.budgetHistory) ? { budgetHistory: state.budgetHistory } : {}),
       ...(state?.qualitySignals && typeof state.qualitySignals === 'object' ? { qualitySignals: state.qualitySignals } : {}),
@@ -358,14 +360,33 @@ Issue body:
 ${issue.body}`;
 }
 
-// Plan admission belongs to the child submission tool, not to plain final assistant text.
-// The sidecar is authoritative only after a normally completed child delegation. Never
-// salvage a parseable prefix of a truncated tool call or use the research-phase ceiling.
-export function acceptedPlannerSubmission(state, response) {
+// A private, current-lifecycle receipt is the authority for a completed submit_plan.
+// Pi's text-only adapter can reject terminal toolUse (no final prose), even though
+// the child completed its single tool and committed this receipt before termination.
+export function acceptedPlannerSubmission(state, response, { lifecycleId = null } = {}) {
   if (state?.phase !== 'submitted' || typeof state.planText !== 'string' || !state.planText.trim()) {
     throw Object.assign(new Error('Planner never completed a valid submit_plan tool call'), {
       plannerFailureClass: state?.failureKind === 'semantic_no_progress' ? 'planner_no_progress'
         : state?.failureKind ?? 'planner_submission_not_started',
+    });
+  }
+  const receipt = state.submissionReceipt;
+  const lastBudget = Array.isArray(state.budgetHistory) ? state.budgetHistory.at(-1) : null;
+  const verified = !state.failureKind && receipt &&
+    typeof receipt.lifecycleId === 'string' && receipt.lifecycleId.length > 0 &&
+    (lifecycleId === null || receipt.lifecycleId === lifecycleId) &&
+    typeof receipt.toolCallId === 'string' && receipt.toolCallId.length > 0 &&
+    receipt.admitted === true && receipt.executed === true &&
+    receipt.providerComplete === true && receipt.stopReason === 'tooluse' &&
+    receipt.providerBudgetVerified === true &&
+    receipt.planTextBytes === Buffer.byteLength(state.planText, 'utf8') &&
+    (state.submissionBudget === 4096 || state.submissionBudget === 8192) &&
+    receipt.submissionBudget === state.submissionBudget &&
+    lastBudget?.phase === 'submission_pending' && lastBudget?.verified === true &&
+    lastBudget.effective === state.submissionBudget;
+  if (!verified) {
+    throw Object.assign(new Error('Planner submitted sidecar lacks a verified current-lifecycle terminal receipt'), {
+      plannerFailureClass: 'planner_submission_incomplete',
     });
   }
   const reason = [response?.finish_reason, response?.finishReason, response?.stop_reason,
@@ -450,21 +471,45 @@ export async function runImplementationPlanner(pi, ctx, config, signal, layoutHi
       maxTokens,
       childEnv: {
         [PLANNER_EVIDENCE_STATE_FILE_ENV]: evidenceStateFile,
+        [PLANNER_LIFECYCLE_ID_ENV]: childSession,
       },
     };
 
     let response;
+    let terminalToolUseAdapterError = null;
     try {
       response = await runTextSubagent(pi, ctx, request, signal);
       usage = addUsage(usage, response.usage);
     } catch (error) {
       usage = addUsage(usage, error?.delegationUsage);
       if (error && typeof error === 'object') error.delegationUsage = usage;
-      throw error;
+      // Pi's text-result adapter rejects a terminal toolUse with no final assistant
+      // message. Only this exact adapter failure may be overridden, and ONLY by the
+      // completed, current-lifecycle receipt (checked below). Other failures remain failures.
+      if (!signal?.aborted && error?.delegationStatus === 'failed' &&
+          /^implementation-planner failed: Subagent produced no output after terminal assistant stopReason "toolUse"\.$/.test(String(error?.message ?? ''))) {
+        terminalToolUseAdapterError = error;
+      } else {
+        throw error;
+      }
     }
 
     const evidenceState = readPlannerEvidenceState(evidenceStateFile);
-    const planText = acceptedPlannerSubmission(evidenceState, response);
+    let planText;
+    try {
+      if (signal?.aborted) throw terminalToolUseAdapterError ?? new Error('Planner delegation was aborted');
+      planText = acceptedPlannerSubmission(evidenceState, response, { lifecycleId: childSession });
+    } catch (error) {
+      // Do not turn a missing, stale or partial receipt into an apparent success.
+      if (terminalToolUseAdapterError) throw terminalToolUseAdapterError;
+      throw error;
+    }
+    if (terminalToolUseAdapterError) {
+      console.log(`PI_PLANNER_TERMINAL_TOOLUSE_RECOVERED ${JSON.stringify({
+        adapterStatus: 'failed', phase: evidenceState.phase,
+        planTextBytes: Buffer.byteLength(planText, 'utf8'),
+      })}`);
+    }
     status = 'completed';
     console.log(`PI_PLANNER_FINAL_TEXT_ACCEPTED ${JSON.stringify({
       serializedBytes: Buffer.byteLength(planText, 'utf8'),

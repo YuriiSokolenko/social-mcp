@@ -8,6 +8,7 @@ import { plannerOrbitContext } from './pi-common/planner-orbit.mjs';
 // observability only; semantic no-progress guards, not numeric budgets, stop accidental loops.
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
+  PLANNER_LIFECYCLE_ID_ENV,
   PLANNER_EVIDENCE_TOOLS,
   createPlannerEvidenceGate,
   plannerEvidenceFact,
@@ -289,6 +290,7 @@ export default function (pi) {
   // Capture this child lifecycle's state identity exactly once. Parallel Planner
   // extension instances must never consult a later process.env value for sidecar writes.
   const stateEnv = { [PLANNER_EVIDENCE_STATE_FILE_ENV]: process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] };
+  const lifecycleId = process.env[PLANNER_LIFECYCLE_ID_ENV];
   const issueContextFile = process.env.PI_ISSUE_CONTEXT;
   registerPlannerEvidenceTools(pi);
   pi.registerTool?.({
@@ -553,10 +555,24 @@ export default function (pi) {
     if (phase !== 'submission_pending') return undefined;
     const accepted = control?.executed && canTerminateSubmittedPlan(control.toolCallId);
     if (accepted) {
+      if (!lifecycleId) {
+        fail('planner_submission_incomplete', 'Planner lifecycle identity is missing', ctx);
+        return;
+      }
       const planText = control.planText;
       const qualitySignals = control.qualitySignals;
-      setPhase('submitted', { planText, qualitySignals });
-      console.log(`PI_PLANNER_SUBMITTED ${JSON.stringify({ planTextBytes: Buffer.byteLength(planText, 'utf8'), budget, qualitySignals, termination: lastAssistant.reason })}`);
+      const planTextBytes = Buffer.byteLength(planText, 'utf8');
+      // The adapter may reject empty final prose after terminate:true. Persist the
+      // proof of the *executed* complete tool call, not just an attempted submission.
+      // The parent matches this against its per-attempt nonce before accepting it.
+      const submissionReceipt = {
+        lifecycleId, toolCallId: control.toolCallId,
+        admitted: true, executed: control.executed, providerComplete: lastAssistant.complete,
+        stopReason: lastAssistant.reason, providerBudgetVerified: providerBudgetEvidence.verified,
+        submissionBudget: budget, planTextBytes,
+      };
+      setPhase('submitted', { planText, qualitySignals, submissionReceipt });
+      console.log(`PI_PLANNER_SUBMITTED ${JSON.stringify({ planTextBytes, budget, qualitySignals, termination: lastAssistant.reason })}`);
       console.log(`PI_PLANNER_CAT_PETTED ${JSON.stringify({ state: 'CAT_PETTED', event: 'accepted' })}`);
       pi.setActiveTools?.([]);
       control = null;
