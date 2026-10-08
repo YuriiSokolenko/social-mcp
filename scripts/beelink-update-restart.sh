@@ -96,7 +96,9 @@ for storage_path in "$REPO_DIR" "$DOCKER_ROOT"; do
 done
 
 HOST_FACTS="$(cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name /proc/cpuinfo 2>/dev/null || true)"
-grep -Eiq 'Beelink' <<<"$HOST_FACTS" || die 'system vendor does not identify Beelink'
+# Beelink systems report their OEM DMI vendor, AZW, rather than the retail
+# brand. Require that manufacturer identity (or explicit Beelink) and N150 CPU.
+grep -Eiq 'Beelink|AZW' <<<"$HOST_FACTS" || die 'system vendor does not identify Beelink or its AZW manufacturer'
 grep -Eiq 'N150' <<<"$HOST_FACTS" || die 'CPU or product identity does not identify N150'
 unset HOST_FACTS
 
