@@ -359,6 +359,9 @@ export default function (pi) {
     const changed = await pi.setModel({ ...ctx.model, maxTokens: target });
     if (!changed) return false;
     budget = target;
+    // The upcoming request has not happened yet, but the accepted session-scoped
+    // budget transition must already be durable and visible to the parent.
+    updatePlannerProtocolState({ submissionBudget: budget }, stateEnv);
     return true;
   }
 
