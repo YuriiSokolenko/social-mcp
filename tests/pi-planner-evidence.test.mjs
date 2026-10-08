@@ -506,7 +506,7 @@ test('terminal toolUse adapter recovery fails closed for tampered receipts and o
   ];
   t.mock.method(console, 'log', () => {});
   for (const variant of variants) {
-    const { dir, env } = fixture(t);
+    const { dir, env } = fixture(t, { 'src/net.py': 'def send(): pass\n' });
     const { pi, ctx } = plannerHost({ cwd: dir, driveChild: async () => {
       const file = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
       const lifecycleId = process.env[PLANNER_LIFECYCLE_ID_ENV];
