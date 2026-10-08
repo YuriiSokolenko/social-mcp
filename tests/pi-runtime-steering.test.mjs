@@ -35,7 +35,7 @@ test('#594 identical and changed runtime steers are replaced with one current pr
   assert.equal(payload.messages.at(-1).content, current);
   assert.equal(payload.messages[0], original.messages[0]);
   assert.equal(payload.messages[1], original.messages[1]);
-  assert.equal(payload.messages[3], original.messages[4]);
+  assert.equal(payload.messages[3], original.messages[5]);
   assert.equal(original.messages.length, 7, 'original Pi session payload remains untouched');
   assert.equal(original.messages[2].content, directive('read'));
   assert.equal(payload.tools, original.tools);
