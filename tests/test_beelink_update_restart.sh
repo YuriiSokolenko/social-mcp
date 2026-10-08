@@ -70,7 +70,11 @@ run_verification_fixture() (
   [[ "$CONTROL_ID" == "$control_id" && "$CONTROL_RUNNING_IMAGE" == 'n150/mock-control:1' ]]
 )
 run_verification_fixture 'control-fixture-123' || fail 'valid control ID must pass post-restart verification'
-if run_verification_fixture '' >/dev/null 2>&1; then
+# Require the early, actionable guard diagnostic. A later Docker inspect
+# failure is not sufficient: it means the missing-ID guard was bypassed.
+if missing_id_error="$(run_verification_fixture '' 2>&1)"; then
   fail 'missing control ID must fail post-restart verification'
 fi
+[[ "$missing_id_error" == *'could not identify control runner container after restart'* ]] || \
+  fail 'missing control ID must fail at the explicit guard, not a later Docker inspect'
 printf 'PASS: Beelink update/restart argument and safety checks\n'
