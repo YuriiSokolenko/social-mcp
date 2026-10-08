@@ -409,7 +409,10 @@ export default function (pi) {
       if (phase === 'researching') evidenceProgressContinuationPending = true;
     } else {
       consecutiveNoProgressEvidence += 1;
-      if (consecutiveNoProgressEvidence >= EVIDENCE_NO_PROGRESS_STREAK_LIMIT) stallDetected = true;
+      if (consecutiveNoProgressEvidence >= EVIDENCE_NO_PROGRESS_STREAK_LIMIT) {
+        stallDetected = true;
+        console.log(`PI_PLANNER_NO_PROGRESS ${JSON.stringify({ kind: 'evidence_streak', consecutiveNoProgressEvidence })}`);
+      }
     }
     lastEvidenceSignature = pending.signature;
     lastEvidenceMadeProgress = progress;
