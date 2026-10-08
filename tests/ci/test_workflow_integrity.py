@@ -109,6 +109,7 @@ def test_privileged_entry_points_use_trusted_dev(file_name):
             f"{file_name}: checkout must not persist job token"
         )
 
+
 def test_ci_pr_validation_uses_event_revision_and_post_dev_wake_uses_trusted_dev():
     jobs = workflows()["ci.yml"]["jobs"]
     for job_name in ("test", "docker"):
