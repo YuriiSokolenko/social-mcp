@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arkanoid smoke</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Arkanoid</h1>
+      <p class="controls">
+        <button id="start" type="button">Start</button>
+        <button id="pause" type="button">Pause</button>
+        <button id="restart" type="button">Restart</button>
+      </p>
+      <canvas id="game" width="640" height="480" aria-label="Arkanoid play field"></canvas>
+      <p id="status" class="status" aria-live="polite">ready</p>
+      <p class="hint">
+        Arrows or A / D move the paddle, pointer or touch also works. Space starts,
+        P pauses, R restarts.
+      </p>
+    </main>
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>
