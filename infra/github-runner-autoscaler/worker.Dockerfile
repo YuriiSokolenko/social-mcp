@@ -109,6 +109,7 @@ RUN pi install --no-approve "npm:pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
     && pi install --no-approve "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
     && node /home/runner/build-tools/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
     && node /home/runner/build-tools/patch-pi-subagents-planner-terminal.mjs /home/runner/.pi/agent/npm/node_modules/pi-subagents \
+    && node --check /home/runner/.pi/agent/npm/node_modules/pi-subagents/src/runs/foreground/execution.js \
     && mkdir -p /opt/pi-package-seed \
     && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/
 USER root
