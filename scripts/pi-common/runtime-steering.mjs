@@ -33,10 +33,15 @@ function replaceSteerText(message, text) {
 // with tool linkage, a multi-part user turn, or an unrelated directive. A suspected
 // tool-linked action steer blocks the whole rewrite rather than risking tool-call pairing.
 export function compactRuntimeActionSteers(payload, currentDirective = null) {
-  if (!Array.isArray(payload?.messages)) return { payload, removed: 0, blocked: null };
+  const hasMessages = Array.isArray(payload?.messages);
+  const hasInput = Array.isArray(payload?.input);
+  if (hasMessages && hasInput) return { payload, removed: 0, blocked: 'ambiguous_history_fields' };
+  const key = hasMessages ? 'messages' : hasInput ? 'input' : null;
+  if (!key) return { payload, removed: 0, blocked: null };
+  const history = payload[key];
   const indices = [];
-  for (let i = 0; i < payload.messages.length; i++) {
-    const message = payload.messages[i];
+  for (let i = 0; i < history.length; i++) {
+    const message = history[i];
     if (!isRuntimeActionSteer(message)) continue;
     if (message.tool_call_id != null || message.tool_calls != null || message.name != null) {
       return { payload, removed: 0, blocked: 'tool_linked_steer' };
@@ -56,12 +61,12 @@ export function compactRuntimeActionSteers(payload, currentDirective = null) {
   // and refreshes its tool/verification guidance for the actual outbound surface.
   const last = currentDirective == null ? -1 : indices[indices.length - 1];
   const targetIndices = new Set(indices);
-  const messages = payload.messages.flatMap((message, index) => {
+  const compacted = history.flatMap((message, index) => {
     if (!targetIndices.has(index)) return [message];
     return index === last ? [replaceSteerText(message, currentDirective)] : [];
   });
   return {
-    payload: { ...payload, messages },
+    payload: { ...payload, [key]: compacted },
     removed: indices.length - (last === -1 ? 0 : 1),
     blocked: null,
   };
