@@ -100,6 +100,25 @@ test('#594 supports provider text parts, but leaves ambiguous multipart or tool-
   assert.equal(blocked.removed, 0);
   assert.equal(blocked.payload.messages[1], linked);
   assert.equal(compactRuntimeActionSteers({ input: [] }, fresh).removed, 0);
+  const responses = {
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: directive('old') }] },
+      { type: 'function_call', call_id: 'call1', name: 'safe_edit', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call1', output: 'ok' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: directive('old') }] },
+    ],
+  };
+  const compactedResponses = compactRuntimeActionSteers(responses, fresh);
+  assert.equal(compactedResponses.removed, 1);
+  assert.equal(compactedResponses.payload.input.length, 3);
+  assert.equal(compactedResponses.payload.input[0], responses.input[1]);
+  assert.equal(compactedResponses.payload.input[1], responses.input[2]);
+  assert.equal(compactedResponses.payload.input[2].content[0].text, fresh);
+  assert.equal(responses.input.length, 4);
+  assert.equal(
+    compactRuntimeActionSteers({ messages: [old], input: responses.input }, fresh).blocked,
+    'ambiguous_history_fields',
+  );
   assert.equal(compactRuntimeActionSteers({ messages: [old] }, 'bad').blocked, 'invalid_replacement');
 });
 
