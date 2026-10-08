@@ -229,7 +229,7 @@ test('automation mode transitions run on the always-on control lane without a mo
     const path = `.github/workflows/${name}`;
     assert.ok(fs.existsSync(path), `general watcher references nonexistent workflow ${name}`);
     const workflow = fs.readFileSync(path, 'utf8');
-    assert.match(workflow, /runs-on: \\[self-hosted, linux, x64, n150, general\\]/,
+    assert.match(workflow, /runs-on: \[self-hosted, linux, x64, n150, general\]/,
       `general watcher references a workflow without a general-pool job: ${name}`);
   }
 });
