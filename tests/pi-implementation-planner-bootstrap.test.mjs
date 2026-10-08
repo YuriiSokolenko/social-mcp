@@ -188,6 +188,7 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
 });
 
 test('real planner fail() abort retains its durable fallback class through delegation rejection', async t => {
+  t.mock.method(console, 'log', () => {});
   for (const status of ['cancelled', 'failed']) {
     const bus = new EventEmitter();
     let didAbort = false;
@@ -221,7 +222,6 @@ test('real planner fail() abort retains its durable fallback class through deleg
     } };
     const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
     const env = plannerEnv(t);
-    t.mock.method(console, 'log', () => {});
     const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
     assert.equal(result.status, 'fallback');
     assert.equal(result.failureClass, 'planner_submission_not_started', status);
