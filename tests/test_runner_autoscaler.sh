@@ -45,11 +45,14 @@ general_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker-general.D
 pi_worker_dockerfile="$(cat infra/github-runner-autoscaler/worker.Dockerfile)"
 for worker_dockerfile in "$general_worker_dockerfile" "$pi_worker_dockerfile"; do
   grep -q '^ARG RUNNER_PLATFORM=linux/amd64' <<<"$worker_dockerfile" || fail 'worker images must default to the supported amd64 runner platform'
-  grep -q '^FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:' <<<"$worker_dockerfile" || fail 'worker images must use a public, pinned base image'
+  grep -q '^FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:' <<<"$worker_dockerfile" || fail 'worker images must use a public, pinned Node base image'
   grep -q 'ACTIONS_RUNNER_VERSION=2.337.0' <<<"$worker_dockerfile" || fail 'worker Actions Runner version must be pinned'
   grep -q '70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613' <<<"$worker_dockerfile" || fail 'worker Actions Runner archive checksum must be pinned'
   ! grep -q 'n150/github-pi-runner' <<<"$worker_dockerfile" || fail 'worker build must not depend on an unpublished N150 base image'
 done
+grep -q '^FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:' <<<"$general_worker_dockerfile" || fail 'general worker must use a digest-pinned Python 3.12 runtime'
+grep -q 'apt-get install -y --no-install-recommends gh docker-ce-cli' <<<"$general_worker_dockerfile" || fail 'general worker must include GitHub CLI'
+grep -q 'GH_CLI_KEYRING_SHA256=' <<<"$general_worker_dockerfile" || fail 'general worker must verify the official GitHub CLI package keyring'
 grep -q 'docker-ce-cli docker-compose-plugin' <<<"$general_worker_dockerfile" || fail 'general worker must include Docker CLI and Compose'
 grep -q 'docker-buildx-plugin' <<<"$general_worker_dockerfile" || fail 'general worker must include Buildx'
 grep -q 'groupadd --gid 983 hostdocker' <<<"$general_worker_dockerfile" || fail 'general worker socket group must preserve the host docker GID'

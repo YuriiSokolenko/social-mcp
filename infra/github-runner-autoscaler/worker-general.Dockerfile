@@ -1,22 +1,30 @@
 ARG RUNNER_PLATFORM=linux/amd64
+FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS python-runtime
 FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
 ARG ACTIONS_RUNNER_VERSION=2.337.0
 ARG ACTIONS_RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
 ARG DOCKER_BUILDX_VERSION=0.37.1-1~debian.12~bookworm
+ARG GH_CLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
 ENV HOME=/home/runner \
     ACTIONS_RUNNER_VERSION=${ACTIONS_RUNNER_VERSION}
 
 USER root
+COPY --from=python-runtime /usr/local/ /usr/local/
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl git gnupg jq python3 python3-venv sudo tar gzip \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git gnupg jq sudo tar gzip \
       libcurl4 libicu72 libkrb5-3 liblttng-ust1 libssl3 libunwind8 zlib1g \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "${GH_CLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
+    && chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
+    && apt-get install -y --no-install-recommends gh docker-ce-cli docker-compose-plugin "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && groupadd --gid 983 hostdocker \

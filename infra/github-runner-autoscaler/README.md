@@ -110,8 +110,10 @@ Compose gives the container a 120-second stop grace period.
 
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
 (`worker-general.Dockerfile`) starts directly from the public
-`node:24-bookworm-slim` image, installs the checksum-pinned GitHub Actions
-runner archive and Docker CLI, Buildx, and Compose, and the host's
+`node:24-bookworm-slim` image, adds Python 3.12 from its digest-pinned official
+image, and installs GitHub CLI for general CI jobs. It installs the
+checksum-pinned GitHub Actions runner archive and Docker CLI, Buildx, and
+Compose, and the host's
 `/var/run/docker.sock` is bind-mounted
 into each ephemeral worker (sibling-container pattern) so `ci.yml`'s `docker`
 job can run `docker compose up/down` itself. This means anything with access
