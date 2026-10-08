@@ -86,6 +86,7 @@ grep -q 'PI_SUBAGENTS_VERSION=0.76.1' <<<"$pi_worker_dockerfile" || fail 'Pi wor
 grep -q 'ORBIT_VERSION=0.138.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current Orbit version'
 grep -q 'LSP_MCP_SERVER_VERSION=1.1.26' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current LSP MCP server'
 grep -q 'BASEDPYRIGHT_VERSION=1.40.2' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current BasedPyright version'
+grep -q 'ln -sf /usr/local/bin/node' <<<"$pi_worker_dockerfile" || fail 'BasedPyright must use the pinned shared Node runtime'
 grep -q 'KOTLIN_LSP_VERSION=263.6379.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current Kotlin LSP version'
 grep -q '@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must install the pinned Pi runtime directly'
 grep -q 'npm:pi-subagents@${PI_SUBAGENTS_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must seed the pinned subagents extension'

@@ -173,6 +173,16 @@ pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit `@gitlab/orbit@0.138.
 BasedPyright `1.40.2`, and JetBrains Kotlin LSP `263.6379.0`. The image tag is
 independent of the Pi package version.
 
+The N150 host Docker client packages are upgraded separately from the daemon.
+The host-only script `scripts/upgrade-n150-docker-client.sh` pins Docker CLI
+`5:29.8.2-1~ubuntu.26.04~resolute`, Buildx
+`0.37.1-1~ubuntu.26.04~resolute`, and Compose
+`5.6.0-1~ubuntu.26.04~resolute`. It saves the previous and target package
+archives with SHA-256 checksums and a generated rollback command; it does not
+upgrade or restart Docker Engine or stop containers. Run it on Beelink N150
+with `sudo bash <absolute-script-path>` after deployment smoke jobs have
+drained.
+
 Pi MCP Adapter `5.1.0` declares support through `pi-ai@^1.0.0`, although its
 Pi host dependency is imported as types only. The image applies the tracked,
 version-guarded peer range patch in `patch-pi-mcp-adapter.mjs` after installing

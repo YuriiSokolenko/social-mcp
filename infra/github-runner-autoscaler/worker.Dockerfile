@@ -48,6 +48,9 @@ RUN apt-get update \
     && ln -s /opt/ast-grep/node_modules/.bin/ast-grep /usr/local/bin/ast-grep \
     && python3 -m venv /opt/basedpyright \
     && /opt/basedpyright/bin/python -m pip install --no-cache-dir "basedpyright==${BASEDPYRIGHT_VERSION}" \
+    && nodejs_wheel_bin="$(/opt/basedpyright/bin/python -c 'from nodejs_wheel.executable import ROOT_DIR; import os; print(os.path.join(ROOT_DIR, "bin", "node"))')" \
+    && test -x "$nodejs_wheel_bin" \
+    && ln -sf /usr/local/bin/node "$nodejs_wheel_bin" \
     && ln -s /opt/basedpyright/bin/basedpyright /usr/local/bin/basedpyright \
     && ln -s /opt/basedpyright/bin/basedpyright-langserver /usr/local/bin/basedpyright-langserver \
     && python3 -m venv /opt/mini-swe-agent \
@@ -79,10 +82,10 @@ RUN pi install --no-approve "npm:pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
     && pi install --no-approve "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
     && node /tmp/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
     && mkdir -p /opt/pi-package-seed \
-    && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/ \
-    && rm /tmp/patch-pi-mcp-adapter.mjs
+    && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/
 USER root
-RUN chmod -R a+rX /opt/pi-package-seed
+RUN chmod -R a+rX /opt/pi-package-seed \
+    && rm /tmp/patch-pi-mcp-adapter.mjs
 
 USER runner
 WORKDIR /home/runner/actions-runner
