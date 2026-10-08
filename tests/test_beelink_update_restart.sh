@@ -33,4 +33,44 @@ if grep -Eq 'for cmd .*\bgh\b|gh auth status|gh run list' "$SCRIPT"; then
   fail 'host GitHub CLI must not be required'
 fi
 grep -q 'unset RUNNERS_JSON RUNS_JSON GH_TOKEN' "$SCRIPT" || fail 'GitHub credential must be cleared after read-only preflight'
+# Exercise the real post-restart verification path with Compose/Docker mocks.
+# A missing control container must fail before image checks, even under set -u.
+verification_block="$(sed -n '/^CONTROL_ID="$(compose ps -q control-runner)"$/,/^CONTROL_RUNNING_IMAGE=/p' "$SCRIPT")"
+[[ "$verification_block" == *'CONTROL_RUNNING_IMAGE='* ]] || fail 'post-restart verification fixture cannot locate code block'
+run_verification_fixture() (
+  set -euo pipefail
+  local control_id="$1"
+  compose() {
+    [[ "$*" == 'ps -q control-runner' ]] || return 1
+    printf '%s\n' "$control_id"
+  }
+  docker() {
+    [[ $# == 4 && "$1" == inspect && "$2" == --format ]] || return 1
+    case "$3" in
+      '{{.State.Status}}')
+        case "$4" in
+          pi-runner-manager|general-runner-manager|social-mcp-zoekt) printf 'running\n';;
+          "$control_id") [[ -n "$control_id" ]] || return 1; printf 'running\n';;
+          *) return 1;;
+        esac;;
+      '{{.Image}}') printf 'sha256:mock\n';;
+      '{{.Config.Image}}')
+        case "$4" in
+          pi-runner-manager|general-runner-manager) printf 'n150/mock-manager:1\n';;
+          "$control_id") [[ -n "$control_id" ]] || return 1; printf 'n150/mock-control:1\n';;
+          *) return 1;;
+        esac;;
+      *) return 1;;
+    esac
+  }
+  curl() { :; }
+  log() { :; }
+  die() { fail "$*"; }
+  eval "$verification_block"
+  [[ "$CONTROL_ID" == "$control_id" && "$CONTROL_RUNNING_IMAGE" == 'n150/mock-control:1' ]]
+)
+run_verification_fixture 'control-fixture-123' || fail 'valid control ID must pass post-restart verification'
+if run_verification_fixture '' >/dev/null 2>&1; then
+  fail 'missing control ID must fail post-restart verification'
+fi
 printf 'PASS: Beelink update/restart argument and safety checks\n'
