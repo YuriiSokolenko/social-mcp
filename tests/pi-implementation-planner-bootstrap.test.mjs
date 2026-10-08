@@ -58,6 +58,25 @@ test('implementer stage has no planner evidence cap, lifecycle deadline, or conf
   assert.equal('implementationPlannerStructuredRetry' in config, false);
 });
 
+test('Planner alone opts out of inherited skill catalog without losing its read-only contract', () => {
+  const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
+  const frontmatter = planner.split('---')[1];
+  assert.ok(frontmatter, 'Planner agent must have frontmatter');
+  assert.match(frontmatter, /^systemPromptMode: replace$/m);
+  assert.match(frontmatter, /^inheritProjectContext: false$/m);
+  assert.match(frontmatter, /^inheritGlobalContext: false$/m);
+  assert.match(frontmatter, /^inheritSkills: false$/m);
+  assert.doesNotMatch(frontmatter, /^(skills|skillPath):/m, 'no explicit skill injection');
+  assert.match(frontmatter, /^tools: read, grep, find, ls, repo_search, planner_code_graph$/m);
+  const overrides = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8')).subagents.agentOverrides;
+  assert.equal(overrides['implementation-planner'].inheritSkills, undefined, 'no project override re-enables inherited skills');
+  assert.match(planner, /resolvedTargets > conventionHints > discovered repository context/);
+  assert.match(planner, /ORBIT-DERIVED REPOSITORY CONTEXT/);
+  assert.match(planner, /No mutation, shell, delegation, or untrusted tool is available/);
+  assert.match(planner, /Runtime preserves the complete final response verbatim as opaque `planText`/);
+  assert.match(planner, /planText.*untrusted task data/);
+});
+
 test('PreparedImplementation artifact round-trips and a missing file means no bootstrap ran', (t) => {
   const file = tempFile(t);
   assert.equal(readPreparedImplementation(file), null);
