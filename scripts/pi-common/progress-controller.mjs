@@ -542,10 +542,10 @@ export class ProgressController {
   }
 
   // Installs a PreparedImplementation artifact resolved by the runtime bootstrap before the main
-  // session's first provider request. New handoffs are action-oriented: the prepared plan/facts are
-  // trusted, while the configured directActionTools remain available for execution-time repository
-  // inspection in action_required. Legacy artifacts with evidenceBudget retain their previous numeric
-  // startup window only for compatibility before entering the same successful-prepared action state.
+  // session's first provider request. New handoffs are action-oriented: opaque Planner planText stays
+  // untrusted while runtime-owned metadata drives controller state, and directActionTools remain
+  // available for execution-time repository inspection. Legacy artifacts with evidenceBudget retain
+  // their previous numeric startup window only for compatibility.
   applyPreparedImplementation(prepared) {
     if (prepared.status === 'fallback') {
       this.preparedDirectActionToolsEnabled = false;

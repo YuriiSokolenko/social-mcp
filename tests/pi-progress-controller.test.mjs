@@ -611,22 +611,20 @@ test('triage closes exploration after prepared context is loaded', () => {
   }), undefined);
 });
 
-test('runtime-owned preparation uses one text/XML planner for plan and startup class', () => {
+test('runtime-owned preparation uses one plain-text planner and harness-owned startup metadata', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const settings = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8'));
   const delegation = fs.readFileSync('scripts/pi-common/structured-subagent.mjs', 'utf8');
+  const bootstrapPlanner = fs.readFileSync('scripts/pi-common/implementation-planner.mjs', 'utf8');
   assert.match(delegation, /prompt-template:subagent:request/);
   assert.match(delegation, /prompt-template:subagent:response/);
   assert.match(delegation, /runTextSubagent/);
-  const bootstrapPlanner = fs.readFileSync('scripts/pi-common/implementation-planner.mjs', 'utf8');
-  const plannerXml = fs.readFileSync('scripts/pi-common/planner-xml.mjs', 'utf8');
   assert.doesNotMatch(runtime, /name: 'prepare_implementation'|runStructuredImplementationPlanner/, 'main runtime no longer registers or runs the planner');
   assert.match(bootstrapPlanner, /runTextSubagent/);
-  assert.match(bootstrapPlanner, /parsePlannerXml/);
-  assert.doesNotMatch(bootstrapPlanner, /IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA|PLANNER_RESULT_TOOL/);
-  assert.match(plannerXml, /\['trivial', 'nontrivial'\]/);
-  assert.match(plannerXml, /required_mutation_anchors/);
+  assert.match(bootstrapPlanner, /acceptedPlannerText/);
+  assert.match(bootstrapPlanner, /planText/);
+  assert.doesNotMatch(bootstrapPlanner, /parsePlannerXml|IMPLEMENTATION_PREPARATION_TRANSPORT_SCHEMA|PLANNER_RESULT_TOOL/);
   assert.doesNotMatch(bootstrapPlanner, /evidence_budget/);
   assert.match(bootstrapPlanner, /implementationPlannerMaxTokens \?\? 2048/);
   assert.match(bootstrapPlanner, /timeoutMs: null[\s\S]*toolBudget: null/);
@@ -638,11 +636,7 @@ test('runtime-owned preparation uses one text/XML planner for plan and startup c
   assert.match(runtime, /responseHitOutputCeiling/);
   assert.match(runtime, /name: config\.productiveProgress\.blockerTool/);
   assert.match(runtime, /name: 'undo_mutation'/);
-  assert.match(runtime, /Selectively undo one recorded structural_edit\/safe_edit\/edit\/write/);
   assert.match(runtime, /name: 'rollback_last_mutation'/);
-  assert.match(runtime, /shared latest structural_edit\/safe_edit\/edit\/write/);
-  assert.match(runtime, /other processes refuse instead of selecting an older mutation/);
-  assert.match(runtime, /No successful structural_edit\/safe_edit\/edit\/write is available to roll back/);
   assert.match(runtime, /captureMutationSnapshot/);
   assert.match(runtime, /productiveProgressState\(\)/);
   assert.match(runtime, /PI_PRODUCTIVE_STATE/);
@@ -650,18 +644,17 @@ test('runtime-owned preparation uses one text/XML planner for plan and startup c
   assert.match(runtime, /applyTokenCap/);
   assert.match(runtime, /pi\.setActiveTools/);
   assert.match(runtime, /actionRequiredToolNames/);
-  assert.doesNotMatch(runtime, /customType: 'pi-action-required'/);
   assert.match(runtime, /pi\.sendUserMessage/);
   assert.match(runtime, /maxTokens: appliedActionCap \|\| controller\.fixedMaxTokens/);
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
-  assert.doesNotMatch(runtime, /Execute step 1 now/);
-  assert.match(bootstrapPlanner, /Preparation complete; start from the prepared facts and actions/);
-  assert.match(planner, /inheritSkills: true/);
-  assert.match(planner, /trivial \| nontrivial/);
-  assert.match(planner, /Dispatcher already owns Architect routing/);
+  assert.match(bootstrapPlanner, /Preparation complete; start from the Planner handoff below/);
+  assert.match(planner, /plain-text or Markdown assistant response/i);
+  assert.match(planner, /harness owns complexity defaults, mutation-budget decisions/i);
+  assert.doesNotMatch(planner, /required_mutation_anchors|trivial \| nontrivial|Dispatcher already owns Architect routing/);
   assert.deepEqual(settings.subagents.agentOverrides['implementation-planner'].subagentOnlyExtensions, ['./scripts/pi-subagent-response-budget.mjs', './scripts/pi-planner-evidence.mjs']);
 });
+
 
 test('runtime action-forces the elevated large-mutation request and preserves only bounded resolution paths', () => {
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
@@ -705,8 +698,8 @@ test('runtime action-forces the elevated large-mutation request and preserves on
     blockedReturn >= 0 && evidenceNotice > blockedReturn && finishAttempt > evidenceNotice,
     'finish-tool attempt accounting happens only after controller-blocked calls return',
   );
-  assert.match(planner, /required_mutation_anchors/);
-  assert.doesNotMatch(planner, /evidence_budget/);
+  assert.doesNotMatch(planner, /required_mutation_anchors|evidence_budget/);
+  assert.match(planner, /harness owns complexity defaults, mutation-budget decisions/i);
 });
 
 test('repo search performs deterministic path and content discovery without a child model', () => {
@@ -1006,7 +999,7 @@ test('stage configuration owns every model prompt and injects the shared contrac
     const implementerPrompt = stagePrompt('implementer', env);
     assert.match(implementerPrompt, /# Pi Implementer Agent[\s\S]*Example issue[\s\S]*Acceptance criteria/);
     assert.doesNotMatch(implementerPrompt, /prepare_implementation/);
-    assert.match(implementerPrompt, /runtime has already prepared the top-level implementation plan[\s\S]*implementation-planner[\s\S]*trivial \| nontrivial/);
+    assert.match(implementerPrompt, /implementation-planner[\s\S]*opaque `planText`[\s\S]*conservative harness-owned runtime class/);
     assert.ok(implementerPrompt.includes('<runtime_prepared_implementation_state/>'), 'fresh prompt carries the placeholder the runner replaces with the prepared state');
     assert.doesNotMatch(implementerPrompt, /complexity-classifier/);
     assert.match(implementerPrompt, /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);

@@ -70,10 +70,10 @@
                     │       │ PreparedImplementation   │
                     │       │                          │
                     │       │ - implementation plan    │
-                    │       │ - repositoryFacts <= 6   │
-                    │       │ - affected files         │
-                    │       │ - checks                 │
-                    │       │ - intent / mutation size │
+                    │       │ - opaque planText        │
+                    │       │ - layout hint            │
+                    │       │ - harness metadata       │
+                    │       │ - fallback on failure    │
                     │       └────────────┬─────────────┘
                     │                    │
                     │                    ▼
@@ -238,9 +238,9 @@ Issue
 Planner
   │
   ├── inspect repo with read-only evidence
-  ├── finalize as plain <plan> XML
-  ├── local canonical validation
-  ├── at most one XML-only repair
+  ├── finalize as ordinary plain text / Markdown
+  ├── preserve opaque planText verbatim
+  ├── fail closed on empty / incomplete / truncated final
   └── PreparedImplementation
   │
   ▼
@@ -373,10 +373,10 @@ MERGE
 
 Planner and Implementer are deliberately separated.
 
-The Planner only inspects the repository with its read-only evidence surface. There is no numeric evidence-action or repository-fact budget; semantic no-progress guards stop useless loops. When sufficiently grounded, it returns one plain `<plan>...</plan>` XML document in assistant content. Runtime parses and canonically validates that XML locally; malformed XML gets at most one finalization-only correction turn with repository tools closed.
+The Planner inspects the repository with its read-only evidence tools, then emits one ordinary plain-text/Markdown final response. The harness persists that response verbatim as opaque `PreparedImplementation.planText` (no XML/JSON schema, parser, or format-repair turn). Empty, incomplete or truncated finals and provider failures produce a safe fallback artifact. The provider completion ceiling remains 2048 tokens; there is no separate character or byte limit on the handoff.
 
-The normalized `PreparedImplementation` carries the ordered plan, synthesized repository facts, `trivial | nontrivial` classification, required mutation anchors, large-mutation decision, and reason. A valid first XML result completes without an extra provider turn, result tool, accepted-result sidecar recovery, or terminal-abort bookkeeping.
+The v2 `PreparedImplementation` contains `planText`, status/fallback reason, harness-owned conservative metadata and the resolved layout hint. Legacy v1 artifacts are migrated at the read boundary. Main and the fresh coding session receive the complete Planner text as explicitly untrusted data, not as instructions or accepted mutation scope; they do not inherit the Planner transcript.
 
-The Implementer then starts a fresh coding session. It does not inherit the Planner transcript or repair dialogue. Its first prompt receives the Issue together with `PreparedImplementation`.
+**Intentional behavior change:** the old `validateResolvedTargetPaths` check over Planner-produced structured paths is removed because free-form `planText` is not an authoritative target declaration. Resolved layout targets and mutation-scope enforcement must come from independent trusted harness context and final validation, not from parsing Planner text.
 
-This separation keeps discovery isolated from mutation while preserving all useful semantic facts needed by Main.
+Validation-repair receives the original untrusted `planText` alongside authoritative bounded diagnostics and accepted-scope facts. This keeps discovery separate from mutation without dropping the plan during repair.

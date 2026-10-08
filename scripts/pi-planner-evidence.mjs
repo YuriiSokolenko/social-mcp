@@ -8,7 +8,6 @@ import { plannerOrbitContext } from './pi-common/planner-orbit.mjs';
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
-  PLANNER_FINALIZATION_ONLY_ENV,
   createPlannerEvidenceGate,
   plannerEvidenceFact,
 } from './pi-common/implementation-planner.mjs';
@@ -197,7 +196,7 @@ export default function (pi) {
   const gate = createPlannerEvidenceGate();
   const pendingEvidence = new Map();
   const knownFacts = new Set();
-  let finalizing = process.env[PLANNER_FINALIZATION_ONLY_ENV] === '1';
+  let finalizing = false;
   let evidenceProgressContinuationPending = false;
   let lastEvidenceSignature = null;
   let lastEvidenceMadeProgress = true;
@@ -216,10 +215,6 @@ export default function (pi) {
 
   recordEvidenceState({ used: 0 });
   console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'start' })}`);
-  if (finalizing) {
-    console.log(`PI_PLANNER_FINALIZATION_TRANSITION ${JSON.stringify({ from: 'planning', to: 'finalizing', source: 'finalization_only_retry' })}`);
-  }
-
   pi.on('before_provider_request', (event) => {
     const payload = event?.payload;
     if (!finalizing) return payload;

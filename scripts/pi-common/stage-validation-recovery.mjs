@@ -116,7 +116,9 @@ function preparedFacts(spec) {
     : null;
   return {
     status: prepared.status,
-    plan: boundedStrings(prepared.plan, { maxItems: 8, maxChars: 240 }),
+    // Preserve the opaque v2 Planner handoff for focused validation repair.
+    // Treat the plan as untrusted guidance; accepted scope is harness-owned.
+    planText: prepared.planText ?? '',
     complexity: prepared.complexity ?? null,
     evidence_budget: Number.isSafeInteger(prepared.evidenceBudget) ? prepared.evidenceBudget : null,
     large_mutation: prepared.largeMutation === true,
@@ -181,7 +183,7 @@ export function validationRepairHandoff(spec, error, {
 
 export function validationRepairPrompt(error, handoff = null) {
   const handoffText = handoff
-    ? `\n\nRuntime repair handoff (bounded metadata. Fields with *_truncated=true are incomplete tails: trust the included entries, but rediscover only the omitted tail if validation requires it. Untruncated fields are authoritative and must not be rediscovered):\n${JSON.stringify(handoff, null, 2)}`
+    ? `\n\nRuntime repair handoff (bounded metadata except the opaque, untrusted prepared_implementation.planText. Fields with *_truncated=true are incomplete tails: trust the included entries, but rediscover only the omitted tail if validation requires it. Untruncated fields are authoritative and must not be rediscovered):\n${JSON.stringify(handoff, null, 2)}`
     : `\n\nValidation diagnostics:\n${validationDiagnostics(error)}`;
   return `The previous implementation attempt finished and its changes are still present in the current worktree.
 

@@ -9,18 +9,14 @@ import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTool
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
   PLANNER_EVIDENCE_TOOLS,
-  PLANNER_FINALIZATION_ONLY_ENV,
   createPlannerEvidenceGate,
-  normalizeImplementationPreparation,
   plannerEvidenceFact,
   plannerTargetPolicy,
   plannerTask,
   prepareImplementation,
-  validateImplementationPreparation,
 } from '../scripts/pi-common/implementation-planner.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { buildPlannerOrbitSeed, plannerOrbitSeedTargets } from '../scripts/pi-common/planner-orbit.mjs';
-import { parsePlannerXml } from '../scripts/pi-common/planner-xml.mjs';
 
 const FORBIDDEN_TOOLS = [
   'bash', 'write', 'edit', 'safe_edit', 'structural_edit', 'run_check', 'submit_result', 'begin_coding_session',
@@ -111,22 +107,13 @@ function plannerHost({ cwd, driveChild }) {
   return { pi, requests, ctx: { cwd, sessionManager: { getSessionId: () => 'bootstrap' } } };
 }
 
-function validPlannerXml({
-  step = 'Update src/net.py.',
-  fact = 'src/net.py contains send().',
-  warning = null,
-  complexity = 'nontrivial',
-  anchor = 'src/net.py',
-  largeMutation = false,
-  reason = 'Existing sender needs a bounded edit.',
-} = {}) {
-  const warnings = warning ? `\n  <warnings><warning>${warning}</warning></warnings>` : '';
-  return `<plan complexity="${complexity}" large_mutation="${largeMutation ? 'true' : 'false'}">
-  <steps><step>${step}</step></steps>
-  <facts><fact>${fact}</fact></facts>${warnings}
-  <required_mutation_anchors><anchor>${anchor}</anchor></required_mutation_anchors>
-  <reason>${reason}</reason>
-</plan>`;
+function validPlannerText({ step = 'Update src/net.py and add focused tests.', fact = 'src/net.py contains the sender implementation.' } = {}) {
+  return `## Implementation plan
+
+1. ${step}
+
+Repository observation: ${fact}
+Verification: run the focused sender tests.`;
 }
 
 test('planner surface remains strictly read-only while evidence admission has no numeric cap', () => {
@@ -146,34 +133,18 @@ test('planner surface remains strictly read-only while evidence admission has no
   }
 });
 
-test('planner prompt and agent contract use cat completion incentive and no model-visible planner budget', (t) => {
+test('planner prompt and agent contract require plain text without a model-visible schema', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-planner-prompt-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const issue = path.join(dir, 'issue.json');
-  fs.writeFileSync(issue, JSON.stringify({ title: 'Target', body: 'Update src/a.py.' }));
+  const issue = path.join(dir, '.issue.json');
+  fs.writeFileSync(issue, JSON.stringify({ title: 'Plan it', body: 'Use social_mcp.diagnostics.<module>.' }));
   const task = plannerTask({ PI_ISSUE_CONTEXT: issue });
-
-  for (const text of [agentSource(), task]) {
-    assert.match(text, /cat wants to be petted/i);
-    assert.match(text, /only after .*plan.*accepted/i);
-    assert.match(text, /materially change or improve/i);
-    assert.doesNotMatch(text, /at most 6 .*evidence/i);
-    assert.doesNotMatch(text, /evidence actions remaining|minutes remaining|result attempts remaining|repair attempts remaining/i);
-    assert.doesNotMatch(text, /evidence_budget/);
-  }
   const agent = agentSource();
-  assert.match(task, /plain XML document/i);
-  assert.match(task, /Do not call a result tool or function/i);
-  assert.match(task, /canonical valid XML example in your system finalization contract/i);
-  assert.match(agent, /exactly one finalization-only correction turn/i);
-  assert.match(agent, /Canonical valid XML example/);
-  assert.match(agent, /<step>Update the target implementation\.<\/step>/);
-  assert.match(agent, /<anchor>src\/example\.py<\/anchor>/);
-  assert.match(agent, /Follow this exact element structure and closing-tag names/);
-  assert.equal((agent.match(/<plan complexity=/g) ?? []).length, 1, 'system finalization contract owns one canonical XML example');
-  assert.equal((task.match(/<plan complexity=/g) ?? []).length, 0, 'per-request task references rather than duplicates the canonical example');
-  assert.doesNotMatch(task, /outer value|value wrapper|call structured_output/i);
-  assert.doesNotMatch(agent, /outer `value`|value wrapper/i);
+  assert.match(task, /ordinary plain-text or Markdown assistant response/i);
+  assert.match(task, /preserved verbatim.*opaque planText/i);
+  assert.match(agent, /ordinary nonempty plain-text or Markdown assistant response/i);
+  assert.match(agent, /no required JSON, XML, tool call, result schema, heading, field list, or Markdown template/i);
+  assert.doesNotMatch(task, /<plan|XML REPAIR|structured_output|canonical valid XML/i);
+  assert.doesNotMatch(agent, /<plan|XML finalization|Canonical valid XML|structured_output/i);
 });
 
 test('planner target policy separates immutable resolved targets from convention fallbacks', () => {
@@ -225,31 +196,7 @@ test('planner prompt keeps resolved targets immutable and convention conflicts n
   assert.match(task, /resolvedTargets=.*tests\/test_smoke_labels\.py/s);
   assert.match(task, /resolvedTargets > conventionHints > discovered repository context/);
   assert.match(task, /Do not validate, relocate, normalize, improve, or replace them/);
-  assert.match(task, /optional <warnings>/);
-});
-
-test('canonical validation rejects relocated resolved targets and preserves warnings', () => {
-  const resolvedTargets = { test: 'tests/test_smoke_labels.py' };
-  const matching = validateImplementationPreparation({
-    steps: ['Create tests/test_smoke_labels.py with smoke label coverage.'],
-    facts: [],
-    warnings: ['Nearest convention is tests/diagnostics/test_smoke_labels.py.'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: [],
-    large_mutation: false,
-    reason: 'Add focused regression coverage.',
-  }, { resolvedTargets });
-  assert.equal(matching.warnings.length, 1);
-
-  assert.throws(() => validateImplementationPreparation({
-    steps: ['Create tests/diagnostics/test_smoke_labels.py.'],
-    facts: [],
-    warnings: [],
-    complexity: 'nontrivial',
-    required_mutation_anchors: [],
-    large_mutation: false,
-    reason: 'Follow nearby tests.',
-  }, { resolvedTargets }), /resolved_target_mismatch/);
+  assert.match(task, /state the disagreement in the plan text/i);
 });
 
 test('more than six distinct useful evidence actions are accepted and telemetry exposes only action count', async (t) => {
@@ -382,7 +329,7 @@ test('successful evidence stores compact redacted facts and emits neutral CAT_WA
   assert.ok(!harness.logs().some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
 });
 
-test('multiple evidence facts queue one continuation before terminal XML finalization', async (t) => {
+test('multiple evidence facts queue one continuation before terminal text finalization', async (t) => {
   const harness = extensionHarness(t);
   let providerRequests = 0;
   const providerRequest = async () => {
@@ -426,19 +373,19 @@ test('multiple evidence facts queue one continuation before terminal XML finaliz
     message: {
       role: 'assistant',
       stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerXml() }],
+      content: [{ type: 'text', text: validPlannerText() }],
     },
   }, harness.abortContext);
   const afterTerminal = await harness.handlers.get('turn_end')({ entries: [] }, harness.abortContext);
   if (afterTerminal?.continue) await providerRequest();
 
-  assert.equal(providerRequests, 2, 'terminal XML cannot schedule an additional provider request');
+  assert.equal(providerRequests, 2, 'terminal text cannot schedule an additional provider request');
   assert.equal(afterTerminal, undefined);
   assert.deepEqual(harness.activeTools(), []);
   assert.ok(harness.logs().some(line => line.includes('PI_PLANNER_FINALIZATION_TRANSITION') && line.includes('"source":"assistant_content"')));
 });
 
-test('terminal assistant XML explicitly cancels a pending evidence continuation before another provider request', async (t) => {
+test('terminal assistant text explicitly cancels a pending evidence continuation before another provider request', async (t) => {
   const harness = extensionHarness(t);
   let providerRequests = 0;
   const providerRequest = async () => {
@@ -473,7 +420,7 @@ test('terminal assistant XML explicitly cancels a pending evidence continuation 
     message: {
       role: 'assistant',
       stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerXml() }],
+      content: [{ type: 'text', text: validPlannerText() }],
     },
   }, harness.abortContext);
 
@@ -487,7 +434,7 @@ test('terminal assistant XML explicitly cancels a pending evidence continuation 
   if (afterTerminal?.continue) await providerRequest();
 
   assert.equal(afterTerminal, undefined, 'the pre-finalization continuation is invalidated before turn_end');
-  assert.equal(providerRequests, 1, 'terminal XML does not trigger another provider request');
+  assert.equal(providerRequests, 1, 'terminal text does not trigger another provider request');
   assert.ok(!harness.logs().some(line =>
     line.includes('PI_PLANNER_EVIDENCE_CONTINUATION') && line.includes('"action":"delivered"')
   ));
@@ -506,7 +453,7 @@ test('evidence completion cannot queue a progress steer after finalization start
     message: {
       role: 'assistant',
       stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerXml() }],
+      content: [{ type: 'text', text: validPlannerText() }],
     },
   }, harness.abortContext);
   await harness.handlers.get('tool_execution_end')({
@@ -548,13 +495,13 @@ test('assistant narration followed by a tool call keeps repository tools open', 
   assert.equal(admitted, undefined);
 });
 
-test('completed assistant XML closes repository tools at message end and strips provider tool fields', async (t) => {
+test('completed assistant text closes repository tools at message end and strips provider tool fields', async (t) => {
   const harness = extensionHarness(t);
   await harness.handlers.get('message_end')({
     message: {
       role: 'assistant',
       stopReason: 'stop',
-      content: [{ type: 'text', text: validPlannerXml() }],
+      content: [{ type: 'text', text: validPlannerText() }],
     },
   }, harness.abortContext);
 
@@ -581,401 +528,91 @@ test('completed assistant XML closes repository tools at message end and strips 
   assert.equal(request.model, 'qwen');
 });
 
-test('finalization-only repair child closes tools only when the provider request is bound', async (t) => {
-  const previous = process.env[PLANNER_FINALIZATION_ONLY_ENV];
-  process.env[PLANNER_FINALIZATION_ONLY_ENV] = '1';
-  t.after(() => {
-    if (previous === undefined) delete process.env[PLANNER_FINALIZATION_ONLY_ENV];
-    else process.env[PLANNER_FINALIZATION_ONLY_ENV] = previous;
-  });
-
-  const harness = extensionHarness(t);
-  assert.deepEqual(harness.activeTools(), PLANNER_EVIDENCE_TOOLS, 'extension load must not call Pi session actions');
-  const request = await harness.handlers.get('before_provider_request')({
-    payload: {
-      model: 'qwen',
-      tools: PLANNER_EVIDENCE_TOOLS.map(name => ({ type: 'function', function: { name } })),
-      tool_choice: 'auto',
-    },
-  }, harness.abortContext);
-  assert.deepEqual(harness.activeTools(), []);
-  assert.equal('tools' in request, false);
-  assert.equal('tool_choice' in request, false);
-  assert.equal(request.model, 'qwen');
-  const blocked = await harness.handlers.get('tool_call')({
-    toolName: 'read',
-    toolCallId: 'repair-must-not-reopen',
-    input: { path: 'src/net.py' },
-  }, harness.abortContext);
-  assert.equal(blocked.block, true);
-  assert.match(blocked.reason, /repository evidence is closed/i);
-  assert.ok(harness.logs().some(line => line.includes('"source":"finalization_only_retry"')));
-});
-
-test('Planner XML maps all canonical fields and decodes XML text safely', () => {
-  const parsed = parsePlannerXml(`<plan complexity="nontrivial" large_mutation="true">
-  <steps><step>Update A &amp; B &lt;safely&gt;.</step><step>Add focused tests.</step></steps>
-  <facts><fact>send() returns &quot;ok&quot; &amp; logs it.</fact></facts>
-  <required_mutation_anchors><anchor>src/net.py</anchor><anchor>tests/net.test.mjs</anchor></required_mutation_anchors>
-  <reason>Preserve caller&apos;s behavior.</reason>
-</plan>`);
-  assert.deepEqual(parsed, {
-    steps: ['Update A & B <safely>.', 'Add focused tests.'],
-    facts: ['send() returns "ok" & logs it.'],
-    warnings: [],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/net.py', 'tests/net.test.mjs'],
-    large_mutation: true,
-    reason: "Preserve caller's behavior.",
-  });
-});
-
-test('Planner XML accepts one surrounding xml fence and standard numeric entities', () => {
-  const parsed = parsePlannerXml([
-    '```xml',
-    '<plan complexity="trivial" large_mutation="false">',
-    '  <steps><step>Use List&lt;str&gt; and preserve A &#38; B.</step></steps>',
-    '  <reason>Keep caller&#39;s behavior &#x26; tests.</reason>',
-    '</plan>',
-    '```',
-  ].join('\n'));
-  assert.deepEqual(parsed.steps, ['Use List<str> and preserve A & B.']);
-  assert.equal(parsed.reason, "Keep caller's behavior & tests.");
-});
-
-test('Planner XML maps optional warnings without weakening resolved targets', () => {
-  const parsed = parsePlannerXml(validPlannerXml({
-    warning: 'Resolved test target differs from the nearest convention.',
-  }));
-  assert.deepEqual(parsed.warnings, ['Resolved test target differs from the nearest convention.']);
-});
-
-test('Planner XML normalizes omitted or self-closing optional facts and anchors to empty arrays', () => {
-  for (const xml of [
-    `<plan complexity="trivial" large_mutation="false">
-  <steps><step>Update metadata.</step></steps>
-  <reason>One static edit.</reason>
-</plan>`,
-    `<plan complexity='trivial' large_mutation='false'>
-  <steps><step>Update metadata.</step></steps>
-  <facts/>
-  <required_mutation_anchors />
-  <reason>One static edit.</reason>
-</plan>`,
-  ]) {
-    const parsed = parsePlannerXml(xml);
-    assert.deepEqual(parsed.facts, []);
-    assert.deepEqual(parsed.warnings, []);
-    assert.deepEqual(parsed.required_mutation_anchors, []);
-  }
-});
-
-test('Planner XML rejects malformed structure, invalid root values, and nested markup', () => {
-  for (const xml of [
-    '<plan complexity="trivial" large_mutation="false"><steps><step>x</step></steps>',
-    '<plan complexity="medium" large_mutation="false"><steps><step>x</step></steps><reason>r</reason></plan>',
-    '<plan complexity="trivial" large_mutation="yes"><steps><step>x</step></steps><reason>r</reason></plan>',
-    '<plan complexity="trivial" large_mutation="false"><steps></steps><reason>r</reason></plan>',
-    '<plan complexity="trivial" large_mutation="false"><steps><step><b>x</b></step></steps><reason>r</reason></plan>',
-    '<plan complexity="trivial" large_mutation="false"><steps><step>A & B</step></steps><reason>r</reason></plan>',
-    '<plan complexity="trivial" large_mutation="false"><steps><step>x</step></steps><reason>bad < text</reason></plan>',
-    '<!DOCTYPE plan><plan complexity="trivial" large_mutation="false"><steps><step>x</step></steps><reason>r</reason></plan>',
-  ]) {
-    assert.throws(() => parsePlannerXml(xml), /Planner XML:/);
-  }
-});
-
-test('valid first XML finalization prepares once with no repair request', async (t) => {
+test('plain Planner final text is preserved verbatim with Markdown, Unicode, quotes, and angle brackets', async (t) => {
   const { dir, env } = fixture(t);
+  const planText = ['## Plan — naïve Ω', '', '- Update `social_mcp.diagnostics.<module>` without escaping it.', '- Preserve "quoted values", <tag-like-text>, ampersands & Markdown **bold**.', '- Run the focused diagnostics tests.'].join('\n');
+  let calls = 0;
+  const logs = [];
+  t.mock.method(console, 'log', line => logs.push(String(line)));
+  const host = plannerHost({ cwd: dir, driveChild: async request => {
+    calls += 1;
+    assert.equal(request.result.kind, 'text');
+    assert.equal('schema' in request.result, false);
+    assert.doesNotMatch(request.task, /<plan|XML REPAIR|canonical XML/i);
+    return { status: 'completed', finishReason: 'stop', usage: { turns: 1, input: 20, output: 80 }, result: { kind: 'text', text: planText } };
+  }});
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(calls, 1);
+  assert.equal(prepared.status, 'prepared');
+  assert.equal(prepared.planText, planText);
+  assert.equal(prepared.complexity, 'nontrivial');
+  assert.deepEqual(prepared.requiredMutationAnchors, []);
+  assert.equal(prepared.largeMutation, false);
+  assert.ok(logs.some(line => line.startsWith('PI_PLANNER_FINAL_TEXT_ACCEPTED ')));
+  assert.ok(logs.some(line => line.startsWith('PI_PLANNER_CAT_PETTED ')));
+});
+
+test('successful Planner handoff has no harness character or byte cap', async (t) => {
+  const { dir, env } = fixture(t);
+  const planText = `# Plan\n${'x'.repeat(20000)}\nKeep \`social_mcp.diagnostics.<module>\` literal.`;
+  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', finishReason: 'stop', usage: { turns: 1, output: 1000 }, result: { kind: 'text', text: planText } }) });
   t.mock.method(console, 'log', () => {});
-  const host = plannerHost({
-    cwd: dir,
-    async driveChild(request) {
-      assert.equal(request.result.kind, 'text');
-      assert.equal('schema' in request.result, false);
-      assert.doesNotMatch(JSON.stringify(request), /structured_output/);
-      const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-      fs.writeFileSync(evidenceStateFile, JSON.stringify({ used: 2, facts: ['f1'], toolCounts: { read: 2 } }));
-      return {
-        status: 'completed',
-        result: { kind: 'text', text: validPlannerXml() },
-        usage: { input: 500, output: 180, turns: 1, toolCalls: 2 },
-      };
-    },
-  });
-
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
   assert.equal(prepared.status, 'prepared');
-  assert.equal(host.requests.length, 1);
-  assert.equal(prepared.plannerFinalizationAttempts, 1);
-  assert.equal(prepared.plannerXmlRepairNeeded, false);
-  assert.deepEqual(prepared.plan, ['Update src/net.py.']);
-  assert.deepEqual(prepared.repositoryFacts, ['src/net.py contains send().']);
-  assert.deepEqual(prepared.requiredMutationAnchors, ['src/net.py']);
-  assert.equal(prepared.plannerEvidenceActions, 2);
+  assert.equal(prepared.planText, planText);
+  assert.ok(Buffer.byteLength(prepared.planText, 'utf8') > 12000);
 });
 
-test('malformed XML gets exactly one explicit error-directed repair and preserves the canonical handoff', async (t) => {
-  const { dir, env } = fixture(t);
-  const logs = [];
-  t.mock.method(console, 'log', line => logs.push(String(line)));
-  let call = 0;
-  const host = plannerHost({
-    cwd: dir,
-    async driveChild(request) {
-      call += 1;
-      if (call === 1) {
-        const evidenceStateFile = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
-        fs.writeFileSync(evidenceStateFile, JSON.stringify({
-          used: 1,
-          facts: ['read src/net.py: existing sender convention is grounded'],
-          toolCounts: { read: 1 },
-        }));
-        return {
-          status: 'completed',
-          result: {
-            kind: 'text',
-            text: '<plan complexity="nontrivial" large_mutation="false"><steps><step>Update src/net.py.</step></steps><facts><fact>Existing sender convention is grounded.</f></facts><reason>Bounded edit.</reason></plan>',
-          },
-          usage: { input: 400, output: 80, turns: 1 },
-        };
-      }
-      assert.match(request.task, /FINALIZATION-ONLY XML REPAIR — ONLY ATTEMPT/);
-      assert.match(request.task, /previous final XML was rejected and was not accepted/i);
-      assert.match(request.task, /Error class: xml_parse_or_shape/);
-      assert.match(request.task, /Error: Planner XML: unclosed <fact>/);
-      assert.match(request.task, /Repository investigation is finished and permanently closed/);
-      assert.match(request.task, /canonical XML structure in your system finalization contract/);
-      assert.match(request.task, /one complete corrected <plan> XML document now/);
-      assert.match(request.task, /exact element structure and closing-tag names/);
-      assert.match(request.task, /no prose, explanation, JSON, markdown fence, or tool call/i);
-      assert.match(request.task, /only and final repair attempt/i);
-      assert.match(request.task, /existing sender convention is grounded/);
-      assert.match(request.task, /Issue title:/);
-      assert.doesNotMatch(request.task, /cat is still waiting|finish the plan as soon|gather enough evidence/i);
-      assert.equal(process.env[PLANNER_FINALIZATION_ONLY_ENV], '1');
-      return {
-        status: 'completed',
-        result: { kind: 'text', text: validPlannerXml() },
-        usage: { input: 180, output: 120, turns: 1 },
-      };
-    },
-  });
-
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'prepared');
-  assert.equal(call, 2);
-  assert.equal(host.requests.length, 2);
-  assert.equal(prepared.plannerFinalizationAttempts, 2);
-  assert.equal(prepared.plannerXmlRepairNeeded, true);
-  assert.equal(prepared.plannerProviderTurns, 2);
-  assert.ok(logs.some(line =>
-    line.startsWith('PI_PLANNER_XML_FINALIZATION_REJECTION ') &&
-    line.includes('"attempt":1') &&
-    line.includes('"errorClass":"xml_parse_or_shape"') &&
-    line.includes('unclosed <fact>')
-  ));
-  assert.ok(logs.some(line =>
-    line.startsWith('PI_PLANNER_XML_REPAIR_STARTED ') &&
-    line.includes('"attempt":2') &&
-    line.includes('"previousAttempt":1') &&
-    line.includes('"errorClass":"xml_parse_or_shape"')
-  ));
-  assert.ok(logs.some(line => line.startsWith('PI_PLANNER_XML_FINALIZATION_SUCCESS ') && line.includes('"attempt":2')));
-});
-
-test('repair diagnostic and retained XML context redact unsafe credential and internal-path text', async (t) => {
-  const { dir, env } = fixture(t);
-  const secret = 'sk-super-secret-credential-value';
-  const internalPath = '/home/runner/private/worktree/file.py';
-  const logs = [];
-  t.mock.method(console, 'log', line => logs.push(String(line)));
-  let call = 0;
-  const host = plannerHost({
-    cwd: dir,
-    async driveChild(request) {
-      call += 1;
-      if (call === 1) {
-        return {
-          status: 'completed',
-          result: {
-            kind: 'text',
-            text: `<plan complexity="${secret}" large_mutation="false"><steps><step>Update src/net.py.</step></steps><facts><fact>Observed ${internalPath}.</fact></facts><reason>Bounded edit.</reason></plan>`,
-          },
-          usage: { input: 120, output: 60, turns: 1 },
-        };
-      }
-      assert.match(request.task, /Error class: xml_parse_or_shape/);
-      assert.match(request.task, /\[redacted credential\]/);
-      assert.match(request.task, /\[redacted path\]/);
-      assert.doesNotMatch(request.task, /sk-super-secret|\/home\/runner\/private/);
-      return {
-        status: 'completed',
-        result: { kind: 'text', text: validPlannerXml() },
-        usage: { input: 100, output: 80, turns: 1 },
-      };
-    },
-  });
-
-  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'prepared');
-  assert.equal(call, 2);
-  const rejectionLogs = logs.filter(line =>
-    line.startsWith('PI_PLANNER_XML_FINALIZATION_REJECTION ') ||
-    line.startsWith('PI_PLANNER_XML_REPAIR_STARTED ')
-  ).join('\n');
-  assert.match(rejectionLogs, /\[redacted credential\]/);
-  assert.doesNotMatch(rejectionLogs, /sk-super-secret|\/home\/runner\/private/);
-});
-
-test('missing text payload still consumes attempt one and receives the single XML repair', async (t) => {
-  const { dir, env } = fixture(t);
+test('empty Planner final text fails closed without a format-repair request', async (t) => {
+  const { dir, env } = fixture(t); let calls = 0;
+  const host = plannerHost({ cwd: dir, driveChild: async () => { calls += 1; return { status: 'completed', finishReason: 'stop', usage: { turns: 1, output: 1 }, result: { kind: 'text', text: '   \n\t' } }; } });
   t.mock.method(console, 'log', () => {});
-  let call = 0;
-  const host = plannerHost({
-    cwd: dir,
-    async driveChild(request) {
-      call += 1;
-      if (call === 1) {
-        return {
-          status: 'completed',
-          result: { kind: 'text' },
-          usage: { input: 120, output: 0, turns: 1 },
-        };
-      }
-      assert.match(request.task, /\[no text XML payload returned\]/);
-      return {
-        status: 'completed',
-        result: { kind: 'text', text: validPlannerXml() },
-        usage: { input: 100, output: 80, turns: 1 },
-      };
-    },
-  });
-
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'prepared');
-  assert.equal(call, 2);
-  assert.equal(prepared.plannerFinalizationAttempts, 2);
-  assert.equal(prepared.plannerXmlRepairNeeded, true);
+  assert.equal(calls, 1); assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_empty_final');
 });
 
-test('missing fields and invalid root values each receive only one XML repair turn', async (t) => {
-  const cases = [
-    '<plan complexity="trivial" large_mutation="false"><reason>missing steps</reason></plan>',
-    '<plan complexity="medium" large_mutation="false"><steps><step>x</step></steps><reason>bad complexity</reason></plan>',
-    '<plan complexity="trivial" large_mutation="yes"><steps><step>x</step></steps><reason>bad bool</reason></plan>',
-  ];
-  for (const [index, firstXml] of cases.entries()) {
-    const { dir, env } = fixture(t);
-    let call = 0;
-    const host = plannerHost({
-      cwd: dir,
-      async driveChild() {
-        call += 1;
-        return {
-          status: 'completed',
-          result: { kind: 'text', text: call === 1 ? firstXml : validPlannerXml() },
-          usage: { input: 100 + index, output: 50, turns: 1 },
-        };
-      },
-    });
-    const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-    assert.equal(prepared.status, 'prepared');
-    assert.equal(call, 2);
-    assert.equal(prepared.plannerFinalizationAttempts, 2);
-  }
+test('explicit provider length termination is rejected as truncated with one Planner request', async (t) => {
+  const { dir, env } = fixture(t); let calls = 0;
+  const host = plannerHost({ cwd: dir, driveChild: async () => { calls += 1; return { status: 'completed', finishReason: 'length', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: 'partial plan' } }; } });
+  t.mock.method(console, 'log', () => {});
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(calls, 1); assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_truncated_final');
 });
 
-test('invalid XML repair fails closed after two attempts and never asks for a third', async (t) => {
+test('completed envelope at the token ceiling without a stop reason is conservatively rejected', async (t) => {
   const { dir, env } = fixture(t);
-  const logs = [];
-  t.mock.method(console, 'log', line => logs.push(String(line)));
-  let call = 0;
-  const host = plannerHost({
-    cwd: dir,
-    async driveChild() {
-      call += 1;
-      return {
-        status: 'completed',
-        result: { kind: 'text', text: '<plan complexity="trivial" large_mutation="false"><steps>' },
-        usage: { input: 100, output: 30, turns: 1 },
-      };
-    },
-  });
-
+  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: 'possibly truncated plan' } }) });
+  t.mock.method(console, 'log', () => {});
   const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
-  assert.equal(prepared.status, 'fallback');
-  assert.equal(prepared.failureClass, 'planner_xml_finalization_failed');
-  assert.equal(prepared.plannerFinalizationAttempts, 2);
-  assert.equal(prepared.plannerXmlRepairNeeded, true);
-  assert.equal(call, 2);
-  assert.equal(host.requests.length, 2);
-  assert.ok(logs.some(line =>
-    line.startsWith('PI_PLANNER_XML_FINALIZATION_FAILURE ') &&
-    line.includes('"attempts":2') &&
-    line.includes('"errorClass":"xml_parse_or_shape"')
-  ));
+  assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_truncated_final');
 });
 
-test('successful planner handoff preserves long semantic content without numeric ceilings', () => {
-  const raw = {
-    steps: Array.from({ length: 24 }, (_, index) => `Step ${index + 1} ${'x'.repeat(350)}`),
-    facts: Array.from({ length: 8 }, (_, index) => `Fact ${index + 1} ${'y'.repeat(260)}`),
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/existing.py', 'tests/existing.test.py'],
-    large_mutation: false,
-    reason: 'z'.repeat(500),
-    ignored_extra_field: true,
-  };
-  const normalized = normalizeImplementationPreparation(raw);
-  assert.equal(normalized.steps.length, 24);
-  assert.ok(normalized.steps.every(step => step.length > 240));
-  assert.equal(normalized.facts.length, 8);
-  assert.ok(normalized.facts.every(fact => fact.length > 200));
-  assert.equal(normalized.reason.length, 500);
-  assert.equal('ignored_extra_field' in normalized, false);
-
-  const validated = validateImplementationPreparation(normalized);
-  assert.equal(validated.steps.length, 24);
-  assert.equal(validated.facts.length, 8);
-  assert.deepEqual(validated.requiredMutationAnchors, ['src/existing.py', 'tests/existing.test.py']);
-  assert.equal(validated.reason.length, 500);
-
+test('an explicit successful stop remains authoritative even when usage equals the transport ceiling', async (t) => {
+  const { dir, env } = fixture(t); const planText = 'Complete plan at the provider accounting boundary.';
+  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', stopReason: 'stop', usage: { turns: 1, output: 2048 }, result: { kind: 'text', text: planText } }) });
+  t.mock.method(console, 'log', () => {});
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'prepared'); assert.equal(prepared.planText, planText);
 });
 
-test('planner handoff keeps structural validation while using semantic mutation anchors', () => {
-  const valid = validateImplementationPreparation({
-    steps: ['Do it'],
-    facts: ['Known fact'],
-    complexity: 'nontrivial',
-    required_mutation_anchors: ['src/existing.py'],
-    large_mutation: false,
-    reason: 'ok',
-  });
-  assert.deepEqual(valid.requiredMutationAnchors, ['src/existing.py']);
-
-  for (const bad of [
-    { steps: [], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'ok' },
-    { steps: ['Do it'], facts: [''], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: 'ok' },
-    { steps: ['Do it'], facts: [], complexity: 'medium', required_mutation_anchors: [], large_mutation: false, reason: 'ok' },
-    { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: ['../escape.py'], large_mutation: false, reason: 'ok' },
-    { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: 'no', reason: 'ok' },
-    { steps: ['Do it'], facts: [], complexity: 'trivial', required_mutation_anchors: [], large_mutation: false, reason: '' },
-  ]) {
-    assert.throws(() => validateImplementationPreparation(bad));
-  }
+test('explicit non-success termination fails closed as an incomplete final', async (t) => {
+  const { dir, env } = fixture(t);
+  const host = plannerHost({ cwd: dir, driveChild: async () => ({ status: 'completed', finish_reason: 'tool_calls', usage: { turns: 1, output: 20 }, result: { kind: 'text', text: 'not actually final' } }) });
+  t.mock.method(console, 'log', () => {});
+  const prepared = await prepareImplementation(host.pi, host.ctx, stageConfig('implementer'), undefined, { env });
+  assert.equal(prepared.status, 'fallback'); assert.equal(prepared.failureClass, 'planner_incomplete_final');
 });
 
-test('planner observability uses XML finalization fields and has no cap telemetry', () => {
+test('planner observability uses plain-text handoff fields and has no obsolete XML telemetry', () => {
   const bootstrap = fs.readFileSync('scripts/pi-implementer-bootstrap.mjs', 'utf8');
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  const combined = `${bootstrap}\n${runtime}`;
+  const planner = fs.readFileSync('scripts/pi-common/implementation-planner.mjs', 'utf8');
+  const combined = `${bootstrap}\n${runtime}\n${planner}`;
   assert.match(combined, /plannerEvidenceActions/);
-  assert.match(combined, /plannerFinalizationAttempts/);
-  assert.match(combined, /plannerXmlRepairNeeded/);
-  assert.doesNotMatch(combined, /plannerStructuredCorrections|structuredCorrections/);
+  assert.match(combined, /planTextBytes|planText/);
+  assert.match(combined, /PI_PLANNER_FINAL_TEXT_ACCEPTED/);
+  assert.doesNotMatch(combined, /plannerFinalizationAttempts|plannerXmlRepairNeeded|PI_PLANNER_XML_|planner_xml_finalization_failed/);
   assert.doesNotMatch(combined, /plannerEvidenceCap|evidenceCap:/);
-  assert.doesNotMatch(combined, /plannerEvidenceUsed|evidenceUsed:/);
 });
 
 test('repo_search and planner_code_graph remain the only custom read-only planner tools', async () => {

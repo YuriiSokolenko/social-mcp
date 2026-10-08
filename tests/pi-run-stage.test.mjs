@@ -1242,8 +1242,9 @@ test('fresh Implementer: bootstrap pi completes first, then the main session sta
   const prompt = main.args.at(-1);
   assert.match(prompt, /Issue text/);
   assert.match(prompt, /Runtime-prepared implementation state/);
-  assert.match(prompt, /1\. Locate the target\n2\. Apply the bounded change/);
-  assert.match(prompt, /Required current-file mutation anchors: none/);
+  assert.ok(prompt.includes('1. Locate the target\\n2. Apply the bounded change'));
+  assert.match(prompt, /<untrusted_planner_handoff_json>/);
+  assert.match(prompt, /Runtime startup class: nontrivial/);
   assert.doesNotMatch(prompt, /Evidence budget|evidence_budget/);
   assert.doesNotMatch(prompt, /prepare_implementation|runtime_prepared_implementation_state/);
   assert.ok(main.args.includes('--session-dir'), 'main Implementer keeps its forkable session');
@@ -1371,6 +1372,38 @@ test('#469 validation repair handoff is bounded, deterministic, and independent 
   assert.match(shortRepair.prompt, /tests\/test_connect_four\.py/);
 });
 
+
+test('#567 repair receives complete v2 opaque Planner text', (t) => {
+  const dir = temporaryDirectory(t, 'stage-repair-plan-text-');
+  const terminal = join(dir, 'terminal');
+  const planText = '## Plan\nEdit src/app.py and test <module> — ✓\n' + 'Preserve context. '.repeat(350);
+  writeFileSync(terminal + '.prepared-implementation.json', JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    planText,
+    complexity: 'nontrivial',
+    requiredMutationAnchors: [],
+    largeMutation: false,
+    reason: 'Plain text Planner handoff',
+    workspaceRoot: dir,
+    freshBaseCommit: 'abc123',
+    baseRef: 'origin/dev',
+  }));
+  const spec = createStageRunSpec({
+    stage: 'implementer',
+    cwd: dir,
+    prompt: 'repair',
+    model: { id: 'model-x', provider: 'provider-x', baseUrl: 'http://model/v1' },
+    environment: { PI_STAGE: 'implementer', PI_PHASE: 'implementation' },
+    artifacts: { terminalResultPath: terminal, metricsPath: join(dir, 'metrics.jsonl'), rawLogPath: null },
+  });
+  const handoff = validationRepairHandoff(spec, new Error('final check failed'));
+  assert.equal(handoff.prepared_implementation.planText, planText);
+  assert.equal(handoff.prepared_implementation.plan, undefined);
+  const repair = createValidationRepairSpec(spec, new Error('final check failed'));
+  assert.equal(JSON.parse(repair.environment.PI_VALIDATION_REPAIR_HANDOFF).prepared_implementation.planText, planText);
+  assert.ok(repair.prompt.includes('Preserve context.'));
+});
 
 test('#470 repair handoff marks every truncated authoritative list as incomplete', (t) => {
   const dir = temporaryDirectory(t, 'stage-repair-handoff-truncated-');
