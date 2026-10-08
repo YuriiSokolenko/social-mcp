@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import bootstrapExtension from '../scripts/pi-implementer-bootstrap.mjs';
+import plannerEvidenceExtension from '../scripts/pi-planner-evidence.mjs';
 
 import {
   bootstrapFailureFallback,
@@ -184,6 +185,79 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
   assert.equal(requests[0].timeoutMs, undefined);
   assert.equal(requests[0].toolBudget, undefined);
   assert.equal('evidenceBudget' in result, false);
+});
+
+test('real planner fail() abort retains its durable fallback class through delegation rejection', async t => {
+  for (const status of ['cancelled', 'failed']) {
+    const bus = new EventEmitter();
+    let didAbort = false;
+    bus.on('prompt-template:subagent:request', request => {
+      const handlers = new Map();
+      const child = { on: (type, handler) => handlers.set(type, handler),
+        setActiveTools: () => {}, registerTool: () => {} };
+      plannerEvidenceExtension(child);
+      const childContext = { model: { maxTokens: 2048 },
+        abort: () => { didAbort = true; } };
+      // Exercise the real phase-specific deterministic nudge then the real fail(),
+      // rather than manually writing a failureKind into the sidecar.
+      void (async () => {
+        for (let i = 0; i < 2; i++) {
+          await handlers.get('message_end')({ message: {
+            role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Plain final.' }],
+          } });
+          await handlers.get('turn_end')({ entries: [] }, childContext);
+        }
+        assert.equal(didAbort, true, 'internal ctx.abort was invoked');
+        bus.emit('prompt-template:subagent:response', {
+          requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId,
+          status, error: 'Planner child stopped after classified phase failure',
+          usage: { turns: 2, output: 23 },
+        });
+      })();
+    });
+    const pi = { events: {
+      on: (type, handler) => { bus.on(type, handler); return () => bus.off(type, handler); },
+      emit: (...args) => bus.emit(...args),
+    } };
+    const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+    const env = plannerEnv(t);
+    t.mock.method(console, 'log', () => {});
+    const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
+    assert.equal(result.status, 'fallback');
+    assert.equal(result.failureClass, 'planner_submission_not_started', status);
+    assert.equal(result.plannerUsage.output, 23);
+    assert.match(preparedImplementationBlock(result), /PREPARATION_FALLBACK/);
+  }
+});
+
+test('all classified planner child aborts survive the structured delegation catch', async t => {
+  const classes = [
+    'planner_no_progress', 'planner_submission_incomplete',
+    'planner_submission_budget_unavailable', 'planner_submission_context_exhausted',
+    'planner_submission_placeholder',
+  ];
+  const env = plannerEnv(t);
+  for (const failureKind of classes) {
+    const bus = new EventEmitter();
+    bus.on('prompt-template:subagent:request', req => {
+      const file = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
+      assert.ok(file);
+      fs.writeFileSync(file, JSON.stringify({ used: 3, facts: [], toolCounts: { read: 3 },
+        phase: 'failed', failureKind }) + '\n');
+      bus.emit('prompt-template:subagent:response', {
+        requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+        status: 'cancelled', error: 'child abort',
+      });
+    });
+    const pi = { events: {
+      on: (type, fn) => { bus.on(type, fn); return () => bus.off(type, fn); },
+      emit: (...args) => bus.emit(...args),
+    } };
+    const ctx = { cwd: os.tmpdir(), sessionManager: { getSessionId: () => 'bootstrap' } };
+    const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, { env });
+    assert.equal(result.failureClass, failureKind);
+    assert.equal(result.plannerEvidenceActions, 3);
+  }
 });
 
 test('bootstrap launches planner only after session_start handlers have installed delegation context', async (t) => {
