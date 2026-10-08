@@ -41,6 +41,7 @@ export function patchPiSubagentsSource(source) {
   const helperAnchor = 'const artifactOutputByResult = new WeakMap();';
   const decisionAnchor = 'const missingOutput = !finalText?.trim() && !validatedStructuredOutput;';
   const conditionAnchor = 'if ((missingOutput || terminalEmptyAfterUsefulWork) && (!errInfo.hasError || hasEmptyTerminalAssistantResponse(messages))) {';
+  const errorConditionAnchor = '} else if (errInfo.hasError) {';
   const ensureOnce = (text, fragment) => {
     if (text.split(fragment).length !== 2) throw new Error('pi-subagents 0.76.1 source drift: ' + fragment);
   };
@@ -48,6 +49,7 @@ export function patchPiSubagentsSource(source) {
   ensureOnce(source, helperAnchor);
   ensureOnce(source, decisionAnchor);
   ensureOnce(source, conditionAnchor);
+  ensureOnce(source, errorConditionAnchor);
   const policy = acceptedTerminalPlannerReceipt.toString();
   const guard = [
     '// Planner-only exception to the upstream mandatory final-text rule.',
@@ -60,15 +62,24 @@ export function patchPiSubagentsSource(source) {
     '  if (!sidecar || !lifecycleId) return false;',
     '  try {',
     '    return acceptedTerminalPlannerReceipt(messages, JSON.parse(readFileSync(sidecar, "utf8")), lifecycleId);',
-    '  } catch { return false; }',
+    '  } catch (error) {',
+    '    // Log only the exception category; sidecar paths and plan content remain private.',
+    '    const kind = error instanceof ReferenceError ? "injected_dependency_missing" : "receipt_unavailable";',
+    '    console.warn("PI_PLANNER_TERMINAL_RECEIPT_CHECK_FAILED " + JSON.stringify({ kind }));',
+    '    return false;',
+    '  }',
     '}',
     '',
   ].join('\n');
   return source
-    .replace(importAnchor, 'import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";')
-    .replace(helperAnchor, guard + helperAnchor)
-    .replace(decisionAnchor, 'const acceptedTerminalPlan = trustedPlannerTerminalToolUse(messages, agent.name);\n\t\t' + decisionAnchor)
-    .replace(conditionAnchor, 'if (!acceptedTerminalPlan && (missingOutput || terminalEmptyAfterUsefulWork) && (!errInfo.hasError || hasEmptyTerminalAssistantResponse(messages))) {');
+    .replace(importAnchor, () => 'import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";')
+    .replace(helperAnchor, () => guard + helperAnchor)
+    .replace(decisionAnchor, () => 'const acceptedTerminalPlan = trustedPlannerTerminalToolUse(messages, agent.name);\n\t\t' + decisionAnchor)
+    .replace(conditionAnchor, () => 'if (!acceptedTerminalPlan && (missingOutput || terminalEmptyAfterUsefulWork) && (!errInfo.hasError || hasEmptyTerminalAssistantResponse(messages))) {')
+    // An earlier recoverable evidence-tool failure must not override a verified
+    // successful terminal submission. Without the exact receipt, preserve the
+    // original upstream hidden-error classification.
+    .replace(errorConditionAnchor, () => '} else if (!acceptedTerminalPlan && errInfo.hasError) {');
 }
 
 function main() {
