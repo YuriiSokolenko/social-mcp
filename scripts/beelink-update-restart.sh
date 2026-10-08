@@ -187,6 +187,10 @@ cleanup() { [[ -n "$STAGE" && -d "$STAGE" ]] && rm -rf -- "$STAGE" || true; }
 trap 'rc=$?; if (( rc != 0 )); then log "rollback guidance: previous image tags and volumes remain; restore the prior checkout/config backup and run docker compose up -d --force-recreate from the previous revision"; fi; cleanup; log "finished exit=$rc"; if (( rc != 0 )); then printf "\nUpdate stopped (exit %s). Report: %s\n" "$rc" "${REPORT:-unavailable}" >&2; fi' EXIT
 as_user git clone --single-branch --branch dev "$REMOTE" "$STAGE" >/dev/null 2>&1 || die 'could not clone origin/dev into isolated staging checkout'
 [[ -d "$STAGE/.git" ]] || die 'staging checkout is invalid'
+# Clone establishes an isolated checkout; this explicit fast-forward pull closes
+# the race where origin/dev advanced during the clone. The deployment checkout
+# itself is never pulled or changed, so its dirty/untracked host config survives.
+as_user git -C "$STAGE" pull --ff-only origin dev >/dev/null 2>&1 || die 'could not fast-forward the isolated checkout to latest origin/dev'
 install -m 0600 -o "$ORIGINAL_USER" -g "$(id -gn "$ORIGINAL_USER")" "$REPO_DIR/$AUTOSCALER_REL/.env" "$STAGE/$AUTOSCALER_REL/.env" || die 'could not preserve host .env in staging checkout'
 # Force only image tags to the values trusted by the fetched dev checkout.
 # Host tokens, paths, and other local settings remain in the copied .env.
