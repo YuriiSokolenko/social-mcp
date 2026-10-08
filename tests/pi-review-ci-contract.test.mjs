@@ -239,18 +239,85 @@ test('usage collector checks out trusted dev without persisting its write token'
   assert.match(workflow, /uses: actions\/checkout@v5\n\s+with:\n\s+ref: dev\n\s+persist-credentials: false/);
 });
 
-test('control runner watchdog alerts independently when the post-dev wake queue stalls', () => {
+test('control runner watchdog monitors both post-dev and PR terminal wake lanes', async () => {
   const workflow = fs.readFileSync('.github/workflows/control-runner-watch.yml', 'utf8');
   assert.match(workflow, /cron: '\*\/5 \* \* \* \*'/);
   assert.match(workflow, /runs-on: ubuntu-latest/);
   assert.match(workflow, /thresholdMs = 10 \* 60 \* 1000/);
-  assert.match(workflow, /workflow_id: 'ci\.yml'/);
-  assert.match(workflow, /branch: 'dev'/);
-  assert.match(workflow, /event: 'push'/);
-  assert.match(workflow, /status: 'in_progress'/);
-  assert.match(workflow, /job\.name !== 'wake-merge-gate' \|\| job\.status !== 'queued'/);
+  assert.match(workflow, /workflowId: 'ci\.yml'/);
+  assert.match(workflow, /workflowId: 'ci-terminal-wake\.yml'/);
+  assert.match(workflow, /jobName: 'wake-merge-gate'/);
+  assert.match(workflow, /jobName: 'wake-pr-merge-gate'/);
+  assert.match(workflow, /\['queued', 'in_progress'\]/);
   assert.match(workflow, /core\.setFailed/);
   assert.doesNotMatch(workflow, /runs-on:\s*\[?self-hosted/);
+
+  // Execute the actual github-script body with mocked GitHub API responses.
+  // String matching alone missed the previous incompatible watchdog rewrite.
+  const embedded = workflow.split('          script: |\n')[1];
+  assert.ok(embedded, 'watchdog must contain an inline GitHub script');
+  const source = embedded.split('\n').map(line => line.startsWith('            ') ? line.slice(12) : line).join('\n');
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const execute = new AsyncFunction('github', 'core', 'context', 'Date', source);
+
+  const now = Date.parse('2026-10-08T12:00:00Z');
+  const staleAt = new Date(now - 11 * 60 * 1000).toISOString();
+  const recentAt = new Date(now - 5 * 60 * 1000).toISOString();
+  const runs = new Map([
+    ['ci.yml:in_progress', [{ id: 100, created_at: staleAt }]],
+    ['ci-terminal-wake.yml:queued', [{ id: 200, created_at: staleAt }]],
+  ]);
+  const jobs = new Map([
+    [100, [
+      { id: 1001, name: 'wake-merge-gate', status: 'queued', created_at: staleAt, html_url: 'https://example.test/post-dev' },
+      { id: 1002, name: 'irrelevant-job', status: 'queued', created_at: staleAt },
+    ]],
+    [200, [
+      { id: 2001, name: 'wake-pr-merge-gate', status: 'queued', created_at: staleAt, html_url: 'https://example.test/pr' },
+    ]],
+  ]);
+  const calls = [];
+  const github = {
+    rest: { actions: { listWorkflowRuns: 'runs', listJobsForWorkflowRun: 'jobs' } },
+    async paginate(method, params) {
+      if (method === 'runs') {
+        calls.push([params.workflow_id, params.status]);
+        return runs.get(params.workflow_id + ':' + params.status) ?? [];
+      }
+      if (method === 'jobs') return jobs.get(params.run_id) ?? [];
+      throw new Error('unexpected API operation: ' + method);
+    },
+  };
+  const alerts = [];
+  let failure = null;
+  const core = {
+    info() {},
+    error(message) { alerts.push(message); },
+    setFailed(message) { failure = message; },
+  };
+  const context = { repo: { owner: 'YuriiSokolenko', repo: 'social-mcp' } };
+  const fixedDate = { now: () => now, parse: Date.parse };
+  await execute(github, core, context, fixedDate);
+
+  assert.deepEqual(calls, [
+    ['ci.yml', 'queued'],
+    ['ci.yml', 'in_progress'],
+    ['ci-terminal-wake.yml', 'queued'],
+    ['ci-terminal-wake.yml', 'in_progress'],
+  ]);
+  assert.equal(alerts.length, 2);
+  assert.match(alerts.join('\n'), /post-dev merge-gate wake/);
+  assert.match(alerts.join('\n'), /PR CI terminal wake/);
+  assert.match(failure, /Detected 2 control-plane wake job\(s\)/);
+
+  // Jobs below the 10-minute threshold must not produce false alerts.
+  jobs.get(100)[0].created_at = recentAt;
+  jobs.get(200)[0].created_at = recentAt;
+  alerts.length = 0;
+  failure = null;
+  await execute(github, core, context, fixedDate);
+  assert.deepEqual(alerts, []);
+  assert.equal(failure, null);
 });
 
 test('dedicated control runner label is reserved for bounded control-plane orchestration', () => {
