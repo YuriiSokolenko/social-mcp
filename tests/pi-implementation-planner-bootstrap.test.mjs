@@ -50,6 +50,15 @@ function textPlan({ steps = ['Do it'], facts = [], reason = 'done' } = {}) {
   return [...steps, ...facts.map(fact => `Repository observation: ${fact}`), `Reason: ${reason}`].join('\n');
 }
 
+// Earlier child-mocking tests exercise the bootstrap envelope, not the provider replay.
+// The separate Planner lifecycle tests exercise the actual tool phase transition.
+function simulateSubmittedPlan(planText) {
+  const file = process.env.PI_PLANNER_EVIDENCE_STATE_FILE;
+  assert.ok(file, 'delegated Planner sidecar must be set before child launch');
+  fs.writeFileSync(file, JSON.stringify({ used: 0, facts: [], toolCounts: {}, phase: 'submitted',
+    submissionBudget: 4096, planText }) + '\n');
+}
+
 test('implementer stage has no planner evidence cap, lifecycle deadline, or configurable format-retry knob', () => {
   const config = stageConfig('implementer');
   assert.equal(config.implementationPlannerMaxTokens, 2048);
@@ -67,13 +76,13 @@ test('Planner alone opts out of inherited skill catalog without losing its read-
   assert.match(frontmatter, /^inheritGlobalContext: false$/m);
   assert.match(frontmatter, /^inheritSkills: false$/m);
   assert.doesNotMatch(frontmatter, /^(skills|skillPath):/m, 'no explicit skill injection');
-  assert.match(frontmatter, /^tools: read, grep, find, ls, repo_search, planner_code_graph$/m);
+  assert.match(frontmatter, /^tools: read, grep, find, ls, repo_search, planner_code_graph, begin_plan_submission, submit_plan$/m);
   const overrides = JSON.parse(fs.readFileSync('.pi/settings.json', 'utf8')).subagents.agentOverrides;
   assert.equal(overrides['implementation-planner'].inheritSkills, undefined, 'no project override re-enables inherited skills');
   assert.match(planner, /resolvedTargets > conventionHints > discovered repository context/);
   assert.match(planner, /ORBIT-DERIVED REPOSITORY CONTEXT/);
   assert.match(planner, /No mutation, shell, delegation, or untrusted tool is available/);
-  assert.match(planner, /Runtime preserves the complete final response verbatim as opaque `planText`/);
+  assert.match(planner, /planText.*preserved byte-for-byte/i);
   assert.match(planner, /planText.*untrusted task data/);
 });
 
@@ -154,6 +163,7 @@ test('planner delegation has no lifecycle timeout or numeric tool budget', async
   const requests = [];
   bus.on('prompt-template:subagent:request', request => {
     requests.push(request);
+    simulateSubmittedPlan(textPlan());
     bus.emit('prompt-template:subagent:response', {
       requestId: request.requestId,
       ownerRunId: request.ownerRunId,
@@ -196,6 +206,7 @@ test('bootstrap launches planner only after session_start handlers have installe
   let lastUiContext = null;
   on('session_start', (_event, c) => { lastUiContext = c; });
   bus.on('prompt-template:subagent:request', request => {
+    if (lastUiContext) simulateSubmittedPlan(textPlan({ reason: 'tiny' }));
     bus.emit('prompt-template:subagent:response', lastUiContext
       ? { requestId: request.requestId, ownerRunId: request.ownerRunId, nodeId: request.nodeId, status: 'completed', usage: { output: 5 },
           result: { kind: 'text', text: textPlan({ reason: 'tiny' }) } }
@@ -223,6 +234,7 @@ test('Orbit seed is resolved and embedded before Planner provider request #1', a
   bus.on('prompt-template:subagent:request', request => {
     requestSeen = request;
     assert.equal(seedResolved, true, 'seed must be ready before delegation/provider request');
+    simulateSubmittedPlan(textPlan({ steps: ['Update src/net.py'], facts: ['src/net.py is the target'], anchors: ['src/net.py'], reason: 'one bounded edit' }));
     bus.emit('prompt-template:subagent:response', {
       requestId: request.requestId,
       ownerRunId: request.ownerRunId,
@@ -286,6 +298,7 @@ test('absent Orbit seed still delegates Planner and returns PreparedImplementati
   let requestSeen = null;
   bus.on('prompt-template:subagent:request', request => {
     requestSeen = request;
+    simulateSubmittedPlan(textPlan());
     bus.emit('prompt-template:subagent:response', {
       requestId: request.requestId,
       ownerRunId: request.ownerRunId,
