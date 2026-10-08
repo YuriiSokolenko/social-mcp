@@ -10,6 +10,7 @@ import { rememberPlannerModelLimit } from '../scripts/pi-common/planner-request-
 import { acceptedPlannerSubmission, preparedImplementationBlock } from '../scripts/pi-common/implementation-planner.mjs';
 import {
   PLANNER_EVIDENCE_STATE_FILE_ENV,
+  PLANNER_LIFECYCLE_ID_ENV,
   PLANNER_EVIDENCE_TOOLS,
   createPlannerEvidenceGate,
   plannerEvidenceFact,
@@ -39,11 +40,15 @@ function agentTools() {
 function stateFileFor(t, prefix = 'pi-planner-state') {
   const file = path.join(os.tmpdir(), `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   const previous = process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
+  const previousLifecycle = process.env[PLANNER_LIFECYCLE_ID_ENV];
   process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = file;
+  process.env[PLANNER_LIFECYCLE_ID_ENV] = `planner-test-${path.basename(file)}`;
   t.after(() => {
     fs.rmSync(file, { force: true });
     if (previous === undefined) delete process.env[PLANNER_EVIDENCE_STATE_FILE_ENV];
     else process.env[PLANNER_EVIDENCE_STATE_FILE_ENV] = previous;
+    if (previousLifecycle === undefined) delete process.env[PLANNER_LIFECYCLE_ID_ENV];
+    else process.env[PLANNER_LIFECYCLE_ID_ENV] = previousLifecycle;
   });
   return file;
 }
@@ -398,6 +403,8 @@ test('begin is not completion; only a subsequent complete submit_plan accepts ex
   assert.equal(state.phase, 'submitted');
   assert.equal(state.planText, plan);
   assert.equal(state.submissionBudget, 4096);
+  assert.equal(state.submissionReceipt.lifecycleId, process.env[PLANNER_LIFECYCLE_ID_ENV]);
+  assert.equal(state.submissionReceipt.executed, true);
   assert.equal(acceptedPlannerSubmission(state, { result: { kind: 'text', text: '' } }), plan);
   const block = preparedImplementationBlock({
     version: 1, status: 'prepared', baseRef: 'origin/dev', workspaceRoot: '/tmp', freshBaseCommit: 'abc',
@@ -410,10 +417,11 @@ test('begin is not completion; only a subsequent complete submit_plan accepts ex
 
 test('accepted submit_plan stops the provider loop with a durable prepared handoff and correct usage', async t => {
   const { dir, env } = fixture(t, { 'src/net.py': 'def send(): pass\n' });
-  const plan = validPlannerText();
+  const plan = validPlannerText() + '\nKeep exact punctuation: \\"Ω\\", <escape>, backslash \\\\ and newline.\n';
   let observedProviderRequests = null;
   let terminated = false;
   let acceptedState = null;
+  const logs = [];
   const { pi, ctx, requests } = plannerHost({
     cwd: dir,
     driveChild: async () => {
@@ -434,13 +442,16 @@ test('accepted submit_plan stops the provider loop with a durable prepared hando
       }
       observedProviderRequests = h.logs().filter(line => line.startsWith('PI_PLANNER_PROVIDER_REQUEST ')).length;
       acceptedState = protocolState(h);
+      // Real Pi text adapter reports this as a failed child: the last assistant
+      // message is terminal toolUse and there is no final prose to extract.
       return {
-        status: 'completed',
+        status: 'failed',
+        error: 'Subagent produced no output after terminal assistant stopReason "toolUse".',
         usage: { turns: observedProviderRequests, input: 1900, output: 850 },
-        result: { kind: 'text', text: '' },
       };
     },
   });
+  t.mock.method(console, 'log', line => logs.push(String(line)));
   const result = await prepareImplementation(pi, ctx, stageConfig('implementer'), undefined, {
     env, orbitSeedBuilder: async () => ({ present: false }),
   });
@@ -456,6 +467,13 @@ test('accepted submit_plan stops the provider loop with a durable prepared hando
   assert.deepEqual(result.plannerUsage, { turns: 2, input: 1900, output: 850 });
   assert.equal(result.reason, 'Planner completed an explicit submit_plan handoff.');
   assert.equal(result.plannerEvidenceActions, 0);
+  assert.equal(acceptedState.submissionReceipt.executed, true);
+  assert.equal(acceptedState.submissionReceipt.lifecycleId.length > 0, true);
+  assert.equal(logs.filter(line => line.startsWith('PI_PLANNER_TERMINAL_TOOLUSE_RECOVERED ')).length, 1);
+  const block = preparedImplementationBlock(result);
+  assert.doesNotMatch(block, /PREPARATION_FALLBACK/);
+  const serialized = block.match(/<untrusted_planner_handoff_json>\s*(\{[^\n]+\})/);
+  assert.equal(JSON.parse(serialized[1]).planText, plan);
 });
 
 test('terminal hint is denied to invalid, truncated, duplicate and budget-unverified submit attempts', async t => {
