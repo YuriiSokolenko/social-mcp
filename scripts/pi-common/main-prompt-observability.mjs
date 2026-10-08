@@ -36,8 +36,8 @@ export function mainPromptRequestMetadata(payload, previous = null) {
   const request = componentFingerprint(payload);
   const initialUserText = messageText(initialUser);
   const systemText = systemMessages.map(messageText).join('\n');
-  const skillsBlock = systemText.match(/<skills>[\\s\\S]*?<\\/skills>/)?.[0] ?? '';
-  const skillNames = [...skillsBlock.matchAll(/<name>([^<]+)<\\/name>/g)].map(match => match[1]);
+  const skillsBlock = systemText.match(/<skills>[\s\S]*?<\/skills>/)?.[0] ?? '';
+  const skillNames = [...skillsBlock.matchAll(/<name>([^<]+)<\/name>/g)].map(match => match[1]);
 
   return {
     systemMessageCount: systemMessages.length,
