@@ -41,7 +41,10 @@ export function compactImplementerSkillPrompt(systemPrompt) {
   if (catalogs.length !== 1) return systemPrompt;
   const entriesText = catalogs[0][1];
   const entries = [...entriesText.matchAll(SKILL_ENTRY_RE)];
-  if (entries.length === 0 || entriesText.replace(SKILL_ENTRY_RE, '').trim()) return systemPrompt;
+  // An incomplete entry can make the regex consume the next skill's location.
+  // Reject the entire catalog unless each opening <skill> has its own parsed entry.
+  const openingSkillCount = (entriesText.match(/<skill>/g) ?? []).length;
+  if (entries.length === 0 || entries.length !== openingSkillCount || entriesText.replace(SKILL_ENTRY_RE, '').trim()) return systemPrompt;
   if (entries.some(([, name, , location]) => !name.trim() || !location.trim())) return systemPrompt;
 
   const compactEntries = entries.map(([, name, description, location]) =>
@@ -49,7 +52,7 @@ export function compactImplementerSkillPrompt(systemPrompt) {
   ).join('\n');
   const compact = [
     '<skills>',
-    'Available skills (all remain loaded). Match by name and summary; read the listed SKILL.md before applying a skill.',
+    'Available skills (all remain available). Match by name and summary; read the listed SKILL.md before applying a skill.',
     'Resolve relative references against the directory containing that skill file.',
     '<available_skills>',
     compactEntries,
