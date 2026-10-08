@@ -690,7 +690,8 @@ function layoutGuidance(layoutHint, { authoritative }) {
 }
 
 // The compact, trusted block that replaces the old model-visible prepare_implementation exchange.
-// It carries only the normalized artifact: never planner reasoning, retries or transcript.
+// It carries the verbatim untrusted Planner text inside an escaped JSON envelope,
+// plus harness-owned metadata; never the Planner transcript or retry dialogue.
 function escapedUntrustedPlannerText(value) {
   return JSON.stringify(String(value))
     .replaceAll('&', '\\u0026')
