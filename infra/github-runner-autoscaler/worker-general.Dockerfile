@@ -1,7 +1,10 @@
 ARG RUNNER_PLATFORM=linux/amd64
 FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS python-runtime
-FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+FROM --platform=${RUNNER_PLATFORM} debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91
 
+ARG NODE_VERSION=26.11.1
+ARG NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651
+ARG NPM_VERSION=12.2.0
 ARG ACTIONS_RUNNER_VERSION=2.338.0
 ARG ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
 ARG DOCKER_BUILDX_VERSION=0.37.1-1~debian.12~bookworm
@@ -15,9 +18,14 @@ ENV HOME=/home/runner \
 USER root
 COPY --from=python-runtime /usr/local/ /usr/local/
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl git gnupg jq sudo tar gzip \
-      libcurl4 libicu72 libkrb5-3 liblttng-ust1 libssl3 libunwind8 zlib1g \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git gnupg jq sudo tar gzip xz-utils \
+      libatomic1 libcurl4 libgcc-s1 libicu72 libkrb5-3 liblttng-ust1 libssl3 libstdc++6 libunwind8 zlib1g \
     && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
+    && rm /tmp/node.tar.xz \
+    && npm install --global "npm@${NPM_VERSION}" \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "${GH_CLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
     && chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -31,6 +39,8 @@ RUN apt-get update \
       "gh=${GH_CLI_VERSION}" "docker-ce-cli=${DOCKER_CLI_VERSION}" \
       "docker-compose-plugin=${DOCKER_COMPOSE_VERSION}" "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
+    && node --version \
+    && npm --version \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && groupadd --gid 983 hostdocker \
     && usermod --append --groups hostdocker runner \

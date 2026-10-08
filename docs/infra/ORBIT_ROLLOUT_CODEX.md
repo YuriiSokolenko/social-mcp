@@ -32,7 +32,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker build \
      -f infra/github-runner-autoscaler/worker.Dockerfile \
-     -t n150/github-pi-runner-ephemeral:1.0.5-mini-swe \
+     -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe \
      .
    ```
 
@@ -41,7 +41,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker run --rm \
      --entrypoint orbit \
-     n150/github-pi-runner-ephemeral:1.0.5-mini-swe \
+     n150/github-pi-runner-ephemeral:1.1.0-mini-swe \
      version
    ```
 

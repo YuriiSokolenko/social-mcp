@@ -1,9 +1,12 @@
 ARG RUNNER_PLATFORM=linux/amd64
-FROM --platform=${RUNNER_PLATFORM} node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+FROM --platform=${RUNNER_PLATFORM} debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91
 
+ARG NODE_VERSION=26.11.1
+ARG NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651
+ARG NPM_VERSION=12.2.0
 ARG ACTIONS_RUNNER_VERSION=2.338.0
 ARG ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-ARG PI_CODING_AGENT_VERSION=1.0.4
+ARG PI_CODING_AGENT_VERSION=1.1.0
 ARG PI_MCP_ADAPTER_VERSION=5.1.0
 ARG PI_SUBAGENTS_VERSION=0.76.1
 ARG ORBIT_VERSION=0.138.0
@@ -18,10 +21,16 @@ ARG MINI_SWE_AGENT_VERSION=2.4.6
 USER root
 COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/runner-entrypoint
 COPY infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs /tmp/lsp-mcp-server-wrapper.mjs
+COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /tmp/patch-pi-mcp-adapter.mjs
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sudo tar gzip \
-      libcurl4 libicu72 libkrb5-3 liblttng-ust1 libssl3 libunwind8 zlib1g \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sudo tar gzip xz-utils \
+      libatomic1 libcurl4 libgcc-s1 libicu72 libkrb5-3 liblttng-ust1 libssl3 libstdc++6 libunwind8 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
+    && rm /tmp/node.tar.xz \
+    && npm install --global "npm@${NPM_VERSION}" \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && printf 'runner ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/runner \
     && chmod 0440 /etc/sudoers.d/runner \
@@ -39,6 +48,9 @@ RUN apt-get update \
     && ln -s /opt/ast-grep/node_modules/.bin/ast-grep /usr/local/bin/ast-grep \
     && python3 -m venv /opt/basedpyright \
     && /opt/basedpyright/bin/python -m pip install --no-cache-dir "basedpyright==${BASEDPYRIGHT_VERSION}" \
+    && nodejs_wheel_bin="$(/opt/basedpyright/bin/python -c 'from nodejs_wheel.executable import ROOT_DIR; import os; print(os.path.join(ROOT_DIR, "bin", "node"))')" \
+    && test -x "$nodejs_wheel_bin" \
+    && ln -sf /usr/local/bin/node "$nodejs_wheel_bin" \
     && ln -s /opt/basedpyright/bin/basedpyright /usr/local/bin/basedpyright \
     && ln -s /opt/basedpyright/bin/basedpyright-langserver /usr/local/bin/basedpyright-langserver \
     && python3 -m venv /opt/mini-swe-agent \
@@ -55,6 +67,8 @@ RUN apt-get update \
     && install -m 0755 /tmp/lsp-mcp-server-wrapper.mjs /usr/local/bin/lsp-mcp-server \
     && rm /tmp/lsp-mcp-server-wrapper.mjs \
     && pi --version \
+    && node --version \
+    && npm --version \
     && ast-grep --version \
     && orbit version \
     && mini --help >/dev/null
@@ -66,10 +80,12 @@ ENV HOME=/home/runner \
     PI_SUBAGENTS_VERSION=${PI_SUBAGENTS_VERSION}
 RUN pi install --no-approve "npm:pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
     && pi install --no-approve "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
+    && node /tmp/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
     && mkdir -p /opt/pi-package-seed \
     && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/
 USER root
-RUN chmod -R a+rX /opt/pi-package-seed
+RUN chmod -R a+rX /opt/pi-package-seed \
+    && rm /tmp/patch-pi-mcp-adapter.mjs
 
 USER runner
 WORKDIR /home/runner/actions-runner
