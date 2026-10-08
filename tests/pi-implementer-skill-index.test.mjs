@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import implementerSkillIndex, { compactImplementerSkillPrompt } from '../scripts/pi-implementer-skill-index.mjs';
 import { buildPiInvocation, buildBootstrapInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
+import { mainPromptRequestMetadata } from '../scripts/pi-common/main-prompt-observability.mjs';
 
 const catalog = names => `<skills>
 The following skills provide specialized instructions for specific tasks.
@@ -90,4 +91,28 @@ test('#593 hook only modifies Main, and pi invocation leaves Planner and child i
   assert.ok(main.pi.args.includes('/trusted/scripts/pi-implementer-skill-index.mjs'));
   assert.ok(!reviewer.pi.args.includes('/trusted/scripts/pi-implementer-skill-index.mjs'));
   assert.ok(!bootstrap.args.includes('/trusted/scripts/pi-implementer-skill-index.mjs'));
+});
+
+test('#593 provider-side Main metadata measures exact UTF-8 skills bytes on first and later requests', () => {
+  const compressed = compactImplementerSkillPrompt('<role>safe</role>\\n' + catalog(allNames));
+  const first = {
+    messages: [
+      { role: 'system', content: compressed },
+      { role: 'user', content: '<shared_agent_contract/>\\n<role_contract/>' },
+    ],
+    tools: [],
+  };
+  const firstMetrics = mainPromptRequestMetadata(first);
+  assert.equal(firstMetrics.systemTextBytes, Buffer.byteLength(compressed, 'utf8'));
+  assert.equal(firstMetrics.skillCount, allNames.length);
+  assert.equal(firstMetrics.skillNames.length, allNames.length);
+  assert.equal(firstMetrics.skillNames.at(-1), 'github-actions-hardening');
+  assert.ok(firstMetrics.skillCatalogBytes > 0);
+  const next = mainPromptRequestMetadata({
+    ...first,
+    messages: [...first.messages, { role: 'assistant', content: 'progress' }],
+  }, firstMetrics);
+  assert.equal(next.skillCatalogBytes, firstMetrics.skillCatalogBytes);
+  assert.equal(next.systemTextBytes, firstMetrics.systemTextBytes);
+  assert.equal(next.changedFromPrevious.system, false);
 });
