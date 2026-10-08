@@ -34,6 +34,8 @@ export function buildPiInvocation(spec, workspace) {
   const extensions = [
     path.join(workspace, 'scripts/pi-bash-timeout.mjs'),
     path.join(workspace, 'scripts/pi-agent-runtime.mjs'),
+    // Main-only prompt compaction; Planner bootstrap and coding child use separate invocations.
+    ...(spec.stage === 'implementer' ? [path.join(workspace, 'scripts/pi-implementer-skill-index.mjs')] : []),
     path.join(workspace, `scripts/${config.resultTool}`),
   ];
   if (spec.stage === 'architect') extensions.push(REPOMAP_PACKAGE);
