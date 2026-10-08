@@ -5,7 +5,7 @@ ARG NODE_SHA256=3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651
 ARG NPM_VERSION=12.2.0
 ARG TYPEBOX_VERSION=1.3.36
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tar xz-utils \
+    && apt-get install -y --no-install-recommends ca-certificates curl libatomic1 libgcc-s1 libstdc++6 tar xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \

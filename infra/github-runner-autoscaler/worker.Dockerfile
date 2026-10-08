@@ -24,7 +24,7 @@ COPY infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs /tmp/lsp-mcp-serv
 COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /tmp/patch-pi-mcp-adapter.mjs
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sudo tar gzip xz-utils \
-      libcurl4 libicu72 libkrb5-3 liblttng-ust1 libssl3 libunwind8 zlib1g \
+      libatomic1 libcurl4 libgcc-s1 libicu72 libkrb5-3 liblttng-ust1 libssl3 libstdc++6 libunwind8 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
