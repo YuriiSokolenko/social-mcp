@@ -31,7 +31,7 @@ export async function runStructuredSubagent(pi, ctx, {
   let metricUsage = null;
   const ownerRunId = ctx.sessionManager.getSessionId();
   const previousBudget = process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
-  if (maxTokens) process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
+  if (maxTokens && agent !== 'implementation-planner') process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
   const previousEnv = Object.fromEntries(Object.keys(childEnv).map(key => [key, process.env[key]]));
   Object.assign(process.env, childEnv);
 
@@ -112,8 +112,10 @@ export async function runStructuredSubagent(pi, ctx, {
         status: metricStatus, usage: metricUsage,
       });
     }
-    if (previousBudget == null) delete process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
-    else process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = previousBudget;
+    if (agent !== 'implementation-planner') {
+      if (previousBudget == null) delete process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS;
+      else process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = previousBudget;
+    }
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value == null) delete process.env[key];
       else process.env[key] = value;
