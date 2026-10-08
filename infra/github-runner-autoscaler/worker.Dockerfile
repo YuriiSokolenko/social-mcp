@@ -25,7 +25,7 @@ ARG MINI_SWE_AGENT_VERSION=2.4.6
 USER root
 COPY infra/github-runner-autoscaler/worker-entrypoint.sh /usr/local/bin/runner-entrypoint
 COPY infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs /tmp/lsp-mcp-server-wrapper.mjs
-COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /tmp/patch-pi-mcp-adapter.mjs
+COPY infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /usr/local/lib/patch-pi-mcp-adapter.mjs
 COPY infra/github-runner-autoscaler/check-pi-searxng-mcp.mjs /usr/local/bin/check-pi-searxng-mcp
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git jq python3 python3-venv sqlite3 sudo tar gzip xz-utils \
@@ -103,12 +103,12 @@ ENV HOME=/home/runner \
     PI_SUBAGENTS_VERSION=${PI_SUBAGENTS_VERSION}
 RUN pi install --no-approve "npm:pi-mcp-adapter@${PI_MCP_ADAPTER_VERSION}" \
     && pi install --no-approve "npm:pi-subagents@${PI_SUBAGENTS_VERSION}" \
-    && node /tmp/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
+    && node /usr/local/lib/patch-pi-mcp-adapter.mjs /home/runner/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json \
     && mkdir -p /opt/pi-package-seed \
     && cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/
 USER root
 RUN chmod -R a+rX /opt/pi-package-seed \
-    && rm /tmp/patch-pi-mcp-adapter.mjs
+    && rm /usr/local/lib/patch-pi-mcp-adapter.mjs
 
 USER runner
 WORKDIR /home/runner/actions-runner
