@@ -144,7 +144,7 @@ jobs:
         if: steps.independent.outcome == 'success'
         continue-on-error: true
         run: |
-          # A separate shell step inherits PI_TERMINAL_RESULT_FILE via GITHUB_ENV.
+          # The separate shell step receives the stage-owned receipt path via GITHUB_ENV.
           # The parser must verify that receipt before any verdict is publishable.
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
