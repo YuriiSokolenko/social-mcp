@@ -623,7 +623,7 @@ test('#630 conflicting latest dev cannot write a partial publication file list',
     },
     files: { 'base.txt': 'local conflicting change\\n' },
     upstreamFiles: { 'base.txt': 'upstream conflicting change\\n' },
-    expectedError: /Failed to merge latest dev|Your local changes|conflict/i,
+    expectedError: /Failed to merge latest dev[\s\S]*Your local changes[\s\S]*base\.txt/,
   });
 });
 
