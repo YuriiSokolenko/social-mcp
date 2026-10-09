@@ -1,4 +1,6 @@
-# LLM / Agent Reliability Research
+# LLM / Agent Reliability Research (historical investigations)
+
+> **Historical evidence, not a live runbook.** Experiments, incidents, budgets, and mitigations below describe the code and runs at their recorded dates. Later terminal, Planner, coding-session, and recovery changes supersede many of these observations. Use the [canonical workflow guide](../CI_RULES.md) and current scripts/tests for operational facts.
 
 This directory collects research that is directly relevant to the reliability of the repository's Pi-based coding-agent workflows. It is intentionally separate from the normative CI documentation: files here record observations, external cases, experiments, failure modes, hypotheses, and mitigations that may evolve as models and runtimes change.
 
