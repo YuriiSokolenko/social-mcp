@@ -171,7 +171,7 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
           await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: begin.toolCallId, name: begin.toolName }] } });
           await emit('turn_end', { message: { stopReason: 'toolUse' } });
           await emit('before_provider_request', { payload: { max_completion_tokens: 4096,
-            tools: [{ function: { name: 'submit_result' } }, { function: { name: 'write' } }] } });
+            tools: [{ function: { name: 'submit_result' } }] } });
           const firstAttempt = ${JSON.stringify(submissionFirstAttempt)};
           if (firstAttempt) {
             if (firstAttempt === 'blank') {
@@ -319,7 +319,7 @@ test('fresh submission uses a new submit-only provider request and one truncatio
       assert.deepEqual(visible, ['submit_result']);
       assert.equal(steers.length, 1);
       const outgoing = await emit('before_provider_request', { payload: {
-        max_completion_tokens: 4096, tools: ['read', 'write', 'submit_result'].map(name => ({ function: { name } }))
+        max_completion_tokens: 4096, tools: [{ function: { name: 'submit_result' } }]
       } });
       assert.deepEqual(outgoing.tools.map(tool => tool.function.name), ['submit_result']);
       assert.equal(outgoing.tool_choice, 'auto');
@@ -329,7 +329,7 @@ test('fresh submission uses a new submit-only provider request and one truncatio
       await emit('turn_end', { message: { stopReason: 'length' } });
       assert.deepEqual(caps, [4096, 8192]);
       const retry = await emit('before_provider_request', { payload: {
-        max_completion_tokens: 8192, tools: ['read', 'submit_result'].map(name => ({ function: { name } }))
+        max_completion_tokens: 8192, tools: [{ function: { name: 'submit_result' } }]
       } });
       assert.deepEqual(retry.tools.map(tool => tool.function.name), ['submit_result']);
       const fullResult = 'Complete implementation and tests. '.repeat(500);
@@ -375,13 +375,13 @@ test('#640 separate correction and truncation limits never reopen coding or exce
         RESULT_SUBMISSION_MAX_REQUESTS } = await import(${JSON.stringify(RESULT_TOOL_URL)});
       assert.equal(RESULT_SUBMISSION_MAX_REQUESTS, 3);
       const openai = restrictResultSubmissionPayload({ tools: [
-        { type: 'function', function: { name: 'write' } },
         { type: 'function', function: { name: 'submit_result' } },
       ] });
       assert.deepEqual(openai.tools.map(t => t.function.name), ['submit_result']);
-      assert.deepEqual(openai.tool_choice, { type: 'function', function: { name: 'submit_result' } });
+      assert.equal(openai.tool_choice, 'auto');
+      assert.deepEqual(openai.tools[0].function.parameters.required, ['resultText']);
       const responses = restrictResultSubmissionPayload({ tools: [{ type: 'function', name: 'submit_result' }] });
-      assert.deepEqual(responses.tool_choice, { type: 'function', name: 'submit_result' });
+      assert.equal(responses.tool_choice, 'auto');
       for (const invalid of [
         { tools: [{ type: 'unknown', function: { name: 'submit_result' } }] },
         { tools: [{ type: 'function', function: { name: 'submit_result' } }], tool_choice: { type: 'unknown' } },
@@ -433,8 +433,7 @@ test('#640 separate correction and truncation limits never reopen coding or exce
         h.requests++;
         const response = await h.emit('before_provider_request', { payload: {
           max_completion_tokens: budget, tool_choice: toolChoice,
-          tools: ['read', 'write', 'bash', 'run_check', 'submit_result'].map(name =>
-            ({ type: 'function', function: { name } })),
+          tools: [{ type: 'function', function: { name: 'submit_result' } }],
         } });
         assert.deepEqual(response.tools.map(t => t.function.name), ['submit_result']);
         for (const name of ['read', 'write', 'edit', 'bash', 'run_check', 'repo_search']) {
