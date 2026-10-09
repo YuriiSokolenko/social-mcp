@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 
-import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools, plannerPlanAdmission, plannerProviderBudgetEvidence } from '../scripts/pi-planner-evidence.mjs';
+import plannerEvidenceExtension, { plannerCodeGraph, registerPlannerEvidenceTools, plannerPlanAdmission, plannerProviderBudgetEvidence, plannerSubmissionProviderError } from '../scripts/pi-planner-evidence.mjs';
 import { rememberPlannerModelLimit } from '../scripts/pi-common/planner-request-budget.mjs';
 import { acceptedPlannerSubmission, preparedImplementationBlock } from '../scripts/pi-common/implementation-planner.mjs';
 import {
@@ -700,10 +700,12 @@ test('400/422 compatibility retry is bounded; other transport errors and cancell
       payload: { max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }] },
     });
     assert.equal(wire().tool_choice, 'required');
-    await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'error', status, content: [] } });
+    await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'error', status,
+      errorMessage: `API error (${status}): invalid tool_choice required not supported`, content: [] } });
     assert.equal((await h.handlers.get('turn_end')({ entries: [] }, h.abortContext)).continue, true);
     assert.equal(wire().tool_choice.function.name, 'submit_plan');
-    await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'error', status, content: [] } });
+    await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'error', status,
+      errorMessage: `API error (${status}): invalid tool_choice required not supported`, content: [] } });
     await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
     assert.equal(protocolState(h).failureKind, 'planner_submission_tool_choice_unsupported');
     assert.equal(h.aborted(), true);
@@ -727,10 +729,23 @@ test('400/422 compatibility retry is bounded; other transport errors and cancell
 test('missing serialized submit_plan and wrong tool name fail closed without a receipt', async t => {
   const h = extensionHarness(t);
   await plannerTurn(h, 'begin_plan_submission');
-  assert.throws(() => h.handlers.get('before_provider_request')({ payload: {
-    max_tokens: 4096, tools: [{ type: 'function', function: { name: 'read' } }],
-  } }), /planner_submission_tool_unavailable/);
+  // Pi catches exceptions in before_provider_request and falls back to sending the
+  // *original* unfiltered payload. Simulate that host behavior to prove the hook
+  // returns a harmless request and aborts rather than throwing.
+  const rawPayload = {
+    max_tokens: 4096, tool_choice: 'auto',
+    tools: [{ type: 'function', function: { name: 'read' } }],
+  };
+  const outgoing = (() => {
+    try { return h.handlers.get('before_provider_request')({ payload: rawPayload }, h.abortContext); }
+    catch { return rawPayload; } // real Pi fallback path
+  })();
+  assert.deepEqual(outgoing, { max_tokens: 4096 });
+  assert.equal(h.aborted(), true);
+  assert.equal(protocolState(h).phase, 'failed');
   assert.equal(protocolState(h).failureKind, 'planner_submission_tool_unavailable');
+  assert.equal(protocolState(h).submissionReceipt, undefined);
+  assert.ok(h.logs().some(line => line.includes('PI_PLANNER_PROVIDER_WIRE_BLOCKED')));
 
   const other = extensionHarness(t);
   await plannerTurn(other, 'begin_plan_submission');
@@ -745,6 +760,68 @@ test('missing serialized submit_plan and wrong tool name fail closed without a r
   await other.handlers.get('turn_end')({ entries: [] }, other.abortContext);
   assert.equal(protocolState(other).failureKind, 'planner_submission_invalid_transition');
   assert.equal(protocolState(other).submissionReceipt, undefined);
+});
+
+
+test('non-tool-choice 400/422 never spend compatibility retry or misreport unsupported choices', async t => {
+  const scenarios = [
+    { status: 400, message: 'BadRequestError: 400 maximum context length exceeded',
+      failureKind: 'planner_submission_context_exhausted' },
+    { status: 422, message: 'API error (422): invalid max_completion_tokens for this model',
+      failureKind: 'planner_submission_budget_unavailable' },
+    { status: 400, message: '400: {"error":"some unrelated request problem"}',
+      failureKind: 'planner_submission_provider_rejected' },
+    { status: 422, message: 'invalid request parameters in provider input',
+      failureKind: 'planner_submission_provider_rejected' },
+    // Provider error must explicitly reject the choice, not merely mention it.
+    { status: 400, message: 'BadRequestError: 400 tool_choice=required with context length exceeded',
+      failureKind: 'planner_submission_context_exhausted' },
+  ];
+  for (const scenario of scenarios) {
+    const h = extensionHarness(t);
+    await plannerTurn(h, 'begin_plan_submission');
+    h.handlers.get('before_provider_request')({ payload: {
+      max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }],
+    } });
+    await h.handlers.get('message_end')({ message: {
+      role: 'assistant', stopReason: 'error', status: scenario.status,
+      errorMessage: scenario.message, content: [],
+    } });
+    const outcome = await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+    assert.equal(outcome, undefined);
+    assert.equal(h.aborted(), true);
+    assert.equal(protocolState(h).failureKind, scenario.failureKind);
+    assert.deepEqual(h.models, [4096], 'no 8192 retry for non-tool-choice 4xx');
+    assert.equal(protocolState(h).submissionReceipt, undefined);
+    assert.ok(!h.logs().some(line => line.includes('PI_PLANNER_TOOL_CHOICE_CORRECTION')));
+  }
+  assert.deepEqual(plannerSubmissionProviderError({
+    stopReason: 'error', status: 400, errorMessage: 'invalid tool_choice=required'
+  }), { status: 400, kind: 'tool_choice_rejected' });
+});
+
+test('toolUse with zero parsed calls keeps the bounded 8192 submission-only recovery', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  h.handlers.get('before_provider_request')({ payload: {
+    max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }],
+  } });
+  await h.handlers.get('message_end')({ message: {
+    role: 'assistant', stopReason: 'toolUse', content: [],
+  } });
+  const recovery = await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+  assert.equal(recovery.continue, true);
+  assert.equal(h.aborted(), false);
+  assert.deepEqual(h.models, [4096, 8192]);
+  assert.equal(protocolState(h).phase, 'submission_pending');
+  assert.equal(protocolState(h).submissionReceipt, undefined);
+  const wire = h.handlers.get('before_provider_request')({ payload: {
+    max_tokens: 8192, tools: [{ type: 'function', function: { name: 'submit_plan' } }],
+  } });
+  assert.equal(wire.tool_choice, 'required');
+  await plannerTurn(h, 'submit_plan', { planText: 'Modify src/net.py and verify focused tests.' });
+  assert.equal(protocolState(h).phase, 'submitted');
+  assert.equal(protocolState(h).submissionBudget, 8192);
 });
 
 test('provider boundary recognizes real budget fields and never treats missing as verified', () => {
