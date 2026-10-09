@@ -14,6 +14,7 @@ import {
 } from '../scripts/pi-common/progress-controller.mjs';
 import { agentContractPrompt, implementerCodingContractPrompt, stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { summarizeUsage } from '../scripts/pi-common/usage-ledger.mjs';
+import { requestLocalToolUseGuidance } from '../scripts/pi-common/session-state.mjs';
 import { classifyRuntimeFailureRecord } from '../scripts/pi-common/runtime-failure.mjs';
 
 function tempDir() {
@@ -152,6 +153,29 @@ test('truncated direct mutations are steered into the coding session, not a payl
     assert.match(guidance, /Call begin_coding_session now/);
     assert.doesNotMatch(guidance, /request_large_mutation_budget/);
   }
+  const fallback = truncatedToolCallGuidance('write', {
+    codingSessionTool: 'begin_coding_session',
+    preparationState: 'PREPARATION_FALLBACK',
+  });
+  assert.match(fallback, /no Planner planText exists/);
+  assert.match(fallback, /essential Main exploration findings/);
+  assert.doesNotMatch(fallback, /WITHOUT handoff/);
+});
+
+test('#705 launch hints preserve Main findings on fallback, and keep restored work terminal-only', () => {
+  const tools = ['begin_coding_session'];
+  const prepared = requestLocalToolUseGuidance({ mode: 'main', preparationState: 'PREPARED' }, tools);
+  assert.match(prepared, /omit handoff by default/);
+  const fallback = requestLocalToolUseGuidance({ mode: 'main', preparationState: 'PREPARATION_FALLBACK' }, tools);
+  assert.match(fallback, /no Planner planText is available/i);
+  assert.match(fallback, /essential repository findings/);
+  assert.doesNotMatch(fallback, /omit handoff by default/);
+  const coding = requestLocalToolUseGuidance({ mode: 'coding' }, ['write']);
+  assert.match(coding, /runtime-provided issue, prepared implementation \(if available\), worktree state/);
+  assert.doesNotMatch(coding, /Work from the compact handoff/);
+  const restored = requestLocalToolUseGuidance({ mode: 'main', resumed: true }, ['submit_result']);
+  assert.match(restored, /terminal-only/i);
+  assert.doesNotMatch(restored, /begin_coding_session/);
 });
 
 test('ceiling-hit responses without a tool are counted, reset by any tool attempt, and bounded', () => {
