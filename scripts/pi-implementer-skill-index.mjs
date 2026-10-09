@@ -65,7 +65,6 @@ export function compactImplementerSkillPrompt(systemPrompt) {
     + systemPrompt.slice(sections[0].index + oldSection.length);
 }
 
-
 // Main retains full Pi skill discovery. Only the advertised system-prompt catalog
 // is curated; its non-featured entries stay in a lossless name/location index.
 // This is a relevance hint, NEVER an authorization boundary or a tool grant.
@@ -74,34 +73,45 @@ const NON_DISTINCTIVE_SKILL_WORDS = new Set([
   'practice', 'practices', 'best', 'modern', 'agent', 'agents', 'tools',
   'development', 'implementation', 'code', 'coding', 'project', 'repository',
   'testing', 'test', 'workflow', 'workflows', 'use', 'using',
+  // These recur as incidental acceptance/review notes in large Main prompts.
+  'review', 'feedback', 'checklist', 'database', 'api', 'design',
 ]);
+const SHORT_SKILL_ALIASES = new Set(['py', 'js', 'ts', 'ci']);
 const TOPIC_SIGNALS = [
-  { match: /(?:\.py\b|\.pyi\b|\bpython\b|\bpytest\b|\bruff\b)/i, names: ['python', 'pytest', 'py'] },
-  { match: /(?:\.(?:js|jsx|ts|tsx|mjs|cjs)\b|\bjavascript\b|\btypescript\b|\bnode\.?js\b|\bvitest\b)/i,
+  { match: /(?:\.py\b|\.pyi\b|\bpython\b|\bpytest\b|\bruff\b|\bpy\b)/i, names: ['python', 'pytest', 'py'] },
+  { match: /(?:\.(?:js|jsx|ts|tsx|mjs|cjs)\b|\bjavascript\b|\btypescript\b|\bnode\.?js\b|\bvitest\b|\bjs\b|\bts\b)/i,
     names: ['javascript', 'typescript', 'node', 'js', 'ts'] },
   { match: /(?:\bDockerfile\b|docker[\s-]?compose|compose\.ya?ml|\bdocker\b|\bcontainer(?:s)?\b)/i,
     names: ['docker', 'container', 'compose'] },
-  { match: /(?:\.github\/workflows\/|\bgithub actions\b|\bCI\/CD\b|\bworkflow_dispatch\b)/i,
+  { match: /(?:\.github\/workflows\/|\bgithub actions\b|\bCI\/CD\b|\bCI\b|\bworkflow_dispatch\b)/i,
     names: ['github', 'actions', 'ci', 'workflow'] },
   { match: /(?:\bOAuth\b|\bauthentication\b|\bauthorization\b|\bsecurity\b|\bthreat\b)/i,
     names: ['security', 'auth', 'oauth'] },
   { match: /(?:\barchitecture\b|\bmodule boundaries\b|\bdesign pattern\b)/i,
     names: ['architecture', 'design'] },
+  { match: /(?:\bSQL\b|\bSQLite\b|\bPostgres(?:ql)?\b|\bRoom\b|\bmigrations?\b|\bDAO\b)/i,
+    names: ['database', 'sql', 'sqlite', 'room', 'migration'] },
 ];
 
 function relevantSkillNames(entries, taskText, limit = 5) {
   const text = typeof taskText === 'string' ? taskText.slice(0, 12000) : '';
-  const terms = new Set((text.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? [])
-    .filter(word => !NON_DISTINCTIVE_SKILL_WORDS.has(word)));
+  const terms = new Set((text.toLowerCase().match(/[a-z][a-z0-9]{1,}/g) ?? [])
+    .filter(word => !NON_DISTINCTIVE_SKILL_WORDS.has(word)
+      && (word.length > 2 || SHORT_SKILL_ALIASES.has(word))));
   const signals = TOPIC_SIGNALS.filter(topic => topic.match.test(text));
   const matches = entries.map(name => {
-    const words = decodeXml(name).toLowerCase().split(/[^a-z0-9]+/)
-      .filter(word => word.length > 2 && !NON_DISTINCTIVE_SKILL_WORDS.has(word));
-    const exact = words.length >= 2 && text.toLowerCase().includes(words.join(' '));
-    const score = (exact ? 6 : 0)
-      + words.reduce((total, word) => total + (terms.has(word) ? 4 : 0), 0)
+    const label = decodeXml(name).trim().toLowerCase();
+    const words = label.split(/[^a-z0-9]+/)
+      .filter(word => !NON_DISTINCTIVE_SKILL_WORDS.has(word)
+        && (word.length > 2 || SHORT_SKILL_ALIASES.has(word)));
+    const explicitName = Boolean(label) && terms.has(label)
+      || Boolean(label) && text.toLowerCase().split(/[^a-z0-9-]+/).includes(label);
+    const matchedWords = words.filter(word => terms.has(word)).length;
+    // A lone incidental word never consumes a featured slot. Explicit skill
+    // names, multiple distinct domain words and concrete topic signals do.
+    const score = (explicitName ? 10 : 0) + (matchedWords >= 2 ? matchedWords * 3 : 0)
       + signals.reduce((total, signal) =>
-        total + (words.some(word => signal.names.includes(word)) ? 7 : 0), 0);
+        total + (words.some(word => signal.names.includes(word)) ? 9 : 0), 0);
     return { name, score };
   }).filter(item => item.score > 0);
   matches.sort((a, b) => b.score - a.score);
@@ -173,12 +183,19 @@ export function curateImplementerSkillPrompt(systemPrompt, { taskText = '', maxF
 }
 
 export default function implementerSkillIndex(pi) {
+  // Pi may rebuild its full system catalog on each before_agent_start. Freeze
+  // the first Main task prompt instead of re-ranking against later phase text
+  // (e.g. submit_result). This is selection state, not a tool grant.
+  let initialTaskText = null;
   pi.on('before_agent_start', event => {
     // The Bootstrap Planner has a separate Pi process. Coding child has its own
     // isolated extension allowlist and inheritSkills: false.
     if (process.env.PI_STAGE !== 'implementer' || process.env.PI_CODING_SESSION) return;
+    if (initialTaskText === null && typeof event.prompt === 'string' && event.prompt.trim()) {
+      initialTaskText = event.prompt;
+    }
     const before = event.systemPrompt;
-    const after = curateImplementerSkillPrompt(before, { taskText: event.prompt });
+    const after = curateImplementerSkillPrompt(before, { taskText: initialTaskText ?? '' });
     if (after === before) return;
     const featuredCatalog = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
     const names = [...featuredCatalog.matchAll(/<name>([^<]+)<\/name>/g)].map(match => match[1]);
