@@ -366,6 +366,177 @@ test('#640 a corrected prose or blank resultText reaches the real terminal execu
   }
 });
 
+test('#640 separate correction and truncation limits never reopen coding or exceed three requests', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-correction-'));
+  try {
+    const program = `
+      import assert from 'node:assert/strict';
+      const { default: registerResultTool, restrictResultSubmissionPayload,
+        RESULT_SUBMISSION_MAX_REQUESTS } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      assert.equal(RESULT_SUBMISSION_MAX_REQUESTS, 3);
+      const openai = restrictResultSubmissionPayload({ tools: [
+        { type: 'function', function: { name: 'write' } },
+        { type: 'function', function: { name: 'submit_result' } },
+      ] });
+      assert.deepEqual(openai.tools.map(t => t.function.name), ['submit_result']);
+      assert.deepEqual(openai.tool_choice, { type: 'function', function: { name: 'submit_result' } });
+      const responses = restrictResultSubmissionPayload({ tools: [{ type: 'function', name: 'submit_result' }] });
+      assert.deepEqual(responses.tool_choice, { type: 'function', name: 'submit_result' });
+      for (const invalid of [
+        { tools: [{ type: 'unknown', function: { name: 'submit_result' } }] },
+        { tools: [{ type: 'function', function: { name: 'submit_result' } }], tool_choice: { type: 'unknown' } },
+        { tools: [{ type: 'function', function: { name: 'submit_result' } }], toolChoice: 'auto' },
+        { tools: [{ type: 'function', function: { name: 'submit_result' } }, { type: 'function', function: { name: 'submit_result' } }] },
+        { tools: { submit_result: true } },
+      ]) {
+        const closed = restrictResultSubmissionPayload(invalid);
+        assert.deepEqual(closed.tools, []);
+        assert.equal(closed.tool_choice, 'none');
+      }
+      function harness(contextWindow = 262144) {
+        const tools = new Map(), hooks = new Map(), caps = [], steers = [], surfaces = [];
+        let aborts = 0;
+        const ctx = { model: { maxTokens: 2048, contextWindow },
+          abort() { aborts++; } };
+        const pi = {
+          registerTool(tool) { tools.set(tool.name, tool); }, appendEntry() {},
+          on(name, callback) { hooks.set(name, [...(hooks.get(name) || []), callback]); },
+          getActiveTools() { return ['submit_result']; },
+          setActiveTools(names) { surfaces.push([...names]); },
+          async setModel(model) { caps.push(model.maxTokens); ctx.model = model; return true; },
+          async sendUserMessage(text) { steers.push(text); },
+        };
+        const emit = async (name, data) => {
+          let value;
+          for (const fn of hooks.get(name) || []) {
+            const next = await fn(data, ctx);
+            if (next?.block) return next;
+            if (next !== undefined) value = next;
+          }
+          return value;
+        };
+        registerResultTool(pi);
+        return { tools, emit, caps, steers, surfaces, aborts: () => aborts, ctx, requests: 0 };
+      }
+      async function begin(h) {
+        const e = { toolName: 'begin_result_submission', toolCallId: 'begin', input: {} };
+        assert.equal(await h.emit('tool_call', e), undefined);
+        await h.tools.get(e.toolName).execute(e.toolCallId, {});
+        await h.emit('tool_execution_end', { ...e, isError: false });
+        await h.emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
+          content: [{ type: 'toolCall', name: e.toolName, id: e.toolCallId }] } });
+        await h.emit('turn_end', { message: { stopReason: 'toolUse' } });
+        assert.deepEqual(h.surfaces, [['submit_result']]);
+        assert.equal(h.caps[0], 4096);
+      }
+      async function request(h, budget = 4096, toolChoice = 'auto') {
+        h.requests++;
+        const response = await h.emit('before_provider_request', { payload: {
+          max_completion_tokens: budget, tool_choice: toolChoice,
+          tools: ['read', 'write', 'bash', 'run_check', 'submit_result'].map(name =>
+            ({ type: 'function', function: { name } })),
+        } });
+        assert.deepEqual(response.tools.map(t => t.function.name), ['submit_result']);
+        for (const name of ['read', 'write', 'edit', 'bash', 'run_check', 'repo_search']) {
+          assert.equal((await h.emit('tool_call', { toolName: name, toolCallId: name, input: {} })).block, true);
+        }
+        return response;
+      }
+      async function reply(h, reason, calls = [], actualCalls = calls) {
+        for (const c of calls) await h.emit('tool_call', { toolName: c.name, toolCallId: c.id, input: c.input });
+        await h.emit('message_end', { message: { role: 'assistant', stopReason: reason,
+          usage: { inputTokens: 500 },
+          content: actualCalls.map(c => ({ type: 'toolCall', id: c.id, name: c.name })) } });
+        await h.emit('turn_end', { message: { stopReason: reason } });
+      }
+      const blank = [{ name: 'submit_result', id: 'blank', input: { resultText: '   ' } }];
+      {
+        const h = harness(); await begin(h); await request(h);
+        await reply(h, 'stop');
+        assert.deepEqual(h.caps, [4096, 4096]);
+        assert.match(h.steers[1], /FORMAT CORRECTION ONLY/);
+        await request(h);
+        await reply(h, 'toolUse', blank);
+        assert.equal(h.aborts(), 1);
+        assert.deepEqual(h.caps, [4096, 4096, 2048]);
+        assert.equal(h.requests, 2);
+        assert.equal((await h.emit('tool_call', { toolName: 'submit_result', toolCallId: 'late', input: { resultText: 'late' } })).block, true);
+      }
+      {
+        const h = harness(); await begin(h); await request(h);
+        await reply(h, 'stop'); await request(h);
+        await reply(h, 'length');
+        assert.deepEqual(h.caps, [4096, 4096, 8192]);
+        assert.match(h.steers[2], /TRUNCATED SUBMISSION/);
+        await request(h, 8192); await reply(h, 'stop');
+        assert.equal(h.aborts(), 1); assert.equal(h.requests, 3);
+        assert.deepEqual(h.caps, [4096, 4096, 8192, 2048]);
+      }
+      {
+        const h = harness(); await begin(h); await request(h);
+        await reply(h, 'length');
+        assert.deepEqual(h.caps, [4096, 8192]);
+        await request(h, 8192); await reply(h, 'stop');
+        assert.deepEqual(h.caps, [4096, 8192, 4096]);
+        assert.match(h.steers[2], /FORMAT CORRECTION ONLY/);
+        await request(h); await reply(h, 'length');
+        assert.equal(h.aborts(), 1); assert.equal(h.requests, 3);
+        assert.deepEqual(h.caps, [4096, 8192, 4096, 2048]);
+      }
+      {
+        const h = harness(); await begin(h); await request(h);
+        const call = { name: 'submit_result', id: 'real', input: { resultText: 'content' } };
+        await h.emit('tool_call', { toolName: call.name, toolCallId: call.id, input: call.input });
+        await h.emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
+          content: [{ type: 'toolCall', name: call.name, id: 'forged' }] } });
+        await assert.rejects(h.tools.get('submit_result').execute('real', call.input), /result_submission_not_complete/);
+        await h.emit('turn_end', { message: { stopReason: 'toolUse' } });
+        assert.equal(h.caps.at(-1), 4096); assert.equal(h.aborts(), 0);
+      }
+      {
+        const h = harness(); await begin(h); await request(h);
+        const call = { name: 'submit_result', id: 'one', input: { resultText: 'content' } };
+        await h.emit('tool_call', { toolName: call.name, toolCallId: call.id, input: call.input });
+        assert.equal((await h.emit('tool_call', { toolName: call.name, toolCallId: 'two', input: call.input })).block, true);
+        await h.emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
+          content: [{ type: 'toolCall', name: call.name, id: 'one' },
+            { type: 'toolCall', name: call.name, id: 'two' }] } });
+        await assert.rejects(h.tools.get('submit_result').execute('one', call.input), /result_submission_not_complete/);
+        await h.emit('turn_end', { message: { stopReason: 'toolUse' } });
+        assert.equal(h.caps.at(-1), 4096);
+      }
+      for (const actualBudget of [2048, undefined]) {
+        const h = harness(); await begin(h);
+        h.requests++;
+        const payload = { tools: [{ type: 'function', function: { name: 'submit_result' } }] };
+        if (actualBudget !== undefined) payload.max_completion_tokens = actualBudget;
+        await h.emit('before_provider_request', { payload });
+        const input = { resultText: 'correct' };
+        await h.emit('tool_call', { toolName: 'submit_result', toolCallId: 'valid', input });
+        await h.emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
+          content: [{ type: 'toolCall', id: 'valid', name: 'submit_result' }] } });
+        await assert.rejects(h.tools.get('submit_result').execute('valid', input), /result_submission_not_complete/);
+        await h.emit('turn_end', { message: { stopReason: 'toolUse' } });
+        assert.equal(h.aborts(), 1); assert.deepEqual(h.caps, [4096, 2048]);
+      }
+      {
+        const h = harness(); await begin(h);
+        await h.emit('before_provider_request', { payload: { max_completion_tokens: 4096,
+          tool_choice: { type: 'unknown' },
+          tools: [{ type: 'function', function: { name: 'submit_result' } }] } });
+        await reply(h, 'stop');
+        assert.equal(h.aborts(), 1);
+      }
+      console.log('bounded correction / truncation / budget / admission cases passed');
+    `;
+    const child = runProgram({ dir, program, env: { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' } });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+    assert.match(child.stdout, /bounded correction/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('fresh-mode snapshot does not permit legacy zero-argument submission', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-mode-snapshot-'));
   try {
