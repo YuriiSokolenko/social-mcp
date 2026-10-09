@@ -280,7 +280,7 @@ test('fresh submission uses a new submit-only provider request and one truncatio
         }
         return output;
       };
-      register(pi);
+      registerResultTool(pi);
       assert.deepEqual([...tools.keys()].sort(), ['begin_result_submission', 'submit_result']);
       assert.equal(await emit('tool_call', { toolName: 'submit_result', toolCallId: 'early', input: { resultText: 'Too early' } }).then(x => x?.block), true);
       const begin = { toolName: 'begin_result_submission', toolCallId: 'begin', input: {} };
