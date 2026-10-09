@@ -2656,7 +2656,7 @@ export default function (pi) {
     pi.registerTool({
       name: MAIN_CAPABILITY_REQUEST_TOOL,
       label: 'Request optional Main capabilities',
-      description: 'Request optional tools for a concrete need: docs, lsp, history, delegation, or extended. At most three requests. A grant never changes the CURRENT provider request or bypasses evidence, mutation, or phase gates. Tools become callable only if a subsequent request actually exposes their schemas. Use normal need_more_evidence for one-off inspection.',
+      description: 'Request optional tools for a concrete need: docs, lsp, history, delegation, or extended. At most three distinct approved groups; invalid and already-granted requests do not spend those grants. A grant never changes the CURRENT provider request or bypasses evidence, mutation, or phase gates. Tools become callable only if a subsequent request actually exposes their schemas. Use normal need_more_evidence for one-off inspection.',
       parameters: Type.Object({
         group: Type.Union(MAIN_CAPABILITY_GROUPS.map(group => Type.Literal(group))),
         reason: Type.String({ minLength: 8, maxLength: 300 }),
