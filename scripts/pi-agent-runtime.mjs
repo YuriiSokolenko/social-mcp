@@ -27,7 +27,7 @@ import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
 import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
-import { filterFreshMainToolProfile, isFreshMainToolProfilePhase, mainToolProfileResultTelemetry, optionalMainToolGroup, MAIN_CAPABILITY_REQUEST_TOOL, MAIN_CAPABILITY_GROUPS, MAX_MAIN_CAPABILITY_ESCALATIONS, mainCapabilityGrant } from './pi-common/main-tool-profile.mjs';
+import { filterFreshMainToolProfile, isFreshMainToolProfilePhase, mainToolProfileResultTelemetry, optionalMainToolGroup, MAIN_CAPABILITY_REQUEST_TOOL, MAIN_CAPABILITY_GROUPS, MAX_MAIN_CAPABILITY_ESCALATIONS, MAX_MAIN_CAPABILITY_NOOPS, MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS, mainCapabilityGrant } from './pi-common/main-tool-profile.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -567,8 +567,10 @@ export default function (pi) {
   // Only fresh Main may request optional capabilities. The grant affects the
   // NEXT serialized request; the in-flight provider snapshot remains immutable.
   let mainCapabilityRequests = 0;
+  let mainCapabilityNoops = 0;
   let mainCapabilityGroups = [];
   let mainToolProfileTelemetry = null;
+  let mainProfileHiddenAttempts = 0;
   const profileHiddenCorrections = new Set();
   // Process-local between-turn obligation. It is consumed by the next real
   // tool-bearing request or discarded when the stage/process ends; it never
@@ -1576,7 +1578,9 @@ export default function (pi) {
   // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
   // replacement guidance for the other (recoverable) classes.
   function profileHiddenToolAdvice(name, snapshot = providerCapabilitySnapshot) {
-    if (name === MAIN_CAPABILITY_REQUEST_TOOL) return 'BLOCKED: the three successful Main capability grants have been used. No further capability expansion is available; keep the current safe tools or report a blocker.';
+    if (name === MAIN_CAPABILITY_REQUEST_TOOL) return mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS
+      ? 'BLOCKED: the Main capability-request no-op limit has been reached. No more capability requests; use a permitted safe tool or preserve the worktree and report a blocker.'
+      : 'BLOCKED: the three successful Main capability grants have been used. No further capability expansion is available; keep the current safe tools or report a blocker.';
     if (['grep', 'find', 'ls'].includes(name)) return `BLOCKED: ${name} is permanently forbidden in Main; no capability grant can enable it. Use the permitted read or repository search tools.`;
     const group = optionalMainToolGroup(name);
     const permitted = snapshot?.executableTools?.includes(MAIN_CAPABILITY_REQUEST_TOOL);
@@ -2188,7 +2192,8 @@ export default function (pi) {
         if (mainToolProfile.profile !== 'phase_owned') {
           const beforeBytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
           tools = mainToolProfile.payload.tools.filter(tool =>
-            mainCapabilityGroups.length < MAX_MAIN_CAPABILITY_ESCALATIONS ||
+            (mainCapabilityGroups.length < MAX_MAIN_CAPABILITY_ESCALATIONS &&
+              mainCapabilityNoops < MAX_MAIN_CAPABILITY_NOOPS) ||
             (tool.function?.name ?? tool.name) !== MAIN_CAPABILITY_REQUEST_TOOL
           );
           mainToolProfileTelemetry = {
@@ -2197,12 +2202,15 @@ export default function (pi) {
             admitted: tools.map(tool => tool.function?.name ?? tool.name),
             denied: [
               ...mainToolProfile.deferred,
-              ...(mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS &&
+              ...((mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS ||
+                 mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS) &&
                 mainToolProfile.payload.tools.some(tool => (tool.function?.name ?? tool.name) === MAIN_CAPABILITY_REQUEST_TOOL)
                 ? [MAIN_CAPABILITY_REQUEST_TOOL] : []),
             ],
             grantedGroups: [...mainCapabilityGroups],
             escalationAttempts: mainCapabilityRequests,
+            escalationNoops: mainCapabilityNoops,
+            profileHiddenAttempts: mainProfileHiddenAttempts,
             toolSchemaBytesBeforeRaw: rawToolSchemaBytes,
             toolSchemaBytesBeforePhase: beforeBytes,
             toolSchemaBytesAfterProfile: Buffer.byteLength(JSON.stringify(tools), 'utf8'),
@@ -2230,7 +2238,8 @@ export default function (pi) {
         const liveActiveTools = pi.getActiveTools();
         const profileHiddenTools = mainToolProfile.profile === 'phase_owned' ? [] : [
           ...mainToolProfile.deferred,
-          ...(mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS &&
+          ...((mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS ||
+            mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS) &&
           mainToolProfile.payload.tools.some(tool => (tool.function?.name ?? tool.name) === MAIN_CAPABILITY_REQUEST_TOOL)
             ? [MAIN_CAPABILITY_REQUEST_TOOL] : []),
         ];
@@ -2537,8 +2546,10 @@ export default function (pi) {
           // After all request-local tool guidance, tool-choice and transport policy.
           // Matches PI_MAIN_PROMPT_METADATA and the actual outgoing schema bytes.
           mainToolProfileTelemetry.toolSchemaBytesAfter = metadata.toolSchemaBytes;
+          const { admitted, denied, ...profileMetrics } = mainToolProfileTelemetry;
           console.log('PI_MAIN_TOOL_PROFILE_FINAL ' + JSON.stringify({
-            stage, request, ...mainToolProfileTelemetry,
+            stage, request, ...profileMetrics,
+            admittedCount: admitted.length, deniedCount: denied.length,
             systemPromptBytes: metadata.systemPromptBytes,
             initialUserContextBytes: metadata.initialUserContextBytes,
             requestBodyBytes: metadata.requestBodyBytes,
@@ -2666,7 +2677,7 @@ export default function (pi) {
     pi.registerTool({
       name: MAIN_CAPABILITY_REQUEST_TOOL,
       label: 'Request optional Main capabilities',
-      description: 'Request optional tools for a concrete need: docs, lsp, history, delegation, or extended. At most three distinct approved groups; invalid and already-granted requests do not spend those grants. A grant never changes the CURRENT provider request or bypasses evidence, mutation, or phase gates. Tools become callable only if a subsequent request actually exposes their schemas. Use normal need_more_evidence for one-off inspection.',
+      description: 'Request optional tools for a concrete need: docs, lsp, history, delegation, or extended. At most three distinct approved groups; after three invalid or duplicate requests no more requests are allowed. A grant never changes the CURRENT provider request or bypasses evidence, mutation, or phase gates. Tools become callable only if a subsequent request actually exposes their schemas. Use normal need_more_evidence for one-off inspection.',
       parameters: Type.Object({
         group: Type.Union(MAIN_CAPABILITY_GROUPS.map(group => Type.Literal(group))),
         reason: Type.String({ minLength: 8, maxLength: 300 }),
