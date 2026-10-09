@@ -2034,7 +2034,7 @@ function runtimeScenario(mode) {
           await call('write', { path: 'small.txt', content: 'small change\\n' });
           assert.equal(fs.readFileSync(cwd + '/small.txt', 'utf8'), 'small change\\n');
           const afterTool = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(afterTool.tool_choice, undefined, 'a real tool attempt satisfies the provider constraint');
+          assert.equal(afterTool.tool_choice, 'required', 'successful tool attempts do not disable action-required provider forcing');
           process.exit(0);
         }
 
