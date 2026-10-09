@@ -1,0 +1,249 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import test from 'node:test';
+
+test('#684 real fresh Main provider hook filters first schema and defers grants until next request', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-main-profile-'));
+  try {
+    const issue = path.join(dir, 'issue.json');
+    const loader = path.join(dir, 'loader.mjs');
+    fs.writeFileSync(issue, JSON.stringify({ title: 'Small Python helper', body: 'Add unique_terms() and focused tests.' }));
+    fs.writeFileSync(loader, `export async function resolve(specifier, context, nextResolve) {
+      if (specifier === 'typebox') return {
+        url: 'data:text/javascript,' + encodeURIComponent('export const Type = new Proxy({}, { get: () => (...args) => ({}) });'),
+        shortCircuit: true,
+      };
+      return nextResolve(specifier, context);
+    }`);
+    const script = `
+      import assert from 'node:assert/strict';
+      import { default as runtime } from ${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)};
+      const handlers = new Map();
+      const definitions = new Map();
+      const initiallyRegistered = ['read', 'write', 'safe_edit', 'edit',
+        'accept_mutation_scope', 'run_check', 'recover_worktree', 'submit_result',
+        'begin_result_submission', 'need_more_evidence', 'searxng_web_search',
+        'context7_query-docs', 'lsp_start_server', 'lsp_find_symbol', 'file_history',
+        'subagent', 'set_response_budget'];
+      for (const name of initiallyRegistered) definitions.set(name, { name });
+      let active = [...definitions.keys(), 'request_capabilities'];
+      const steers = [];
+      const pi = {
+        events: { on: () => {}, emit: () => {} },
+        registerTool: def => { definitions.set(def.name, def); if (!active.includes(def.name)) active.push(def.name); },
+        on: (name, fn) => handlers.set(name, fn),
+        getAllTools: () => [...definitions.values()],
+        getActiveTools: () => [...active],
+        setActiveTools: names => { active = [...names]; },
+        setModel: async () => true,
+        sendUserMessage: async message => { steers.push(message); },
+      };
+      runtime(pi);
+      assert.ok(definitions.has('request_capabilities'));
+      const raw = {
+        model: 'test',
+        messages: [
+          { role: 'system', content: 'Trusted Main system' },
+          { role: 'user', content: '<shared_agent_contract source="agents/AGENTS.md">shared</shared_agent_contract>\\n<role_contract source="agents/implementer/AGENTS.md">role</role_contract>' },
+        ],
+        tools: [...definitions.keys()].map(name => ({
+          type: 'function', function: { name, description: name, parameters: { type: 'object' } },
+        })),
+      };
+      const initial = handlers.get('before_provider_request')({ payload: raw });
+      const names = payload => (payload.tools ?? []).map(def => def.function.name);
+      assert.ok(names(initial).includes('write'));
+      assert.ok(names(initial).includes('read'));
+      assert.ok(names(initial).includes('safe_edit'));
+      assert.ok(names(initial).includes('request_capabilities'));
+      assert.ok(!names(initial).includes('searxng_web_search'));
+      assert.ok(!names(initial).includes('lsp_start_server'));
+      assert.ok(!names(initial).includes('file_history'));
+      assert.ok(names(initial).length < names(raw).length);
+      assert.match(initial.tools.at(-1).function.description, /CURRENTLY EXPOSED TOOLS/);
+      assert.doesNotMatch(initial.tools.at(-1).function.description, /lsp_find_symbol|searxng_web_search/);
+      let aborts = 0;
+      const context = { cwd: process.cwd(), model: { maxTokens: 2048 }, abort: () => { aborts += 1; } };
+      const hiddenCall = { toolName: 'lsp_start_server', toolCallId: 'hidden-1', input: {} };
+      const blocked = await handlers.get('tool_call')(hiddenCall, context);
+      assert.equal(blocked.block, true);
+      assert.match(blocked.reason, /intentionally hidden by the Main tool profile/);
+      assert.match(blocked.reason, /request_capabilities.*group=lsp/);
+      assert.doesNotMatch(blocked.reason, /became active/);
+      assert.equal(steers.length, 1);
+      await handlers.get('tool_call')(hiddenCall, context);
+      assert.equal(steers.length, 1, 'duplicate callback for the same call ID must not add a steer or strike');
+      await handlers.get('tool_call')({ ...hiddenCall, toolCallId: 'hidden-2' }, context);
+      assert.equal(steers.length, 1, 'a second unique hidden call gets a deduped request-local steer');
+      const invalid = await definitions.get('request_capabilities').execute('invalid-grant', {
+        group: 'not-a-group', reason: 'Unknown group must not spend grant slots',
+      });
+      assert.equal(invalid.isError, true);
+      assert.match(invalid.content[0].text, /unknown_group/);
+      const grant = await definitions.get('request_capabilities').execute('call-grant', {
+        group: 'docs', reason: 'Need to inspect authorized dependency docs',
+      });
+      assert.match(grant.content[0].text, /NEXT provider request/);
+      const repeated = await definitions.get('request_capabilities').execute('repeat-docs', {
+        group: 'docs', reason: 'Duplicate request is a no-op',
+      });
+      assert.match(repeated.content[0].text, /already approved/);
+      assert.ok(!names(initial).includes('searxng_web_search'),
+        'the already serialized provider request must not acquire new tools');
+      const second = handlers.get('before_provider_request')({ payload: raw });
+      assert.ok(names(second).includes('searxng_web_search'));
+      assert.ok(names(second).includes('context7_query-docs'));
+      assert.ok(!names(second).includes('lsp_find_symbol'));
+      assert.ok(!names(second).includes('file_history'));
+      const lspGrant = await definitions.get('request_capabilities').execute('grant-lsp', {
+        group: 'lsp', reason: 'Inspect actual language-server relationships',
+      });
+      assert.equal(lspGrant.isError, undefined);
+      const historyGrant = await definitions.get('request_capabilities').execute('grant-history', {
+        group: 'history', reason: 'Inspect authorized historical change intent',
+      });
+      assert.equal(historyGrant.isError, undefined);
+      const full = handlers.get('before_provider_request')({ payload: raw });
+      assert.ok(names(full).includes('lsp_start_server'));
+      assert.ok(names(full).includes('file_history'));
+      assert.ok(!names(full).includes('request_capabilities'), 'three real grants exhaust the budget, not failed/repeat calls');
+      const exhausted = await handlers.get('tool_call')({ toolName: 'request_capabilities', toolCallId: 'exhausted', input: { group: 'delegation' } }, context);
+      assert.equal(exhausted.block, true);
+      assert.match(exhausted.reason, /three successful Main capability grants have been used/);
+      assert.doesNotMatch(exhausted.reason, /became active after/);
+      const zero = handlers.get('before_provider_request')({ payload: { ...raw, tools: [] } });
+      assert.equal(zero.tools, undefined, 'zero-tool request remains closed');
+      assert.equal(zero.tool_choice, undefined);
+      // A hidden tool remains separate from generic unavailable attempts, but
+      // repeated attempts across provider requests have an independent ceiling.
+      handlers.get('before_provider_request')({ payload: raw });
+      // Two earlier hidden LSP calls and one exhausted capability call are
+      // already three corrections; the next hidden call must abort.
+      assert.equal(aborts, 0, 'three earlier hidden calls permit correction');
+      const hiddenFourth = await handlers.get('tool_call')({
+        toolName: 'subagent', toolCallId: 'hidden-fourth', input: {},
+      }, context);
+      assert.equal(hiddenFourth.block, true);
+      assert.match(hiddenFourth.reason, /preserve the worktree/i);
+      assert.equal(aborts, 1, 'fourth hidden call must abort instead of looping to maxTurns');
+      const noopsHandlers = new Map();
+      const noopsDefinitions = new Map();
+      let noopsActive = [...initiallyRegistered];
+      const noopsPi = {
+        ...pi,
+        registerTool: def => { noopsDefinitions.set(def.name, def); if (!noopsActive.includes(def.name)) noopsActive.push(def.name); },
+        on: (name, fn) => noopsHandlers.set(name, fn),
+        getAllTools: () => [...noopsDefinitions.values()],
+        getActiveTools: () => [...noopsActive],
+        setActiveTools: selected => { noopsActive = [...selected]; },
+      };
+      runtime(noopsPi);
+      const noopsRaw = {
+        ...raw,
+        tools: [...new Set([...initiallyRegistered, ...noopsDefinitions.keys()])].map(name => ({
+          type: 'function', function: { name, description: name, parameters: { type: 'object' } },
+        })),
+      };
+      assert.ok(names(noopsHandlers.get('before_provider_request')({ payload: noopsRaw })).includes('request_capabilities'));
+      for (const [index, reason] of ['no such group a', 'no such group b', 'no such group c'].entries()) {
+        const denied = await noopsDefinitions.get('request_capabilities').execute('noop-' + index, {
+          group: 'invalid-group-' + index, reason,
+        });
+        assert.equal(denied.isError, true);
+      }
+      const noopsWire = noopsHandlers.get('before_provider_request')({ payload: noopsRaw });
+      assert.ok(!names(noopsWire).includes('request_capabilities'), 'three no-ops hide the request tool without any grants');
+      const afterNoops = await noopsHandlers.get('tool_call')({
+        toolName: 'request_capabilities', toolCallId: 'noops-exhausted', input: { group: 'docs' },
+      }, context);
+      assert.equal(afterNoops.block, true);
+      assert.match(afterNoops.reason, /no-op limit/);
+      const directStale = await noopsDefinitions.get('request_capabilities').execute('stale-direct', {
+        group: 'docs', reason: 'A direct stale call must not bypass exhausted no-ops',
+      });
+      assert.equal(directStale.isError, true);
+      assert.match(directStale.content[0].text, /no-op limit reached/);
+      // Pi's own "Tool X not found" may be delivered through either or both
+      // executor callbacks, independently of the normal tool_call gate.
+      const fallbackHandlers = new Map();
+      const fallbackDefinitions = new Map();
+      const fallbackSteers = [];
+      let fallbackActive = [...initiallyRegistered];
+      const fallbackPi = {
+        ...pi,
+        registerTool: def => {
+          fallbackDefinitions.set(def.name, def);
+          if (!fallbackActive.includes(def.name)) fallbackActive.push(def.name);
+        },
+        on: (name, fn) => fallbackHandlers.set(name, fn),
+        getAllTools: () => [...fallbackDefinitions.values()],
+        getActiveTools: () => [...fallbackActive],
+        setActiveTools: selected => { fallbackActive = [...selected]; },
+        sendUserMessage: async message => { fallbackSteers.push(message); },
+      };
+      let fallbackAborts = 0;
+      const fallbackCtx = { ...context, abort: async () => { fallbackAborts += 1; } };
+      runtime(fallbackPi);
+      const fallbackRaw = {
+        ...raw,
+        tools: [...new Set([...initiallyRegistered, ...fallbackDefinitions.keys()])].map(name => ({
+          type: 'function', function: { name, description: name, parameters: { type: 'object' } },
+        })),
+      };
+      const fbWire = fallbackHandlers.get('before_provider_request')({ payload: fallbackRaw });
+      assert.ok(!names(fbWire).includes('lsp_start_server'));
+      const missing = id => ({
+        toolName: 'lsp_start_server', toolCallId: id, isError: true,
+        result: { content: [{ type: 'text', text: 'Tool lsp_start_server not found' }] },
+      });
+      await fallbackHandlers.get('tool_execution_end')(missing('fb-1'), fallbackCtx);
+      const duplicateResult = await fallbackHandlers.get('tool_result')(missing('fb-1'), fallbackCtx);
+      assert.equal(duplicateResult.isError, true);
+      assert.match(duplicateResult.content[0].text, /request_capabilities.*group=lsp/);
+      assert.equal(fallbackAborts, 0, 'two hooks for one call must spend one attempt');
+      assert.equal(fallbackSteers.length, 1);
+      await fallbackHandlers.get('tool_call')({
+        toolName: 'lsp_start_server', toolCallId: 'fb-2', input: {},
+      }, fallbackCtx);
+      await fallbackHandlers.get('tool_result')(missing('fb-2'), fallbackCtx);
+      await fallbackHandlers.get('tool_execution_end')(missing('fb-3'), fallbackCtx);
+      assert.equal(fallbackAborts, 0, 'mixed hooks with three unique calls permit correction');
+      const fourthMissing = await fallbackHandlers.get('tool_result')(missing('fb-4'), fallbackCtx);
+      assert.equal(fallbackAborts, 1, 'fourth unique hidden call through fallback must abort');
+      assert.match(fourthMissing.content[0].text, /preserve the worktree/i);
+    `;
+    const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
+      env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: issue, PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' },
+    });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stdout, /PI_MAIN_TOOL_PROFILE/);
+    assert.match(result.stdout, /PI_MAIN_CAPABILITY_ESCALATION/);
+    assert.match(result.stdout + result.stderr, /PI_MAIN_PROFILE_TOOL_HIDDEN/);
+    assert.match(result.stdout, /PI_MAIN_TOOL_PROFILE_FINAL/);
+    assert.match(result.stdout, /"toolSchemaBytesBeforeRaw":\d+/);
+    assert.match(result.stdout + result.stderr, /PI_MAIN_PROFILE_HIDDEN_ABORT/);
+    assert.match(result.stdout + result.stderr, /PI_MAIN_CAPABILITY_NOOP_LIMIT/);
+    const hiddenRecords = result.stderr.split('\n')
+      .filter(line => line.includes('PI_MAIN_PROFILE_TOOL_HIDDEN '))
+      .map(line => JSON.parse(line.split('PI_MAIN_PROFILE_TOOL_HIDDEN ')[1]));
+    const fallbackRecords = hiddenRecords.filter(record => record.source === 'missing_executor');
+    assert.deepEqual(fallbackRecords.map(record => record.count), [1, 3, 4],
+      'the fallback and normal tool_call paths share a count without duplicates');
+    assert.equal(hiddenRecords.filter(record => record.source === 'tool_call' && record.count === 2).length >= 1, true);
+    const finalLogs = result.stdout.split('\n').filter(line => line.includes('PI_MAIN_TOOL_PROFILE_FINAL '));
+    assert.ok(finalLogs.length > 0);
+    for (const log of finalLogs) {
+      const record = JSON.parse(log.split('PI_MAIN_TOOL_PROFILE_FINAL ')[1]);
+      assert.ok(record.admittedCount >= 0);
+      assert.ok(record.deniedCount >= 0);
+      assert.equal(Object.hasOwn(record, 'admitted'), false, 'final wire log is compact');
+      assert.equal(Object.hasOwn(record, 'denied'), false, 'full names remain in PI_MAIN_TOOL_PROFILE only');
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

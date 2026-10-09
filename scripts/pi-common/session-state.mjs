@@ -407,13 +407,14 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
  * Classifies pi's `Tool X not found` result against the authoritative provider-request snapshot.
  * pi resolves tool calls against the turn context captured with the request, so:
  * - a tool the request advertised but pi cannot execute is a real tool-contract failure;
- * - a tool activated after the payload was assembled (deferred) is a lifecycle mismatch: pi exposes
- *   it from the next request;
+ * - a tool deliberately hidden by a fresh Main profile requires explicit capability escalation;
+ * - a tool activated after assembly (deferred) is a lifecycle mismatch: pi may expose it next request;
  * - any other tool was never offered to the model and is an ordinary unavailable-tool attempt.
  * Without a snapshot nothing proves the tool was not advertised, so it stays a contract failure.
  */
 export function classifyMissingExecutor(toolName, snapshot) {
   if (!snapshot || snapshot.executableTools?.includes(toolName)) return 'contract_failure';
+  if (snapshot.profileHiddenTools?.includes(toolName)) return 'profile_hidden';
   if (snapshot.deferredTools?.includes(toolName)) return 'deferred';
   return 'unavailable';
 }

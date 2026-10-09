@@ -1284,7 +1284,14 @@ function runtimeScenario(mode) {
       if (mode === 'restored' || mode === 'action-required-serial') {
         assert.equal(firstParentRequest.tool_choice, 'required', 'prepared action_required startup constrains the first parent request');
       } else {
-        assert.equal(firstParentRequest, unarmedPayload, 'preparation-phase parent request is unchanged');
+        const advertised = firstParentRequest.tools.map(tool => tool.function.name);
+        const previouslyActive = unarmedPayload.tools.map(tool => tool.function.name);
+        assert.ok(advertised.length < previouslyActive.length, 'fresh Main removes optional schema from the first request');
+        assert.ok(advertised.every(name => previouslyActive.includes(name)), 'profile never synthesizes a new executor');
+        for (const required of ['read', 'write', 'safe_edit', 'accept_mutation_scope', 'submit_result']) {
+          assert.ok(advertised.includes(required), required + ' must remain callable in the fresh Main fixture');
+        }
+        assert.ok(!advertised.includes('subagents_enable'), 'delegation requires explicit later capability grant');
       }
       if (mode === 'action-required-serial') {
         const payload = () => ({
@@ -1314,6 +1321,15 @@ function runtimeScenario(mode) {
         assert.equal(implementerToolChoiceDecision({ tools: [{ type: 'function', function: { name: 'read' } }] }, { productiveState: 'action_required' }).payload.tools.length, 1, 'a deferred write cannot be advertised');
         const first = wire();
         assert.equal(first.tool_choice, 'required', 'prepared Main starts action-forced');
+        // This scenario tests persistent provider forcing after a successful
+        // control action. Establish an explicit delegation grant first; #684
+        // separately tests that the grant only changes the NEXT wire request.
+        const delegationGrant = await tools.get('request_capabilities').execute('grant-serial', {
+          group: 'delegation', reason: 'Need a bounded delegated evidence action',
+        });
+        assert.equal(delegationGrant.isError, undefined);
+        const expanded = wire();
+        assert.ok(expanded.tools.some(tool => tool.function.name === 'subagents_enable'));
         handlers.get('turn_start')({ turnIndex: 0 });
         const accepted = { toolName: 'subagents_enable', toolCallId: 'successful-control', input: {} };
         assert.equal(await handlers.get('tool_call')(accepted, ctx), undefined);
@@ -1369,7 +1385,10 @@ function runtimeScenario(mode) {
         handlers.get('turn_start')({ turnIndex: 0 });
         const stale = active.filter(name => name !== 'submit_result');
         const assembled = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: stale.map(name => ({ type: 'function', function: { name } })) } }, ctx);
-        assert.deepEqual(assembled.tools.map(tool => tool.function.name), stale, 'a late-active definition is not added to the assembled request');
+        const assembledNames = assembled.tools.map(tool => tool.function.name);
+        assert.ok(assembledNames.every(name => stale.includes(name)), 'profile cannot fabricate an executor');
+        assert.ok(!assembledNames.includes('submit_result'), 'a late-active definition is not added to the assembled request');
+        assert.ok(!assembledNames.includes('subagents_enable'), 'optional delegation requires its own grant');
         assert.ok(active.includes('submit_result'), 'the live surface keeps the expansion for the next request');
 
         // The model calls the deferred tool anyway; pi resolves calls against this turn's context.
@@ -1968,9 +1987,20 @@ function runtimeScenario(mode) {
 
         const constrained = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
         assert.equal(constrained.tool_choice, 'required');
-        assert.deepEqual(constrained.tools, providerPayload.tools, 'tool forcing does not choose or remove an exposed tool');
+        assert.deepEqual(constrained.tools, providerPayload.tools.filter(tool =>
+          tool.function?.name !== 'subagents_enable'
+        ), 'required-tool forcing retains every phase-admitted definition; fresh Main profile separately hides delegation');
 
         if (mode === 'action-repeat-abort') {
+          // Establish the authorized delegation profile before exercising
+          // one-shot completion/repetition; this test is about repeated calls,
+          // not the capability request lifecycle (#684 covers that separately).
+          const delegationGrant = await tools.get('request_capabilities').execute('grant-repeat', {
+            group: 'delegation', reason: 'Need a bounded delegated evidence action',
+          });
+          assert.equal(delegationGrant.isError, undefined);
+          const delegationWire = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.ok(delegationWire.tools.some(tool => tool.function.name === 'subagents_enable'));
           // One genuine completion of a one-shot control transition, in its own turn, so its repeat is a no-op.
           handlers.get('turn_start')({ turnIndex: turn });
           const firstEnable = { toolName: 'subagents_enable', toolCallId: 'first-' + turn, input: {} };
