@@ -19,6 +19,7 @@ import {
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const RESULT_TOOL_URL = new URL('../scripts/pi-implementer-result-tool.mjs', import.meta.url).href;
+const SCOPE_TOOL_URL = new URL('../scripts/pi-common/accepted-mutation-scope.mjs', import.meta.url).href;
 
 const TYPEBOX_LOADER = `export async function resolve(specifier, context, nextResolve) {
   if (specifier === 'typebox') {
@@ -91,9 +92,26 @@ function cleanGitWorktree(root) {
   return work;
 }
 
-function runSuccessfulSubmit({ modeEnv, params }) {
+function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Object.keys(files), expectedError = null, upstreamFiles = {}, checkpointCommit = false, savedUpstreamPatch = false }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-success-'));
   const work = cleanGitWorktree(root);
+  if (Object.keys(upstreamFiles).length) {
+    const upstream = path.join(root, 'upstream');
+    execFileSync('git', ['clone', '--branch', 'dev', path.join(root, 'remote.git'), upstream]);
+    const upstreamGit = (...args) => execFileSync('git', args, { cwd: upstream, encoding: 'utf8' });
+    configureTestGit(upstreamGit);
+    for (const [file, content] of Object.entries(upstreamFiles)) {
+      fs.mkdirSync(path.dirname(path.join(upstream, file)), { recursive: true });
+      fs.writeFileSync(path.join(upstream, file), content);
+    }
+    upstreamGit('add', '-A');
+    upstreamGit('commit', '-m', 'Update dev upstream');
+    if (savedUpstreamPatch) fs.writeFileSync(
+      path.join(root, 'upstream.patch'),
+      upstreamGit('show', '--format=', '--binary', 'HEAD'),
+    );
+    upstreamGit('push', 'origin', 'dev');
+  }
   const context = path.join(root, 'issue.json');
   const resultFile = path.join(root, 'result.json');
   fs.writeFileSync(context, JSON.stringify({
@@ -105,6 +123,9 @@ function runSuccessfulSubmit({ modeEnv, params }) {
   try {
     const program = `
       const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      const { registerMutationScope } = await import(${JSON.stringify(SCOPE_TOOL_URL)});
+      const fs = await import('node:fs');
+      const path = await import('node:path');
       let tool;
       const entries = [];
       const pi = {
@@ -113,8 +134,27 @@ function runSuccessfulSubmit({ modeEnv, params }) {
         on() {},
       };
       registerResultTool(pi);
-      const result = await tool.execute('submit', ${JSON.stringify(params)});
-      console.log(JSON.stringify({ result, entries }));
+      const accepted = ${JSON.stringify(acceptedFiles)};
+      if (accepted.length) registerMutationScope({
+        cwd: process.cwd(),
+        paths: accepted,
+        rationale: 'These files implement the trusted test issue',
+      });
+      for (const [file, content] of Object.entries(${JSON.stringify(files)})) {
+        fs.mkdirSync(path.dirname(path.join(process.cwd(), file)), { recursive: true });
+        fs.writeFileSync(path.join(process.cwd(), file), content);
+      }
+      if (${JSON.stringify(checkpointCommit)}) {
+        const { execFileSync } = await import('node:child_process');
+        execFileSync('git', ['add', '-A']);
+        execFileSync('git', ['commit', '-m', 'checkpoint']);
+      }
+      try {
+        const result = await tool.execute('submit', ${JSON.stringify(params)});
+        console.log(JSON.stringify({ result, entries }));
+      } catch (error) {
+        console.log(JSON.stringify({ error: error.message, code: error.code }));
+      }
     `;
     const child = runProgram({
       dir: root,
@@ -130,10 +170,17 @@ function runSuccessfulSubmit({ modeEnv, params }) {
         PI_RESUME_ACTIVE: 'false',
         PI_VALIDATION_REPAIR: 'false',
         ...modeEnv,
+        ...(savedUpstreamPatch ? { PI_RESUME_PATCH: path.join(root, 'upstream.patch') } : {}),
       },
     });
     assert.equal(child.status, 0, child.stderr + child.stdout);
     const output = JSON.parse(child.stdout.trim().split('\n').at(-1));
+    if (expectedError) {
+      assert.match(output.error ?? '', expectedError);
+      assert.equal(fs.existsSync(resultFile), false, 'rejected submission must not produce publication metadata');
+      return { output, metadata: null };
+    }
+    assert.equal(output.error, undefined, output.error);
     return {
       output,
       metadata: JSON.parse(fs.readFileSync(resultFile, 'utf8')),
@@ -166,7 +213,7 @@ test('submit_result advertises a flat object schema and runtime returns structur
       assert.equal(tool.parameters.type, 'object');
       assert.equal(tool.parameters.anyOf, undefined);
       assert.deepEqual(Object.keys(tool.parameters.properties), [
-        'title', 'summary', 'changes', 'files', 'already_satisfied',
+        'title', 'summary', 'changes', 'already_satisfied',
         'blocked_reason', 'security_notes', 'limitations',
       ]);
       for (const field of CHANGED_PUBLICATION_FIELDS) {
@@ -180,7 +227,7 @@ test('submit_result advertises a flat object schema and runtime returns structur
         title: 'Contract fix',
         summary: 'Strengthen submit_result publication metadata.',
         changes: ['Require publication metadata'],
-        files: ['scripts/pi-implementer-result-tool.mjs'],
+        files: '["scripts/pi-implementer-result-tool.mjs"]', // legacy malformed field is ignored
         security_notes: 'No security impact.',
         limitations: 'None.',
       };
@@ -207,7 +254,7 @@ test('submit_result advertises a flat object schema and runtime returns structur
         await expectMissing({ ...complete, [field]: '   ' }, [field]);
       }
       await expectMissing({ ...complete, changes: [''] }, ['changes']);
-      await expectMissing({ ...complete, files: ['  '] }, ['files']);
+      assert.equal(tool.parameters.properties.files, undefined, 'file list is not requested from the model');
 
       const multi = { ...complete };
       delete multi.title;
@@ -340,20 +387,40 @@ test('registration snapshots fresh mode instead of re-reading resume env at exec
   }
 });
 
-test('restored and validation-repair work still accept an empty submit_result payload', () => {
-  const restored = runSuccessfulSubmit({
+test('restored and validation-repair work derive changed files with empty submit_result payload', () => {
+  for (const modeEnv of [
+    { PI_RESUME_ACTIVE: 'true', PI_VALIDATION_REPAIR: 'false' },
+    { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'true' },
+  ]) {
+    const result = runSuccessfulSubmit({
+      modeEnv,
+      params: {},
+      files: { 'src/restored.txt': 'restored content\\n' },
+    });
+    assert.equal(result.metadata.outcome, 'changed');
+    assert.deepEqual(result.metadata.files, ['src/restored.txt']);
+    assert.deepEqual(result.metadata.changes, ['src/restored.txt']);
+    assert.equal(result.metadata.scope_enforcement, 'predeclared');
+  }
+
+  runSuccessfulSubmit({
     modeEnv: { PI_RESUME_ACTIVE: 'true', PI_VALIDATION_REPAIR: 'false' },
     params: {},
+    expectedError: /lacks trusted replay proof/,
   });
-  assert.equal(restored.metadata.already_satisfied, true);
-  assert.match(restored.metadata.summary, /replayed saved implementation/);
-
-  const repaired = runSuccessfulSubmit({
+  runSuccessfulSubmit({
     modeEnv: { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'true' },
     params: {},
+    expectedError: /lacks trusted replay proof/,
   });
-  assert.equal(repaired.metadata.already_satisfied, true);
-  assert.match(repaired.metadata.summary, /validation-repaired implementation/);
+  const proven = runSuccessfulSubmit({
+    modeEnv: { PI_RESUME_ACTIVE: 'true', PI_VALIDATION_REPAIR: 'false' },
+    params: {},
+    upstreamFiles: { 'src/proven.txt': 'already integrated\\n' },
+    savedUpstreamPatch: true,
+  });
+  assert.equal(proven.metadata.outcome, 'already_satisfied');
+  assert.deepEqual(proven.metadata.files, []);
 });
 
 test('fresh already_satisfied and blocked result shapes still execute successfully', () => {
@@ -403,6 +470,8 @@ test('#424 fresh submit_result exposes targeted mutation cleanup for accidental 
         on() {},
       };
       registerResultTool(pi);
+      const { registerMutationScope } = await import(${JSON.stringify(SCOPE_TOOL_URL)});
+      registerMutationScope({ cwd: process.cwd(), paths: ['feature.py'], rationale: 'Feature output needed by issue' });
 
       fs.writeFileSync(path.join(process.cwd(), 'feature.py'), 'value = 1\\n');
       const before = snapshots.captureMutationSnapshot(process.cwd(), '.probe.txt');
@@ -489,56 +558,73 @@ test('#470 valid git filenames with colon or backslash survive result file-set v
 });
 
 
-test('#469 invalid submit_result path reports the known canonical changed set before file-set recovery', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-invalid-path-'));
-  const work = cleanGitWorktree(root);
-  const context = path.join(root, 'issue.json');
-  const resultFile = path.join(root, 'result.json');
-  fs.mkdirSync(path.join(work, 'tests'), { recursive: true });
-  fs.writeFileSync(path.join(work, 'tests', 'test_x.py'), 'def test_x():\n    assert True\n');
-  fs.writeFileSync(context, JSON.stringify({ number: 469, title: 'Path validation', body: 'Test context' }));
-  try {
-    const program = `
-      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
-      let tool;
-      const pi = { registerTool(value) { if (value.name === 'submit_result') tool = value; }, appendEntry() {}, on() {} };
-      registerResultTool(pi);
-      try {
-        await tool.execute('submit', {
-          title: 'Path fix',
-          summary: 'Validate result path.',
-          changes: ['Add a test'],
-          files: ['C:\\\\work\\\\tests\\\\test_x.py'],
-          security_notes: 'No security impact.',
-          limitations: 'None.',
-        });
-        console.log(JSON.stringify({ ok: true }));
-      } catch (error) {
-        console.log(JSON.stringify({ ok: false, code: error.code, message: error.message }));
-      }
-    `;
-    const child = runProgram({
-      dir: root,
-      cwd: work,
-      program,
-      env: {
-        GITHUB_WORKSPACE: PROJECT_ROOT,
-        PI_ISSUE: '469',
-        PI_ISSUE_CONTEXT: context,
-        PI_IMPLEMENTER_RESULT_FILE: resultFile,
-        PI_RESUME_ACTIVE: 'false',
-        PI_VALIDATION_REPAIR: 'false',
-      },
-    });
-    assert.equal(child.status, 0, child.stderr + child.stdout);
-    const output = JSON.parse(child.stdout.trim().split('\n').at(-1));
-    assert.equal(output.ok, false);
-    assert.equal(output.code, 'INVALID_RESULT_PATH');
-    assert.match(output.message, /Known canonical changed files: tests\/test_x\.py/);
-    assert.doesNotMatch(output.message, /undo_mutation/);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+test('#630 model-supplied files (including a JSON string) never control runtime publication', () => {
+  const three = {
+    'src/app.py': 'VALUE = 1\\n',
+    'src/helper.py': 'VALUE = 2\\n',
+    'tests/test_app.py': 'def test_ok():\\n    assert True\\n',
+  };
+  const params = {
+    title: 'Three-file change',
+    summary: 'Use runtime-owned publication files.',
+    changes: ['Add feature and test'],
+    files: '["src/app.py","src/helper.py"]',
+    security_notes: 'No security impact.',
+    limitations: 'None.',
+  };
+  const allowed = runSuccessfulSubmit({
+    modeEnv: {},
+    params,
+    files: three,
+  });
+  assert.deepEqual(allowed.metadata.files, Object.keys(three).sort());
+  assert.deepEqual(allowed.metadata.changes, ['Add feature and test']);
+  assert.equal(allowed.metadata.accepted_scope.accepted.length, 3);
+
+  const rejected = runSuccessfulSubmit({
+    modeEnv: {},
+    params: { ...params, files: ['src/app.py', 'src/helper.py', 'tests/test_app.py'] },
+    files: three,
+    acceptedFiles: ['src/app.py', 'src/helper.py'],
+    expectedError: /accepted_scope_violation/,
+  });
+  assert.match(rejected.output.error, /tests\/test_app.py/);
+
+  runSuccessfulSubmit({
+    modeEnv: {},
+    params,
+    expectedError: /at least one changed file is required/,
+  });
+});
+
+test('#630 latest dev changes do not leak into publication and committed checkpoints resume', () => {
+  const result = runSuccessfulSubmit({
+    modeEnv: { PI_RESUME_ACTIVE: 'true' },
+    params: {},
+    files: { 'src/from-checkpoint.txt': 'checkpoint output\\n' },
+    checkpointCommit: true,
+    upstreamFiles: { 'src/upstream-only.txt': 'from newer dev\\n' },
+  });
+  assert.equal(result.metadata.outcome, 'changed');
+  assert.deepEqual(result.metadata.files, ['src/from-checkpoint.txt']);
+  assert.deepEqual(result.metadata.changes, ['src/from-checkpoint.txt']);
+});
+
+test('#630 conflicting latest dev cannot write a partial publication file list', () => {
+  runSuccessfulSubmit({
+    modeEnv: {},
+    params: {
+      title: 'Conflicting implementation',
+      summary: 'Test deterministic conflict recovery.',
+      changes: ['Modify base'],
+      files: '["base.txt"]',
+      security_notes: 'No new risk.',
+      limitations: 'None.',
+    },
+    files: { 'base.txt': 'local conflicting change\\n' },
+    upstreamFiles: { 'base.txt': 'upstream conflicting change\\n' },
+    expectedError: /Failed to merge latest dev[\s\S]*Your local changes[\s\S]*base\.txt/,
+  });
 });
 
 test('#469 coding-session source plus pytest changes require a passing targeted pytest after latest mutation', () => {

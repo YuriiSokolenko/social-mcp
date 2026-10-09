@@ -18,7 +18,6 @@ const EXPECTED_PROPERTIES = {
   title: 'Required for fresh changed work: PR title.',
   summary: 'Required for fresh changed work: PR summary.',
   changes: 'Required for fresh changed work: concrete repository changes.',
-  files: 'Required for fresh changed work: exact repository-relative changed-file set.',
   already_satisfied: 'Set true only when latest dev already contains the requested end state.',
   blocked_reason: 'Fresh work only: concrete contradiction that makes a compliant mutation impossible.',
   security_notes: 'Required for fresh changed work, including an explicit no-impact statement.',
@@ -76,7 +75,7 @@ test('registered submit_result schema matches the real Pi TypeBox transport cont
         error => {
           assert.deepEqual(JSON.parse(error.message), {
             code: 'missing_publication_fields',
-            missing_fields: ['title', 'summary', 'changes', 'files', 'security_notes', 'limitations'],
+            missing_fields: ['title', 'summary', 'changes', 'security_notes', 'limitations'],
           });
           return true;
         },

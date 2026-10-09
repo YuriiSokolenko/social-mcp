@@ -497,9 +497,6 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
     git('branch', '-M', 'dev');
     git('push', '-u', 'origin', 'dev');
 
-    fs.appendFileSync(path.join(work, 'helper.py'), 'value2 = 2\n');
-    fs.writeFileSync(path.join(work, 'test_helper.py'), 'from helper import value\n');
-    fs.writeFileSync(path.join(work, '.probe.py"'), 'probe = True\n');
     fs.writeFileSync(context, JSON.stringify({ number: 334, title: 'Probe regression', body: 'Reject stray files' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
 
@@ -513,6 +510,16 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
         appendEntry() {},
       };
       register(pi);
+      const fs = await import('node:fs');
+      const { registerMutationScope } = await import(${JSON.stringify(new URL('../scripts/pi-common/accepted-mutation-scope.mjs', import.meta.url).href)});
+      registerMutationScope({
+        cwd: process.cwd(),
+        paths: ['helper.py', 'test_helper.py'],
+        rationale: 'Only helper and the test are publishable',
+      });
+      fs.appendFileSync('helper.py', 'value2 = 2\\n');
+      fs.writeFileSync('test_helper.py', 'from helper import value\\n');
+      fs.writeFileSync('.probe.py"', 'probe = True\\n');
       try {
         await submit.execute('submit', {
           title: 'Probe regression',
@@ -543,7 +550,8 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
     });
 
     assert.equal(child.status, 42, child.stderr + child.stdout);
-    assert.match(child.stderr, /Implementer file-set mismatch: unexpected files: \.probe\.py"/);
+    assert.match(child.stderr, /accepted_scope_violation/);
+    assert.match(child.stderr, /\.probe\.py/);
     assert.equal(fs.existsSync(resultFile), false, 'failed submit must not record publishable metadata');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
