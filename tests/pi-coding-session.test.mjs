@@ -1295,15 +1295,23 @@ function runtimeScenario(mode) {
       }
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
-      async function call(name, input = {}, { expectError = null } = {}) {
+      async function call(name, input = {}, { expectError = null, usePreparedRequest = false } = {}) {
         handlers.get('turn_start')({ turnIndex: turn });
-        // Every helper invocation stands in for a new model turn. Newly exposed
-        // tools enter ONLY through this request boundary, never mid-response.
-        handlers.get('before_provider_request')({
-          payload: { model: 'm', messages: [], tools: active.map(toolName => ({ type: 'function', function: { name: toolName } })) },
-        }, ctx);
+        // Every helper invocation stands in for a model turn. New tools enter
+        // only through a provider boundary. A prepared resultText submission
+        // already has a separate serialized request with a verified 4K ceiling;
+        // do not overwrite that snapshot with the generic test fixture.
+        if (!usePreparedRequest) {
+          handlers.get('before_provider_request')({
+            payload: { model: 'm', messages: [], tools: active.map(toolName => ({ type: 'function', function: { name: toolName } })) },
+          }, ctx);
+        }
         const event = { toolName: name, toolCallId: name + turn, input };
         assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked');
+        if (name === 'submit_result' && input?.resultText) {
+          await handlers.get('message_end')?.({ message: { role: 'assistant',
+            stopReason: 'toolUse', content: [{ type: 'toolCall', id: event.toolCallId, name }] } }, ctx);
+        }
         let result; let isError = false;
         try {
           if (tools.has(name)) result = await tools.get(name).execute(event.toolCallId, input, signal.signal, null, ctx);
@@ -1321,6 +1329,10 @@ function runtimeScenario(mode) {
         if (expectError) assert.equal(isError, true, name + ' should fail');
         persist({ type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name, arguments: input }] } });
         persist({ type: 'message', message: { role: 'toolResult', toolName: name, content: result.content } });
+        if (name === 'begin_result_submission') {
+          await handlers.get('message_end')?.({ message: { role: 'assistant',
+            stopReason: 'toolUse', content: [{ type: 'toolCall', id: event.toolCallId, name }] } }, ctx);
+        }
         await handlers.get('tool_execution_end')({ ...event, isError, result }, ctx);
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
         return result;
@@ -2222,14 +2234,17 @@ function runtimeScenario(mode) {
         // for integrateLatestDev()/git publication checks. Match production here.
         process.chdir(cwd);
         assert.equal(fs.realpathSync(process.cwd()), fs.realpathSync(cwd));
-        await call('submit_result', {
-          title: 'Parent submit',
-          summary: 'Publish coding-session changes from the parent.',
-          changes: ['Add generated implementation and test'],
-          files: ['generated.py', 'test_generated.py'],
-          security_notes: 'No security impact.',
-          limitations: 'None.',
-        });
+        // #631: the trusted submit_result protocol now requires one explicit
+        // submission prelude and an accepted resultText tool call after Pi's
+        // final assistant toolUse message, on a verified-budget request.
+        await call('begin_result_submission', {});
+        const resultOnly = handlers.get('before_provider_request')({ payload: {
+          model: 'm', messages: [], max_completion_tokens: 4096,
+          tools: [{ type: 'function', function: { name: 'submit_result' } }],
+        } }, ctx);
+        assert.deepEqual(resultOnly.tools.map(tool => tool.function.name), ['submit_result']);
+        await call('submit_result', { resultText: 'Publish coding-session changes from the parent.' },
+          { usePreparedRequest: true });
         const metadata = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
         assert.equal(metadata.scope_enforcement, 'predeclared');
         assert.deepEqual(metadata.accepted_scope.accepted.map(entry => entry.path), ['generated.py', 'test_generated.py']);
