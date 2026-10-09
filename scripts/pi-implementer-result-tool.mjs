@@ -184,7 +184,8 @@ export function implementerActionNudge(activeToolNames, { restored = false, vali
     parts.push('If submit_result reports a targeted cleanup mutation_id, call undo_mutation with that id and the intended final files, then retry submit_result.');
   }
   if (active.has('submit_result')) {
-    if (active.has('begin_result_submission')) parts.push('For completed changed work call begin_result_submission() once; the next request exposes only submit_result({resultText}).');\n    else if (!restored && !validationRepair) parts.push('Submission phase: call submit_result({resultText:"complete Markdown description"}) now; no other tools are available.');
+    if (active.has('begin_result_submission')) parts.push('For completed changed work call begin_result_submission() once; the next request exposes only submit_result({resultText}).');
+    else if (!restored && !validationRepair) parts.push('Submission phase: call submit_result({resultText:"complete Markdown description"}) now; no other tools are available.');
     if (restored || validationRepair) {
       parts.push('For restored or harness validation-repair work call submit_result({}) now.');
     } else {
