@@ -3,11 +3,27 @@
 // failure because the terminating assistant toolUse turn has no final prose.
 // Main revalidates this same per-lifecycle sidecar independently.
 import fs from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PINNED_VERSION = '0.76.1';
+
+// Shared with Implementer registration and source-injected into the pinned Pi
+// adapter. Explicit PI_RESUME_ACTIVE ('false' or '' included) overrides fallback.
+// Only an unset flag checks that PI_RESUME_PATCH is an existing, nonempty file.
+export function restoredWork(env = process.env) {
+  if (env.PI_RESUME_ACTIVE != null) return env.PI_RESUME_ACTIVE === 'true';
+  const patch = env.PI_RESUME_PATCH;
+  try {
+    if (!patch || !existsSync(patch)) return false;
+    const file = statSync(patch);
+    return file.isFile() && file.size > 0;
+  } catch {
+    return false;
+  }
+}
 
 export function acceptedTerminalPlannerReceipt(messages, state, lifecycleId) {
   if (!Array.isArray(messages) || !state || state.phase !== 'submitted' ||
@@ -87,7 +103,7 @@ export function acceptedTerminalImplementerReceipt(messages, receipt, metadataBy
   catch { return false; }
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const keys = Object.keys(args);
-  const runtimeOwned = env.PI_VALIDATION_REPAIR === 'true' || env.PI_RESUME_ACTIVE === 'true';
+  const runtimeOwned = env.PI_VALIDATION_REPAIR === 'true' || restoredWork(env);
   if (receipt.outcome === 'changed') {
     if (runtimeOwned) {
       if (keys.length !== 0 || metadata.result_text != null) return false;
@@ -124,11 +140,13 @@ export function patchPiSubagentsSource(source) {
   ensureOnce(source, conditionAnchor);
   ensureOnce(source, errorConditionAnchor);
   const policy = acceptedTerminalPlannerReceipt.toString();
+  const restorePolicy = restoredWork.toString();
   const implementerPolicy = acceptedTerminalImplementerReceipt.toString();
   const guard = [
     '// Only verified Planner or Implementer terminal toolUse may omit final text.',
     '// An actual executed tool result AND a current-lifecycle durable receipt are required.',
     policy,
+    restorePolicy,
     implementerPolicy,
     'function trustedPlannerTerminalToolUse(messages, agentName) {',
     '  if (agentName !== "implementation-planner") return false;',
@@ -162,7 +180,7 @@ export function patchPiSubagentsSource(source) {
     '',
   ].join('\n');
   return source
-    .replace(importAnchor, () => 'import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";\nimport { createHash } from "node:crypto";')
+    .replace(importAnchor, () => 'import { existsSync, statSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";\nimport { createHash } from "node:crypto";')
     .replace(helperAnchor, () => guard + helperAnchor)
     .replace(decisionAnchor, () => 'const acceptedTerminalPlan = trustedPlannerTerminalToolUse(messages, agent.name);\n\t\tconst acceptedTerminalImplementer = trustedImplementerTerminalToolUse(messages, agent.name, errInfo);\n\t\tconst acceptedTerminalToolUse = acceptedTerminalPlan || acceptedTerminalImplementer;\n\t\t' + decisionAnchor)
     .replace(conditionAnchor, () => 'if (!acceptedTerminalToolUse && (missingOutput || terminalEmptyAfterUsefulWork) && (!errInfo.hasError || hasEmptyTerminalAssistantResponse(messages))) {')

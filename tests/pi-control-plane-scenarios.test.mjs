@@ -221,7 +221,10 @@ test('stale implementation refs do not create restored work when latest dev alre
   assert.match(worktree, /if \(!resumed\)[\s\S]*writeFileSync\(patch, ''\)/);
   assert.match(workflow, /PI_RESUME_ACTIVE=.*\.resumed/);
   assert.match(runtime, /PI_RESUME_ACTIVE/);
-  assert.match(resultTool, /PI_RESUME_ACTIVE/);
+  assert.match(resultTool, /import \{ restoredWork \} from/);
+  const resumeAdapter = readScript('infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs', 'utf8');
+  assert.match(resumeAdapter, /PI_RESUME_ACTIVE/);
+  assert.match(resumeAdapter, /statSync\(patch\)/);
   assert.match(resultTool, /Latest dev already contains the replayed saved implementation/);
   assert.match(resultTool, /already_satisfied: true/);
 });

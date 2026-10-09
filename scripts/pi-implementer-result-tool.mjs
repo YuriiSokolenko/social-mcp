@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { restoredWork } from '../infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs';
 import { Type } from 'typebox';
 
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
@@ -148,12 +149,6 @@ export function submitResultParameters() {
       description: 'Fresh work only: concrete contradictory requirement, verified against the current repository.',
     })),
   }, { additionalProperties: false });
-}
-
-function restoredWork() {
-  if (process.env.PI_RESUME_ACTIVE != null) return process.env.PI_RESUME_ACTIVE === 'true';
-  const patch = process.env.PI_RESUME_PATCH;
-  return Boolean(patch && fs.existsSync(patch) && fs.statSync(patch).size > 0);
 }
 
 function validationRepairWork() {
