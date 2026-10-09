@@ -167,10 +167,15 @@ export function incompleteCodingToolError({ toolName, isError, text }) {
 export function verifiedCodingToolTruncation({ candidates, requestBudget, outputTokens, stopReason }) {
   if (!Array.isArray(candidates) || !candidates.length ||
       !requestBudget?.verified ||
-      !Number.isFinite(outputTokens) || outputTokens < 0 ||
       stopReason === 'error' || stopReason === 'aborted') return null;
   const explicit = candidates.find(item => item.evidence === 'explicit_incomplete_transport');
-  if (explicit) return { ...explicit, ceiling: requestBudget.ceiling, outputTokens };
+  // The provider's explicit "output token limit" error is direct transport
+  // evidence. The provider can omit usage on this path; do not manufacture 0.
+  if (explicit) return {
+    ...explicit, ceiling: requestBudget.ceiling,
+    outputTokens: Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null,
+  };
+  if (!Number.isFinite(outputTokens) || outputTokens < 0) return null;
   // The exact provider ceiling plus a large malformed write/edit payload is the
   // #627/#628 signature. Never reinterpret a short complete-JSON schema failure
   // or reasoning-only length turn as a truncated tool transport.
