@@ -49,32 +49,6 @@ function sameStringSet(left, right) {
   return JSON.stringify(uniqueStrings(left)) === JSON.stringify(uniqueStrings(right));
 }
 
-function sameJsonValue(left, right) {
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return JSON.stringify(left) === JSON.stringify(right);
-  }
-  if (
-    left && right &&
-    typeof left === 'object' &&
-    typeof right === 'object' &&
-    !Array.isArray(left) &&
-    !Array.isArray(right)
-  ) {
-    const leftKeys = Object.keys(left).sort();
-    const rightKeys = Object.keys(right).sort();
-    if (JSON.stringify(leftKeys) !== JSON.stringify(rightKeys)) return false;
-    return leftKeys.every(key => sameJsonValue(left[key], right[key]));
-  }
-  return Object.is(left, right);
-}
-
-function preservesPreviousTerminalInput(previousInput, input, mutableKeys = []) {
-  const mutable = new Set(mutableKeys);
-  return Object.entries(previousInput ?? {}).every(([key, value]) =>
-    mutable.has(key) || (Object.hasOwn(input ?? {}, key) && sameJsonValue(input[key], value))
-  );
-}
-
 /**
  * A forced recovery tool is only progress when the call still represents the selected repair.
  * Tool-surface narrowing alone is insufficient because a model can call the right tool with
@@ -89,12 +63,6 @@ export function recoveryCallMatchesPlan(plan, toolName, input = {}) {
       String(input.profile ?? '').trim() === String(expected.profile ?? '').trim() &&
       sameStringSet(input.paths, expected.paths) &&
       sameStringSet(input.targets, expected.targets);
-  }
-
-  if (plan.kind === 'metadata_retry') {
-    const missing = uniqueStrings(plan.missingFields);
-    return preservesPreviousTerminalInput(plan.previousInput, input, missing) &&
-      missing.every(field => Object.hasOwn(input, field));
   }
 
   if (plan.tool === 'read' || plan.tool === 'write') {
@@ -144,8 +112,6 @@ export function selectTerminalRecovery({
   if (!obligation?.key) return blocked(obligation, 'The failed terminal submission has no stable unresolved-obligation identity.');
 
   const active = activeSet(activeToolNames);
-  const hasTerminalInput =
-    terminalInput && typeof terminalInput === 'object' && !Array.isArray(terminalInput);
   const current = uniqueStrings(currentChangedFiles);
   const accepted = new Set(uniqueStrings(acceptedPaths));
 
@@ -311,10 +277,6 @@ export function terminalRecoveryGuidance(plan) {
     return `${marker}: BLOCKED. ${plan?.reason ?? 'No deterministic recovery plan is available.'} Preserve the current worktree/checkpoint; do not widen scope, discard working code, or claim completion.`;
   }
 
-  if (plan.kind === 'metadata_retry') {
-    const fields = plan.missingFields.length ? plan.missingFields.join(', ') : '(unknown fields)';
-    return `${marker}: deterministic metadata repair selected. Retry submit_result now using the previous submission as the base and fill exactly these missing publication fields: ${fields}. Do not explore, mutate files, or launch a coding session first.`;
-  }
   if (plan.kind === 'create_prepared_output') {
     return `${marker}: deterministic prepared-output repair selected. Call write next for ${plan.target}; provide only the task-required file content. Do not resubmit or explore first.`;
   }
