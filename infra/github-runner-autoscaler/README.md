@@ -198,7 +198,7 @@ only**; Planner's `submit_plan` receipt checks remain separate.
   `submit_result({})` contract even without `PI_RESUME_PATCH`. The comparison
   is case-sensitive.
 - When `PI_RESUME_ACTIVE` is **unset**, `PI_RESUME_PATCH` is a fallback:
-  the named path must exist and have a nonzero filesystem size. An empty,
+  the named path must be a regular file with nonzero filesystem size. An empty,
   missing, inaccessible or unset path does **not** count as restored work.
 - An explicitly set `PI_RESUME_ACTIVE=false`, empty string, or any value
   other than `true` disables patch fallback, even if `PI_RESUME_PATCH`
