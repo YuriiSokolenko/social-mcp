@@ -557,7 +557,7 @@ test('#630 model-supplied files (including a JSON string) never control runtime 
     acceptedFiles: ['src/app.py', 'src/helper.py'],
     expectedError: /accepted_scope_violation/,
   });
-  assert.match(rejected.output.error, /tests\\/test_app.py/);
+  assert.match(rejected.output.error, /tests\/test_app.py/);
 
   runSuccessfulSubmit({
     modeEnv: {},
