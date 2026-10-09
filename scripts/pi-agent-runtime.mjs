@@ -2328,6 +2328,12 @@ export default function (pi) {
         // execution still fails closed; log loss of the advisory instruction.
         patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
           trustedRuntimeEnvelope: stage === 'implementer',
+          onCatalogAudit: audit => console.log('PI_PROVIDER_TOOL_ADVERTISEMENT_AUDIT ' + JSON.stringify({
+            stage,
+            request: providerCapabilitySnapshot?.request ?? null,
+            // Names only, no schema bodies, instructions, credentials or user text.
+            ...audit,
+          })),
           onMissingCarrier: reason => console.warn(`PI_PROVIDER_CAPABILITY_GUIDANCE_OMITTED ${JSON.stringify({
             stage,
             request: providerCapabilitySnapshot?.request ?? null,
