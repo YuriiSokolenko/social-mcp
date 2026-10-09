@@ -150,12 +150,18 @@ test('#665 #662 stop with syntactically valid tool_calls but no execution remain
   await enterSubmission(h);
   // #662 SSE carried valid submit_result arguments, but finish_reason=stop.
   // Pi therefore had no verified terminal toolUse/tool execution.
+  // Raw SSE may include a parseable tool call that Pi attempts, but a stop
+  // response cannot satisfy the verified toolUse admission gate.
+  assert.equal(await h.emit('tool_call', emittedCall), undefined);
   await h.emit('message_end', { message: assistant('stop', ['done-665']) });
+  await h.emit('tool_execution_end', { ...emittedCall, isError: true });
   await h.emit('turn_end');
   assert.equal(h.steers.length, 2);
   assert.match(h.steers.at(-1).message, /FORMAT CORRECTION/);
   await h.emit('before_provider_request', { payload: payload() });
+  assert.equal(await h.emit('tool_call', emittedCall), undefined);
   await h.emit('message_end', { message: assistant('stop', ['done-665']) });
+  await h.emit('tool_execution_end', { ...emittedCall, isError: true });
   await h.emit('turn_end');
   assert.equal(h.pi.aborted, true, 'bounded correction exhausted; never accept raw SSE');
   assert.equal(h.steers.length, 2, 'no third model correction');
