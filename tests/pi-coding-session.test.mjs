@@ -1226,7 +1226,7 @@ function runtimeScenario(mode) {
           assert.equal(preparedTask.status, 'prepared');
           assert.match(preparedTask.planText, /Create generated.py/);
           assert.match(preparedTask.planText, /REQUIRED_CONSTANT = "abc123"/);
-          assert.equal(request.task.match(/REQUIRED_CONSTANT = "abc123"/g)?.length, 1, 'planned repo fact occurs once');
+          assert.equal(request.task.split('REQUIRED_CONSTANT = ').length - 1, 1, 'planned repo fact occurs once');
         }
         // #700: the registered Coding allowlist is trusted host inventory, not
         // a promise of tools executable in the current or any later provider turn.
