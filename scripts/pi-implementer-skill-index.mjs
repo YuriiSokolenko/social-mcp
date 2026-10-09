@@ -105,7 +105,7 @@ function relevantSkillNames(entries, taskText, limit = 5) {
     return { name, score };
   }).filter(item => item.score > 0);
   matches.sort((a, b) => b.score - a.score);
-  return new Set(matches.slice(0, Math.max(0, Math.min(6, limit))).map(item => item.name));
+  return new Set(matches.slice(0, Math.max(0, Math.min(5, limit))).map(item => item.name));
 }
 
 /**
