@@ -108,7 +108,7 @@ test('#634 capability guidance stays in one idempotent tool carrier across reque
   assert.equal(repeated, afterTool, 'second provider hook pass is an identity-preserving no-op');
   assert.equal((repeated.tools.at(-1).function.description.match(/RUNTIME EXECUTABLE TOOL CONTRACT/g) ?? []).length, 1);
   const revised = withProviderCapabilityInstructions(repeated, {
-    executableTools: ['read', 'submit_result'], deferredTools: ['grep'],
+    executableTools: ['read', 'submit_result'], deferredTools: ['grep'], explainDeferred: true,
   }, { trustedRuntimeEnvelope: true });
   assert.equal((revised.tools.at(-1).function.description.match(/RUNTIME EXECUTABLE TOOL CONTRACT/g) ?? []).length, 1,
     'a changed snapshot replaces the contract without duplicating it');
