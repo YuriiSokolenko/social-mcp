@@ -3,42 +3,31 @@ import assert from 'node:assert/strict';
 
 import { codingSessionRecoveryReceipt, normalizeCodingSessionOutcome } from '../scripts/pi-common/coding-session-outcome.mjs';
 
-test('#402 earlier tool error is recovered by a trusted final submission', () => {
+test('#632 earlier read ENOENT is resolved by adapter before a completed delegation', () => {
   assert.deepEqual(
-    normalizeCodingSessionOutcome({
-      submitted: true,
-      outcome: 'changed',
-      sessionError: new Error('read failed: unavailable tool'),
-    }),
+    normalizeCodingSessionOutcome({ submitted: true, outcome: 'changed' }),
     {
-      submitted: true,
-      successful_final_submission: true,
-      outcome: 'changed',
-      status: 'ok',
-      recovered_errors: ['read failed: unavailable tool'],
-      unresolved_terminal_error: null,
+      submitted: true, successful_final_submission: true, outcome: 'changed',
+      status: 'ok', recovered_errors: [], unresolved_terminal_error: null,
       receipt_error: null,
     },
   );
 });
 
-test('#396 failed submit followed by valid retry succeeds while failed-only stays unresolved', () => {
-  const recovered = normalizeCodingSessionOutcome({
-    submitted: true,
-    outcome: 'changed',
-    sessionError: new Error('submit_result file-set mismatch'),
-  });
-  assert.equal(recovered.successful_final_submission, true);
-  assert.deepEqual(recovered.recovered_errors, ['submit_result file-set mismatch']);
-  assert.equal(recovered.unresolved_terminal_error, null);
-
-  const failedOnly = normalizeCodingSessionOutcome({
-    submitted: false,
-    sessionError: new Error('submit_result file-set mismatch'),
-  });
-  assert.equal(failedOnly.successful_final_submission, false);
-  assert.equal(failedOnly.status, 'error');
-  assert.equal(failedOnly.unresolved_terminal_error, 'submit_result file-set mismatch');
+test('#632 failed Pi adapter/abort is not salvaged by a stale successful receipt', () => {
+  for (const error of ['read failed: unavailable tool',
+    'submit_result file-set mismatch', 'Pi adapter missing final text',
+    'provider timeout', 'operation cancelled']) {
+    const outcome = normalizeCodingSessionOutcome({
+      submitted: true,
+      outcome: 'changed',
+      sessionError: new Error(error),
+    });
+    assert.equal(outcome.successful_final_submission, false, error);
+    assert.equal(outcome.submitted, false, error);
+    assert.equal(outcome.status, 'error', error);
+    assert.equal(outcome.unresolved_terminal_error, error);
+  }
 });
 
 test('coding-session terminal semantics preserve changed, already_satisfied, and blocked separately', () => {
