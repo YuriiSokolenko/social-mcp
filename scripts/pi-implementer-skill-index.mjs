@@ -94,7 +94,7 @@ function relevantSkillNames(entries, taskText, limit = 5) {
   const terms = new Set((text.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? [])
     .filter(word => !NON_DISTINCTIVE_SKILL_WORDS.has(word)));
   const signals = TOPIC_SIGNALS.filter(topic => topic.match.test(text));
-  const matches = entries.map(([,, , name]) => {
+  const matches = entries.map(name => {
     const words = decodeXml(name).toLowerCase().split(/[^a-z0-9]+/)
       .filter(word => word.length > 2 && !NON_DISTINCTIVE_SKILL_WORDS.has(word));
     const exact = words.length >= 2 && text.toLowerCase().includes(words.join(' '));
@@ -136,12 +136,8 @@ export function curateImplementerSkillPrompt(systemPrompt, { taskText = '', maxF
   const allNames = entries.map(([, name]) => name.trim());
   if (new Set(allNames).size !== allNames.length) return systemPrompt;
 
-  // Put the name in a fixed tuple position so ranking does not depend on a
-  // fragile object->XML round trip. Keep selection deterministic.
-  const featuredNames = relevantSkillNames(
-    entries.map(([, name, description, location]) => [description, location, null, name]),
-    taskText, maxFeatured,
-  );
+  // Rank existing advertised skill names only, retaining discovery order on ties.
+  const featuredNames = relevantSkillNames(entries.map(([, name]) => name), taskText, maxFeatured);
   const featured = [];
   const indexed = [];
   for (const [, name, description, location] of entries) {
@@ -184,7 +180,8 @@ export default function implementerSkillIndex(pi) {
     const before = event.systemPrompt;
     const after = curateImplementerSkillPrompt(before, { taskText: event.prompt });
     if (after === before) return;
-    const names = [...after.matchAll(/<name>([^<]+)<\/name>/g)].map(match => match[1]);
+    const featuredCatalog = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
+    const names = [...featuredCatalog.matchAll(/<name>([^<]+)<\/name>/g)].map(match => match[1]);
     const index = after.match(/<skill_discovery_index>([\s\S]*?)<\/skill_discovery_index>/)?.[1] ?? '';
     const discoverable = index.split('\n').filter(line => line.includes('\t')).length;
     console.log(`PI_MAIN_SKILLS ${JSON.stringify({
