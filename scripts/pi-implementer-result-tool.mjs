@@ -4,9 +4,9 @@ import { Type } from 'typebox';
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';
-import { assertImplementerFileSet, normalizeImplementerFiles, writeImplementerResult } from './pi-common/implementer-result.mjs';
+import { assertNoScratchArtifacts, normalizeImplementerFiles, writeImplementerResult } from './pi-common/implementer-result.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
-import { mutationScopeReceipt } from './pi-common/accepted-mutation-scope.mjs';
+import { assertAcceptedMutationScope, mutationScopeReceipt } from './pi-common/accepted-mutation-scope.mjs';
 import { mutationCleanupHints } from './pi-common/mutation-journal.mjs';
 import { capabilitySnapshotGuidance } from './pi-common/session-state.mjs';
 import { readPreparedImplementation } from './pi-common/implementation-planner.mjs';
@@ -24,46 +24,45 @@ function changedPathsAgainstBase() {
 }
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 
-function invalidResultPathWithKnownFiles(error, knownChangedFiles) {
-  if (error?.code !== 'INVALID_RESULT_PATH') throw error;
-  const known = Array.isArray(knownChangedFiles) && knownChangedFiles.length
-    ? knownChangedFiles.join(', ')
-    : '(none)';
-  const enriched = new Error(`${error.message}. Known canonical changed files: ${known}`);
-  enriched.code = 'INVALID_RESULT_PATH';
-  enriched.path = error.path;
-  throw enriched;
-}
-
-function normalizeDeclaredFilesWithKnownFiles(declaredFiles, knownChangedFiles) {
+// The candidate is always derived from Git, never from model-provided files.
+// Scope remains independently predeclared; deriving paths must not authorize them.
+function assertRuntimePublicationFiles(changedPaths, receipt) {
+  const files = normalizeImplementerFiles(changedPaths);
+  const accepted = new Set(receipt.accepted.map(entry => entry.path));
+  const scratch = file => /(^|\\/)(?:\\.probe(?:\\d+)?\\.txt|\\.pi-tmp-[^/]+)$/.test(file);
+  const unpublishable = files.filter(file => !accepted.has(file) || scratch(file));
   try {
-    return normalizeImplementerFiles(declaredFiles);
+    assertNoScratchArtifacts(files);
+    const scopedFiles = assertAcceptedMutationScope({
+      cwd: process.cwd(), receipt, base: baseRef(),
+    });
+    if (JSON.stringify(normalizeImplementerFiles(scopedFiles)) !== JSON.stringify(files)) {
+      throw new Error('Runtime publication file set differs from accepted-scope Git diff');
+    }
   } catch (error) {
-    invalidResultPathWithKnownFiles(error, knownChangedFiles);
-  }
-}
-
-function assertFileSetWithMutationRecovery(actualFiles, declaredFiles) {
-  const canonicalDeclared = normalizeDeclaredFilesWithKnownFiles(declaredFiles, actualFiles);
-  try {
-    return assertImplementerFileSet(actualFiles, canonicalDeclared);
-  } catch (error) {
-    const declared = new Set(canonicalDeclared);
-    const unexpected = actualFiles.filter(file => !declared.has(file));
-    const hints = mutationCleanupHints(process.cwd(), unexpected, process.env);
+    const hints = mutationCleanupHints(process.cwd(), unpublishable, process.env);
     if (!hints.length) throw error;
+    const expected = files.filter(file => accepted.has(file) && !scratch(file));
     const calls = hints.map(hint =>
-      `undo_mutation({mutation_id:"${hint.mutation_id}",expected_files:${JSON.stringify([...declared])},reason:"Remove accidental mutation from final candidate"})`
+      `undo_mutation({mutation_id:"${hint.mutation_id}",expected_files:${JSON.stringify(expected)},reason:"Remove accidental mutation from final candidate"})`
     );
     throw new Error(`${error.message} Targeted cleanup available: ${calls.join(' or ')}`);
   }
+  return files;
+}
+
+function trustedRestoredNoDiffProof(changedBeforeIntegration) {
+  if (changedBeforeIntegration.length) return true;
+  // An attested saved patch already present in Git is evidence; a mode flag is not.
+  const patch = process.env.PI_RESUME_PATCH;
+  return Boolean(patch && fs.existsSync(patch) && fs.statSync(patch).size > 0 &&
+    git(['apply', '--reverse', '--check', patch], { allowFailure: true }).status === 0);
 }
 
 export const CHANGED_PUBLICATION_FIELDS = Object.freeze([
   'title',
   'summary',
   'changes',
-  'files',
   'security_notes',
   'limitations',
 ]);
@@ -74,7 +73,7 @@ function normalizeStringArray(value) {
 
 export function missingChangedPublicationFields(params = {}) {
   return CHANGED_PUBLICATION_FIELDS.filter(field => {
-    if (field === 'changes' || field === 'files') return normalizeStringArray(params[field]).length === 0;
+    if (field === 'changes') return normalizeStringArray(params[field]).length === 0;
     return !clean(params[field]);
   });
 }
@@ -91,7 +90,6 @@ export function validateFreshChangedSubmission(params = {}) {
     title: clean(params.title),
     summary: clean(params.summary),
     changes: normalizeStringArray(params.changes),
-    files: normalizeStringArray(params.files),
     security_notes: clean(params.security_notes),
     limitations: clean(params.limitations),
   };
@@ -106,9 +104,6 @@ export function submitResultParameters() {
     summary: Type.Optional(Type.String({ description: 'Required for fresh changed work: PR summary.' })),
     changes: Type.Optional(Type.Array(Type.String(), {
       description: 'Required for fresh changed work: concrete repository changes.',
-    })),
-    files: Type.Optional(Type.Array(Type.String(), {
-      description: 'Required for fresh changed work: exact repository-relative changed-file set.',
     })),
     already_satisfied: Type.Optional(Type.Boolean({
       description: 'Set true only when latest dev already contains the requested end state.',
@@ -214,7 +209,7 @@ export default function (pi) {
 
   registerTerminalTool(pi, {
     label: 'Sync and submit implementation candidate',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, files, security_notes, and limitations on the first call. The runtime validates that complete publication contract before integrating latest dev and returns code=missing_publication_fields with every missing field. `changes` is human-readable; `files` is the exact repository-relative changed-file set.',
+    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, security_notes, and limitations on the first call. The runtime validates that complete publication contract before integrating latest dev and returns code=missing_publication_fields with every missing field. `changes` is human-readable; publication files are runtime-derived from Git and the accepted mutation scope.',
     parameters: submitResultParameters(),
     customType: 'implementer-result',
     nudgeText: () => implementerActionNudge(pi.getActiveTools?.() ?? [], { restored, validationRepair }),
@@ -271,12 +266,6 @@ export default function (pi) {
       let knownChangedBeforeIntegration = null;
       if (!alreadySatisfied) {
         knownChangedBeforeIntegration = changedPathsAgainstBase();
-        if (freshChangedMetadata) {
-          freshChangedMetadata.files = normalizeDeclaredFilesWithKnownFiles(
-            freshChangedMetadata.files,
-            knownChangedBeforeIntegration,
-          );
-        }
         assertCodingBehavioralValidation({
           changedFiles: knownChangedBeforeIntegration,
           env: process.env,
@@ -289,6 +278,13 @@ export default function (pi) {
       });
       const changedPaths = changedPathsAgainstBase();
       const hasDiff = changedPaths.length > 0;
+      const acceptedScope = mutationScopeReceipt(process.cwd(), process.env);
+      const publicationFiles = hasDiff
+        ? assertRuntimePublicationFiles(changedPaths, acceptedScope)
+        : [];
+      if (runtimeOwnedMetadata && !hasDiff && !trustedRestoredNoDiffProof(knownChangedBeforeIntegration)) {
+        throw new Error('Restored or validation-repair no-diff result lacks trusted replay proof; cannot infer already_satisfied from an empty diff');
+      }
       let data;
 
       if (runtimeOwnedMetadata) {
@@ -299,8 +295,8 @@ export default function (pi) {
           ? {
               title: clean(context.title),
               summary: `${summaryPrefix}${issue ? ` for issue #${issue}` : ''} was prepared against latest dev.`,
-              changes: changedPaths,
-              files: changedPaths,
+              changes: publicationFiles,
+              files: publicationFiles,
               already_satisfied: false,
               security_notes: 'No additional security notes were supplied for restored work.',
               limitations: 'No additional limitations were supplied for restored work.',
@@ -331,6 +327,7 @@ export default function (pi) {
       } else {
         data = {
           ...freshChangedMetadata,
+          files: publicationFiles,
           already_satisfied: false,
         };
       }
@@ -341,15 +338,11 @@ export default function (pi) {
       if (data.already_satisfied && data.files.length) throw new Error('already_satisfied requires files: []');
       // Shared invariant for runtime-owned restored/validation-repair results too.
       if (!data.already_satisfied && !data.changes.length) throw new Error('at least one concrete change is required');
-      if (!data.already_satisfied && !data.files.length) throw new Error('at least one declared file is required');
-      if (!runtimeOwnedMetadata && !data.already_satisfied) {
-        assertFileSetWithMutationRecovery(changedPaths, data.files);
-      }
-
+      if (!data.already_satisfied && !data.files.length) throw new Error('at least one changed file is required');
       data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, {
         ...data,
         scope_enforcement: 'predeclared',
-        accepted_scope: mutationScopeReceipt(process.cwd(), process.env),
+        accepted_scope: acceptedScope,
       });
       return { data };
     },
