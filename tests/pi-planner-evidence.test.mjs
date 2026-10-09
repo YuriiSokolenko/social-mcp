@@ -809,7 +809,7 @@ test('toolUse with zero parsed calls keeps the bounded 8192 submission-only reco
   await h.handlers.get('message_end')({ message: {
     role: 'assistant', stopReason: 'toolUse', content: [],
   } });
-  const recovery = await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+  const recovery = await h.handlers.get('turn_end')({ entries: [] }, { ...h.abortContext, model: h.model });
   assert.equal(recovery.continue, true);
   assert.equal(h.aborted(), false);
   assert.deepEqual(h.models, [4096, 8192]);
