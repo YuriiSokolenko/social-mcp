@@ -598,6 +598,12 @@ function runtimeScenario(mode) {
         const childCall = async (name, input) => {
           childHandlers.get('turn_start')({ turnIndex: turn });
           if (!definition.tools.includes(name)) { turn++; return { block: true, reason: name + ' is not in the agent tool allowlist' }; }
+          // Each simulated childCall is a NEW model response. Reflect its own
+          // serialized provider tool list so validation/retry transitions cannot
+          // appear as magically injected tools in a preceding provider request.
+          providerPatch({ payload: {
+            model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
+          } }, childCtx);
           const event = { toolName: name, toolCallId: 'c' + turn, input };
           const blocked = await childHandlers.get('tool_call')(event, childCtx);
           if (blocked) { await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 400 } } }, childCtx); return blocked; }
@@ -620,6 +626,9 @@ function runtimeScenario(mode) {
         };
         const settleRepairRetry = async variant => {
           childHandlers.get('turn_start')({ turnIndex: turn });
+          providerPatch({ payload: {
+            model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
+          } }, childCtx);
           const event = { toolName: 'retry_last_failed_check', toolCallId: 'repair-retry-' + turn, input: {} };
           const blocked = await childHandlers.get('tool_call')(event, childCtx);
           assert.equal(blocked, undefined, 'exact retry passes the real runtime gate');
