@@ -87,6 +87,7 @@ import {
   invalidateTerminalReceipt,
 } from './pi-common/terminal-receipt.mjs';
 import { codingSessionRecoveryReceipt, normalizeCodingSessionOutcome } from './pi-common/coding-session-outcome.mjs';
+import { acquireImplementerTerminalSession } from './pi-common/terminal-session-binding.mjs';
 import { runtimeFailureClassForCode } from './pi-common/runtime-failure.mjs';
 import {
   TRUSTED_RECOVERY_TOOLS,
@@ -3088,6 +3089,17 @@ export default function (pi) {
               { error: handoffError },
             );
           }
+          // The pinned foreground adapter reads a process-global session ID. Even when
+          // the parent normally runs one tool at a time, Pi may overlap tool calls.
+          // Claim before changing any session state; an overlap fails closed rather
+          // than clobbering another delegation's terminal receipt binding.
+          let releaseTerminalSession;
+          try {
+            releaseTerminalSession = acquireImplementerTerminalSession(sessionId);
+          } catch (error) {
+            refuse(error.code ?? 'terminal_session_binding_failed', String(error?.message ?? error));
+          }
+          try {
           sessionsStarted += 1;
           // Durable in the parent process: if the coding child returns without terminal submission,
           // parent-side run_check/mutations/submit_result remain under the same behavioral
@@ -3111,11 +3123,9 @@ export default function (pi) {
             );
           }
           const startedAt = Date.now();
-          // The foreground pi-subagents adapter runs in THIS parent process, whereas
-          // PI_CODING_SESSION is supplied only to the fork. Bind its terminal gate to
-          // the exact current child session; never trust a receipt from another fork.
-          const priorTerminalSessionId = process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID;
-          process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID = sessionId;
+          // The parent-side lease remains held through delegation, receipt reads,
+          // outcome handling and every early return (including abort/timeout).
+          // PI_CODING_SESSION is still supplied only to the fork.
           codingSessionLog('started', { ...base, context: 'fresh', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens, handoffBytes: Buffer.byteLength(codingTask, 'utf8'), parentHandoffBytes: Buffer.byteLength(parentHandoff, 'utf8') });
           let response = null;
           let sessionError = null;
@@ -3142,8 +3152,6 @@ export default function (pi) {
           } catch (error) {
             sessionError = error;
           } finally {
-            if (priorTerminalSessionId === undefined) delete process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID;
-            else process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID = priorTerminalSessionId;
             if (fallbackMutationJournalFile) {
               try {
                 if (!fs.existsSync(fallbackMutationJournalFile)) {
@@ -3322,6 +3330,11 @@ export default function (pi) {
             content: [{ type: 'text', text: message }],
             details: { ...base, ...outcome, submitted: false, recovery_receipt: recoveryReceipt },
           };
+          } finally {
+            // Restore the exact prior env value on success, rejection, throw, abort,
+            // timeout and post-delegation receipt failures; release is idempotent.
+            releaseTerminalSession();
+          }
         },
       });
     }
