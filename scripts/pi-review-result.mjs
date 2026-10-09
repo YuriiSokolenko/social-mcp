@@ -208,7 +208,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(2);
   }
   try {
-    process.stdout.write(JSON.stringify(parseReviewResult(fs.readFileSync(path, "utf8"))));
+    // This CLI is the production Reviewer publication boundary. Never rely on
+    // PI_STAGE being inherited from a previous shell step to enforce the receipt.
+    process.stdout.write(JSON.stringify(parseReviewResult(
+      fs.readFileSync(path, "utf8"), { ...process.env, PI_STAGE: "reviewer" },
+    )));
   } catch (error) {
     console.error(error.message);
     process.exit(error.message.includes("submit_result") ? 3 : 4);
