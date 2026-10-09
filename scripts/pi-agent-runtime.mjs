@@ -2321,21 +2321,26 @@ export default function (pi) {
         })}`);
       }
       patched = steerCompaction.payload;
-      if (!steerCompaction.blocked) {
-        // Keep one stable tool-schema carrier throughout tool-bearing turns.
-        // Tool output bytes, role ordering and linked call IDs stay unchanged.
-        // If no safe carrier remains (e.g. zero tools and a tool-result tail),
-        // execution still fails closed; log loss of the advisory instruction.
-        patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
-          trustedRuntimeEnvelope: stage === 'implementer',
-          onMissingCarrier: reason => console.warn(`PI_PROVIDER_CAPABILITY_GUIDANCE_OMITTED ${JSON.stringify({
-            stage,
-            request: providerCapabilitySnapshot?.request ?? null,
-            reason,
-            executableTools: providerCapabilitySnapshot?.executableTools ?? [],
-          })}`),
-        });
-      }
+      // Compaction may safely decline to rewrite a tool-linked action steer.
+      // That must not disable this independent final-wire capability contract:
+      // it only edits trusted system/developer catalogs and a tool description
+      // (or an existing safe text carrier), never linked calls/results.
+      // Keep a single stable tool-schema carrier across tool-bearing requests.
+      patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
+        trustedRuntimeEnvelope: stage === 'implementer',
+        onCatalogAudit: audit => console.log('PI_PROVIDER_TOOL_ADVERTISEMENT_AUDIT ' + JSON.stringify({
+          stage,
+          request: providerCapabilitySnapshot?.request ?? null,
+          // Names only, no schema bodies, instructions, credentials or user text.
+          ...audit,
+        })),
+        onMissingCarrier: reason => console.warn(`PI_PROVIDER_CAPABILITY_GUIDANCE_OMITTED ${JSON.stringify({
+          stage,
+          request: providerCapabilitySnapshot?.request ?? null,
+          reason,
+          executableTools: providerCapabilitySnapshot?.executableTools ?? [],
+        })}`),
+      });
 
       // Inspect the outgoing, fully serialized request after all policies and
       // tool filtering. Neither ctx.model.maxTokens nor a successful setModel()
