@@ -3469,7 +3469,7 @@ export default function (pi) {
             ? `BLOCKED: ${event.toolName} became active only after provider request ${providerCapabilitySnapshot.request} was serialized. It is DEFERRED, not executable now. Try only on a later request that lists it. ${capabilitySnapshotGuidance(requestTools)}`
             : requestTools == null
               ? `BLOCKED: that tool is not currently exposed by the runtime. ${capabilitySnapshotGuidance(activeToolNames)}`
-              : `BLOCKED: that tool is not executable in this provider request. ${capabilitySnapshotGuidance(requestTools)}`,
+              : `BLOCKED: that tool is not currently exposed in this provider request and is not executable. ${capabilitySnapshotGuidance(requestTools)}`,
       };
       console.warn(`${removedSinceRequest || newlyActiveButDeferred ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
