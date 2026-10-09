@@ -65,7 +65,8 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       assert.ok(names(initial).length < names(raw).length);
       assert.match(initial.tools.at(-1).function.description, /CURRENTLY EXPOSED TOOLS/);
       assert.doesNotMatch(initial.tools.at(-1).function.description, /lsp_find_symbol|searxng_web_search/);
-      const context = { cwd: process.cwd(), model: { maxTokens: 2048 }, abort: () => { throw Error('unexpected abort'); } };
+      let aborts = 0;
+      const context = { cwd: process.cwd(), model: { maxTokens: 2048 }, abort: () => { aborts += 1; } };
       const hiddenCall = { toolName: 'lsp_start_server', toolCallId: 'hidden-1', input: {} };
       const blocked = await handlers.get('tool_call')(hiddenCall, context);
       assert.equal(blocked.block, true);
@@ -114,6 +115,57 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       const zero = handlers.get('before_provider_request')({ payload: { ...raw, tools: [] } });
       assert.equal(zero.tools, undefined, 'zero-tool request remains closed');
       assert.equal(zero.tool_choice, undefined);
+      // A hidden tool remains separate from generic unavailable attempts, but
+      // repeated attempts across provider requests have an independent ceiling.
+      handlers.get('before_provider_request')({ payload: raw });
+      const hiddenThird = await handlers.get('tool_call')({
+        toolName: 'subagent', toolCallId: 'hidden-third', input: {},
+      }, context);
+      assert.equal(hiddenThird.block, true);
+      assert.equal(aborts, 0, 'up to three hidden calls permit correction');
+      const hiddenFourth = await handlers.get('tool_call')({
+        toolName: 'subagent', toolCallId: 'hidden-fourth', input: {},
+      }, context);
+      assert.equal(hiddenFourth.block, true);
+      assert.match(hiddenFourth.reason, /preserve the worktree/i);
+      assert.equal(aborts, 1, 'fourth hidden call must abort instead of looping to maxTurns');
+      const noopsHandlers = new Map();
+      const noopsDefinitions = new Map();
+      let noopsActive = [...initiallyRegistered];
+      const noopsPi = {
+        ...pi,
+        registerTool: def => { noopsDefinitions.set(def.name, def); if (!noopsActive.includes(def.name)) noopsActive.push(def.name); },
+        on: (name, fn) => noopsHandlers.set(name, fn),
+        getAllTools: () => [...noopsDefinitions.values()],
+        getActiveTools: () => [...noopsActive],
+        setActiveTools: selected => { noopsActive = [...selected]; },
+      };
+      runtime(noopsPi);
+      const noopsRaw = {
+        ...raw,
+        tools: [...new Set([...initiallyRegistered, ...noopsDefinitions.keys()])].map(name => ({
+          type: 'function', function: { name, description: name, parameters: { type: 'object' } },
+        })),
+      };
+      assert.ok(names(noopsHandlers.get('before_provider_request')({ payload: noopsRaw })).includes('request_capabilities'));
+      for (const [index, reason] of ['no such group a', 'no such group b', 'no such group c'].entries()) {
+        const denied = await noopsDefinitions.get('request_capabilities').execute('noop-' + index, {
+          group: 'invalid-group-' + index, reason,
+        });
+        assert.equal(denied.isError, true);
+      }
+      const noopsWire = noopsHandlers.get('before_provider_request')({ payload: noopsRaw });
+      assert.ok(!names(noopsWire).includes('request_capabilities'), 'three no-ops hide the request tool without any grants');
+      const afterNoops = await noopsHandlers.get('tool_call')({
+        toolName: 'request_capabilities', toolCallId: 'noops-exhausted', input: { group: 'docs' },
+      }, context);
+      assert.equal(afterNoops.block, true);
+      assert.match(afterNoops.reason, /no-op limit/);
+      const directStale = await noopsDefinitions.get('request_capabilities').execute('stale-direct', {
+        group: 'docs', reason: 'A direct stale call must not bypass exhausted no-ops',
+      });
+      assert.equal(directStale.isError, true);
+      assert.match(directStale.content[0].text, /no-op limit reached/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
@@ -125,6 +177,17 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
     assert.match(result.stdout + result.stderr, /PI_MAIN_PROFILE_TOOL_HIDDEN/);
     assert.match(result.stdout, /PI_MAIN_TOOL_PROFILE_FINAL/);
     assert.match(result.stdout, /"toolSchemaBytesBeforeRaw":\d+/);
+    assert.match(result.stdout + result.stderr, /PI_MAIN_PROFILE_HIDDEN_ABORT/);
+    assert.match(result.stdout + result.stderr, /PI_MAIN_CAPABILITY_NOOP_LIMIT/);
+    const finalLogs = result.stdout.split('\n').filter(line => line.includes('PI_MAIN_TOOL_PROFILE_FINAL '));
+    assert.ok(finalLogs.length > 0);
+    for (const log of finalLogs) {
+      const record = JSON.parse(log.split('PI_MAIN_TOOL_PROFILE_FINAL ')[1]);
+      assert.ok(record.admittedCount >= 0);
+      assert.ok(record.deniedCount >= 0);
+      assert.equal(Object.hasOwn(record, 'admitted'), false, 'final wire log is compact');
+      assert.equal(Object.hasOwn(record, 'denied'), false, 'full names remain in PI_MAIN_TOOL_PROFILE only');
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
