@@ -27,6 +27,7 @@ import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
 import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
+import { filterFreshMainToolProfile, MAIN_CAPABILITY_REQUEST_TOOL, MAIN_CAPABILITY_GROUPS, MAX_MAIN_CAPABILITY_ESCALATIONS, mainCapabilityGrant } from './pi-common/main-tool-profile.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
