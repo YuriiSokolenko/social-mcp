@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snake — workflow smoke</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./main.mjs"></script>
+  </head>
+  <body>
+    <main class="game">
+      <h1>Snake</h1>
+
+      <section aria-labelledby="board-heading">
+        <h2 id="board-heading" class="visually-hidden">Game board</h2>
+        <canvas id="board" width="420" height="420" aria-label="Snake board"></canvas>
+      </section>
+
+      <section class="panel" aria-labelledby="panel-heading">
+        <h2 id="panel-heading" class="visually-hidden">Score and controls</h2>
+        <p>
+          Score: <span id="score" class="score">0</span>
+        </p>
+        <p id="status" role="status" aria-live="polite">Press start, then use arrow keys or WASD.</p>
+
+        <div class="controls">
+          <button id="start" type="button">Start</button>
+          <button id="pause" type="button" disabled>Pause</button>
+          <button id="restart" type="button" disabled>Restart</button>
+        </div>
+
+        <fieldset class="touch">
+          <legend>Direction</legend>
+          <button type="button" data-direction="up" aria-label="Move up">▲</button>
+          <button type="button" data-direction="left" aria-label="Move left">◀</button>
+          <button type="button" data-direction="right" aria-label="Move right">▶</button>
+          <button type="button" data-direction="down" aria-label="Move down">▼</button>
+        </fieldset>
+
+        <p class="hint">Arrow keys or WASD also steer the snake. Tap the board to pause.</p>
+      </section>
+    </main>
+  </body>
+</html>
