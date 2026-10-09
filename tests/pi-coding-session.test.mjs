@@ -198,6 +198,22 @@ test('the coding session is the same Implementer runtime, defined only in truste
 // persisted transcript. pi-bash-timeout.mjs needs the pi package, so the host asserts its path
 // but does not import it; run_check / submit_result executors are stubbed (their gates are real).
 let lastMetrics = [];
+// Pi invokes every extension hook in registration order. The scenario host used to
+// replace the runtime hook when result-tool registered its own phase hooks.
+function registerScenarioHook(map, name, fn) {
+  const prior = map.get(name);
+  if (!prior) { map.set(name, fn); return; }
+  map.set(name, async (event, ctx) => {
+    const first = await prior(event, ctx);
+    if (name === 'tool_call' && first?.block) return first;
+    // before_provider_request is a transformer: the second extension receives
+    // the payload returned by the first, not the original unpatched request.
+    const nextEvent = name === 'before_provider_request' && first !== undefined
+      ? { ...event, payload: first } : event;
+    const second = await fn(nextEvent, ctx);
+    return second === undefined ? first : second;
+  });
+}
 function runtimeScenario(mode) {
   const dir = tempDir();
   try {
@@ -306,7 +322,7 @@ function runtimeScenario(mode) {
       const pi = {
         events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) },
         registerTool: tool => tools.set(tool.name, tool),
-        on: (name, fn) => handlers.set(name, fn),
+        on: (name, fn) => registerScenarioHook(handlers, name, fn),
         appendEntry: () => {},
         getAllTools: () => [...new Set([...tools.keys(), 'read', 'write', 'edit', 'bash'])].filter(name => mode !== 'narrow-registry' || name !== 'bash').map(name => ({ name })),
         getActiveTools: () => [...active], setActiveTools: names => { active = names; },
@@ -357,7 +373,7 @@ function runtimeScenario(mode) {
           sessionManager: { getSessionId: () => 'coding', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({}) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
-          on: (n, f) => childHandlers.set(n, f),
+          on: (n, f) => registerScenarioHook(childHandlers, n, f),
           getActiveTools: () => [...childActive], setActiveTools: names => { childActive = names.filter(name => definition.tools.includes(name)); },
           setModel: async model => { childCaps.push(model.maxTokens); childCtx.model = model; return true; },
           sendUserMessage: async () => {} };
