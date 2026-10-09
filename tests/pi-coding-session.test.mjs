@@ -1777,7 +1777,17 @@ function runtimeScenario(mode) {
           const again = await handlers.get('tool_call')({ toolName: 'subagents_enable', toolCallId: 'repeat-again-' + turn, input: {} }, ctx);
           assert.equal(again.block, true);
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-          assert.equal(aborts, 1, 'repeated already-satisfied calls still count as no productive action and trip the watchdog');
+          assert.equal(aborts, 0, 'an unexposed repeated tool gets one bounded request-local correction');
+          assert.match(steers.at(-1), /RUNTIME UNAVAILABLE CAPABILITY CORRECTION/);
+          // The next provider request remains without the removed one-shot tool.
+          const correction = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.ok(!correction.tools.some(tool => tool.function?.name === 'subagents_enable'));
+          handlers.get('turn_start')({ turnIndex: turn });
+          const exhausted = await handlers.get('tool_call')({ toolName: 'subagents_enable', toolCallId: 'repeat-exhausted-' + turn, input: {} }, ctx);
+          assert.equal(exhausted.block, true);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'repeated unavailable one-shot tool exhausts the bounded correction');
+          assert.equal(JSON.parse(fs.readFileSync(runtimeFailure, 'utf8')).failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
           process.exit(0);
         }
 
