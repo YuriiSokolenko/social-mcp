@@ -106,6 +106,12 @@ export function validationScopeCovers(kind, coveringScope, coveredScope) {
       covered.every(target => covering.some(candidate => pytestTargetCovers(candidate, target)));
   }
 
+  if (kind === 'node_test') {
+    const covering = new Set(Array.isArray(coveringScope.targets) ? coveringScope.targets : []);
+    const covered = Array.isArray(coveredScope.targets) ? coveredScope.targets : [];
+    return covering.size > 0 && covered.length > 0 && covered.every(target => covering.has(target));
+  }
+
   if (kind === 'python_compile' || kind === 'ruff') {
     const covering = new Set(Array.isArray(coveringScope.paths) ? coveringScope.paths : []);
     const covered = Array.isArray(coveredScope.paths) ? coveredScope.paths : [];
@@ -310,8 +316,19 @@ export function runCheckRequestForRecord(record) {
   if ((record.kind === 'python_compile' || record.kind === 'ruff') && hasPaths) {
     return { kind: record.kind, paths: [...record.scope.paths] };
   }
-  if (record.kind === 'pytest' && hasTargets) {
-    return { kind: record.kind, targets: [...record.scope.targets] };
+  if ((record.kind === 'pytest' || record.kind === 'node_test') && hasTargets) {
+    const targets = record.scope.targets;
+    if (targets.length > 20 || targets.some(target => {
+      if (typeof target !== 'string' || !target || target.includes('\0')) return true;
+      const [file, ...selectors] = target.split('::');
+      if (!file || path.isAbsolute(file) || file.startsWith('-') || file.split(/[\\/]/).includes('..')) return true;
+      if (record.kind === 'node_test') return selectors.length > 0 || !/\.test\.(?:mjs|js)$/.test(file);
+      // Existing pytest directory targets are valid, but JS file targets are not.
+      return /\.(?:mjs|js|cjs|jsx|ts|tsx)$/.test(file) || (selectors.length > 0 && !file.endsWith('.py'));
+    })) {
+      throw new Error(`cannot reconstruct run_check request for ${record.kind}: invalid framework-specific targets`);
+    }
+    return { kind: record.kind, targets: [...targets] };
   }
   if (record.kind === 'profile' && hasProfile) {
     return { kind: record.kind, profile: record.scope.profile };
