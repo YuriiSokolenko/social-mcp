@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { Type } from 'typebox';
 
-import { terminalResult } from './pi-common/terminal-tool.mjs';
+import { registerSubmitNudge, terminalResult } from './pi-common/terminal-tool.mjs';
 import {
   createReviewReceipt, reviewAcceptanceCriteria, validateTextReview,
 } from './pi-review-result.mjs';
@@ -203,6 +203,22 @@ export default function registerReviewerResultTool(pi) {
       await restoreBudget();
       return terminal;
     },
+  });
+
+  // Restore the bounded pre-submission settle guard from registerTerminalTool.
+  // Terminal-only requests use the explicit format/truncation recovery controller
+  // instead; do not accidentally grant an unbounded submit_result nudge there.
+  registerSubmitNudge(pi, {
+    isSubmitted: () => state.phase !== 'review',
+    customType: 'pi-reviewer-begin-nudge',
+    content: () => {
+      const available = pi.getActiveTools?.() ?? [];
+      if (available.includes('declare_task_complexity')) {
+        return 'Review classification is not complete. Call declare_task_complexity before beginning terminal submission.';
+      }
+      return 'The review has not been submitted. If a concrete review question remains, investigate it with an exposed read-only tool. Otherwise call begin_review_submission({verdict:"PASS"|"CHANGES_REQUESTED"}) once; do not answer in prose.';
+    },
+    maxNudges: 1,
   });
 
   pi.on('tool_call', event => {
