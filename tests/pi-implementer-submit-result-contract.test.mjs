@@ -128,10 +128,21 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
       const path = await import('node:path');
       let tool;
       const entries = [];
+      const tools = new Map();
+      const hooks = new Map();
+      const ctx = { cwd: process.cwd(), model: { maxTokens: 16384, contextWindow: 262144 }, abort() {} };
       const pi = {
-        registerTool(value) { if (value.name === 'submit_result') tool = value; },
+        registerTool(value) { tools.set(value.name, value); if (value.name === 'submit_result') tool = value; },
         appendEntry(type, data) { entries.push({ type, data }); },
-        on() {},
+        on(event, fn) { hooks.set(event, [...(hooks.get(event) || []), fn]); },
+        setActiveTools() {},
+        async setModel(model) { ctx.model = model; return true; },
+        async sendUserMessage() {},
+      };
+      const emit = async (event, data) => {
+        let result;
+        for (const fn of hooks.get(event) || []) result = await fn(data, ctx) ?? result;
+        return result;
       };
       registerResultTool(pi);
       const accepted = ${JSON.stringify(acceptedFiles)};
@@ -150,7 +161,22 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
         execFileSync('git', ['commit', '-m', 'checkpoint']);
       }
       try {
-        const result = await tool.execute('submit', ${JSON.stringify(params)});
+        const params = ${JSON.stringify(params)};
+        if (process.env.PI_RESUME_ACTIVE !== 'true' && process.env.PI_VALIDATION_REPAIR !== 'true' &&
+            !params.already_satisfied && !params.blocked_reason) {
+          const begin = { toolName: 'begin_result_submission', toolCallId: 'begin-1', input: {} };
+          await emit('tool_call', begin);
+          await tools.get('begin_result_submission').execute(begin.toolCallId, {});
+          await emit('tool_execution_end', { toolCallId: begin.toolCallId, toolName: begin.toolName, isError: false });
+          await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: begin.toolCallId, name: begin.toolName }] } });
+          await emit('turn_end', { message: { stopReason: 'toolUse' } });
+          await emit('before_provider_request', { payload: { max_completion_tokens: 4096,
+            tools: [{ function: { name: 'submit_result' } }, { function: { name: 'write' } }] } });
+          await emit('tool_call', { toolName: 'submit_result', toolCallId: 'submit', input: params });
+          await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
+            content: [{ type: 'toolCall', id: 'submit', name: 'submit_result' }] } });
+        }
+        const result = await tool.execute('submit', params);
         console.log(JSON.stringify({ result, entries }));
       } catch (error) {
         console.log(JSON.stringify({ error: error.message, code: error.code }));
@@ -190,197 +216,52 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
   }
 }
 
-test('submit_result advertises a flat object schema and runtime returns structured missing-field errors', () => {
+test('text-only result submission advertises no model-owned publication metadata', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-result-contract-'));
   try {
     const program = `
       import assert from 'node:assert/strict';
-      const {
-        default: registerResultTool,
-        CHANGED_PUBLICATION_FIELDS,
-      } = await import(${JSON.stringify(RESULT_TOOL_URL)});
-
-      let tool;
+      const { default: registerResultTool, resultProviderBudgetEvidence } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      const registered = new Map();
       let settle;
       const pi = {
-        registerTool(value) { if (value.name === 'submit_result') tool = value; },
+        registerTool(value) { registered.set(value.name, value); },
         appendEntry() {},
-        getActiveTools() { return ['submit_result']; },
+        getActiveTools() { return ['begin_result_submission', 'submit_result']; },
         on(event, fn) { if (event === 'agent_before_settle') settle = fn; },
       };
       registerResultTool(pi);
-
-      assert.equal(tool.parameters.type, 'object');
-      assert.equal(tool.parameters.anyOf, undefined);
-      assert.deepEqual(Object.keys(tool.parameters.properties), [
-        'title', 'summary', 'changes', 'already_satisfied',
-        'blocked_reason', 'security_notes', 'limitations',
-      ]);
-      for (const field of CHANGED_PUBLICATION_FIELDS) {
-        assert.match(
-          tool.parameters.properties[field].description,
-          /Required for fresh changed work/,
-          field + ': publication requirement must be advertised by the tool schema',
-        );
-      }
-      const complete = {
-        title: 'Contract fix',
-        summary: 'Strengthen submit_result publication metadata.',
-        changes: ['Require publication metadata'],
-        files: '["scripts/pi-implementer-result-tool.mjs"]', // legacy malformed field is ignored
-        security_notes: 'No security impact.',
-        limitations: 'None.',
-      };
-      async function expectMissing(input, expected) {
-        await assert.rejects(
-          tool.execute('invalid', input),
-          error => {
-            assert.deepEqual(JSON.parse(error.message), {
-              code: 'missing_publication_fields',
-              missing_fields: expected,
-            });
-            return true;
-          },
-        );
-      }
-
-      for (const field of CHANGED_PUBLICATION_FIELDS) {
-        const invalid = { ...complete };
-        delete invalid[field];
-        await expectMissing(invalid, [field]);
-      }
-
-      for (const field of ['title', 'summary', 'security_notes', 'limitations']) {
-        await expectMissing({ ...complete, [field]: '   ' }, [field]);
-      }
-      await expectMissing({ ...complete, changes: [''] }, ['changes']);
-      assert.equal(tool.parameters.properties.files, undefined, 'file list is not requested from the model');
-
-      const multi = { ...complete };
-      delete multi.title;
-      delete multi.changes;
-      delete multi.security_notes;
-      await expectMissing(multi, ['title', 'changes', 'security_notes']);
-
+      const tool = registered.get('submit_result');
+      assert.deepEqual(Object.keys(tool.parameters.properties), ['resultText', 'already_satisfied', 'blocked_reason']);
+      assert.deepEqual(tool.parameters.required, []);
+      assert.equal(registered.get('begin_result_submission').parameters.additionalProperties, false);
+      assert.equal(resultProviderBudgetEvidence({ max_completion_tokens: 4096 }, 4096).verified, true);
+      assert.equal(resultProviderBudgetEvidence({ max_completion_tokens: 2048 }, 4096).verified, false);
+      await assert.rejects(tool.execute('early', { resultText: 'A complete Markdown result.' }),
+        error => JSON.parse(error.message).code === 'result_submission_not_complete');
       const nudge = settle();
-      assert.match(nudge.entries[0].content, /missing publication fields/);
-      assert.match(nudge.entries[0].content, /retry submit_result immediately/);
-      assert.match(nudge.entries[0].content, /CURRENTLY EXPOSED TOOLS.*submit_result/);
-      assert.doesNotMatch(nudge.entries[0].content, /need_more_evidence/, 'hidden blocker is not advertised by the terminal nudge');
-      assert.match(tool.description, /runtime validates that complete publication contract/);
+      assert.match(nudge.entries[0].content, /begin_result_submission/);
     `;
-    const child = runProgram({
-      dir,
-      program,
-      env: {
-        PI_RESUME_ACTIVE: 'false',
-        PI_VALIDATION_REPAIR: 'false',
-      },
-    });
+    const child = runProgram({ dir, program, env: { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' } });
     assert.equal(child.status, 0, child.stderr + child.stdout);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a real failed submit_result call leaves ProgressController on the terminal retry path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-result-retry-'));
-  try {
-    const progressUrl = new URL('../scripts/pi-common/progress-controller.mjs', import.meta.url).href;
-    const configUrl = new URL('../scripts/pi-common/stage-config.mjs', import.meta.url).href;
-    const program = `
-      import assert from 'node:assert/strict';
-      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
-      const { ProgressController } = await import(${JSON.stringify(progressUrl)});
-      const { stageConfig } = await import(${JSON.stringify(configUrl)});
-
-      let tool;
-      const pi = {
-        registerTool(value) { if (value.name === 'submit_result') tool = value; },
-        appendEntry() {},
-        on() {},
-      };
-      registerResultTool(pi);
-
-      const state = new ProgressController(stageConfig('implementer'), {});
-      state.onTurnStart(0);
-      state.applyPreparedImplementation({ status: 'prepared', plan: ['plan'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false, reason: 'test' });
-      assert.equal(state.productiveProgressState(), 'action_required');
-
-      const incomplete = { title: 'Missing publication metadata' };
-      assert.equal(state.checkToolCall('submit_result', incomplete), undefined);
-      let failed = false;
-      try {
-        await tool.execute('submit-invalid', incomplete);
-      } catch (error) {
-        failed = true;
-        assert.equal(JSON.parse(error.message).code, 'missing_publication_fields');
-      }
-      assert.equal(failed, true);
-      state.onToolExecutionEnd('submit_result', true);
-      assert.equal(state.productiveProgressState(), 'action_required');
-
-      assert.equal(
-        state.checkToolCall('read', { path: 'README.md' }),
-        undefined,
-        '#540 fresh Main keeps direct repository inspection available after a failed submit',
-      );
-      assert.equal(state.productiveProgressState(), 'action_required');
-
-      const corrected = {
-        title: 'Contract fix',
-        summary: 'Complete publication metadata.',
-        changes: ['Require publication metadata'],
-        files: ['scripts/pi-implementer-result-tool.mjs'],
-        security_notes: 'No security impact.',
-        limitations: 'None.',
-      };
-      assert.equal(state.checkToolCall('submit_result', corrected), undefined);
-    `;
-    const child = runProgram({
-      dir,
-      program,
-      env: {
-        PI_RESUME_ACTIVE: 'false',
-        PI_VALIDATION_REPAIR: 'false',
-      },
-    });
-    assert.equal(child.status, 0, child.stderr + child.stdout);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('registration snapshots fresh mode instead of re-reading resume env at execute time', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-result-mode-snapshot-'));
+test('fresh-mode snapshot does not permit legacy zero-argument submission', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-mode-snapshot-'));
   try {
     const program = `
       import assert from 'node:assert/strict';
       const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
       let tool;
-      const pi = {
-        registerTool(value) { if (value.name === 'submit_result') tool = value; },
-        appendEntry() {},
-        on() {},
-      };
-      registerResultTool(pi);
+      registerResultTool({ registerTool(value) { if (value.name === 'submit_result') tool = value; }, appendEntry() {}, on() {} });
       process.env.PI_RESUME_ACTIVE = 'true';
-      await assert.rejects(
-        tool.execute('still-fresh', {}),
-        error => {
-          assert.equal(JSON.parse(error.message).code, 'missing_publication_fields');
-          return true;
-        },
-      );
+      await assert.rejects(tool.execute('early', {}),
+        error => JSON.parse(error.message).code === 'result_submission_not_complete');
     `;
-    const child = runProgram({
-      dir,
-      program,
-      env: {
-        PI_RESUME_ACTIVE: 'false',
-        PI_VALIDATION_REPAIR: 'false',
-      },
-    });
+    const child = runProgram({ dir, program, env: { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' } });
     assert.equal(child.status, 0, child.stderr + child.stdout);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -426,7 +307,7 @@ test('restored and validation-repair work derive changed files with empty submit
 test('fresh already_satisfied and blocked result shapes still execute successfully', () => {
   const satisfied = runSuccessfulSubmit({
     modeEnv: { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' },
-    params: { already_satisfied: true, changes: [] },
+    params: { already_satisfied: true },
   });
   assert.equal(satisfied.metadata.already_satisfied, true);
   assert.equal(satisfied.metadata.outcome, 'already_satisfied');
@@ -487,14 +368,7 @@ test('#424 fresh submit_result exposes targeted mutation cleanup for accidental 
       });
 
       await assert.rejects(
-        tool.execute('submit', {
-          title: 'Feature',
-          summary: 'Implement feature.',
-          changes: ['Add feature'],
-          files: ['feature.py'],
-          security_notes: 'No security impact.',
-          limitations: 'None.',
-        }),
+        tool.execute('submit', {}),
         error => {
           assert.match(error.message, /Targeted cleanup available/);
           assert.match(error.message, new RegExp(entry.id));
@@ -514,7 +388,7 @@ test('#424 fresh submit_result exposes targeted mutation cleanup for accidental 
         PI_ISSUE_CONTEXT: context,
         PI_IMPLEMENTER_RESULT_FILE: resultFile,
         PI_MUTATION_JOURNAL_FILE: journalFile,
-        PI_RESUME_ACTIVE: 'false',
+        PI_RESUME_ACTIVE: 'true',
         PI_VALIDATION_REPAIR: 'false',
       },
     });
@@ -564,26 +438,19 @@ test('#630 model-supplied files (including a JSON string) never control runtime 
     'src/helper.py': 'VALUE = 2\\n',
     'tests/test_app.py': 'def test_ok():\\n    assert True\\n',
   };
-  const params = {
-    title: 'Three-file change',
-    summary: 'Use runtime-owned publication files.',
-    changes: ['Add feature and test'],
-    files: '["src/app.py","src/helper.py"]',
-    security_notes: 'No security impact.',
-    limitations: 'None.',
-  };
+  const params = { resultText: 'Use runtime-owned publication files.\\n\\n- Add feature and test.' };
   const allowed = runSuccessfulSubmit({
     modeEnv: {},
     params,
     files: three,
   });
   assert.deepEqual(allowed.metadata.files, Object.keys(three).sort());
-  assert.deepEqual(allowed.metadata.changes, ['Add feature and test']);
+  assert.deepEqual(allowed.metadata.changes, Object.keys(three).sort());
   assert.equal(allowed.metadata.accepted_scope.accepted.length, 3);
 
   const rejected = runSuccessfulSubmit({
     modeEnv: {},
-    params: { ...params, files: ['src/app.py', 'src/helper.py', 'tests/test_app.py'] },
+    params,
     files: three,
     acceptedFiles: ['src/app.py', 'src/helper.py'],
     expectedError: /accepted_scope_violation/,
@@ -613,14 +480,7 @@ test('#630 latest dev changes do not leak into publication and committed checkpo
 test('#630 conflicting latest dev cannot write a partial publication file list', () => {
   runSuccessfulSubmit({
     modeEnv: {},
-    params: {
-      title: 'Conflicting implementation',
-      summary: 'Test deterministic conflict recovery.',
-      changes: ['Modify base'],
-      files: '["base.txt"]',
-      security_notes: 'No new risk.',
-      limitations: 'None.',
-    },
+    params: { resultText: 'Test deterministic conflict recovery.' },
     files: { 'base.txt': 'local conflicting change\\n' },
     upstreamFiles: { 'base.txt': 'upstream conflicting change\\n' },
     expectedError: /Failed to merge latest dev[\s\S]*Your local changes[\s\S]*base\.txt/,
@@ -830,7 +690,7 @@ test('#470 changed coding submission keeps terminal outcomes reachable when prep
       },
     });
     assert.equal(child.status, 0, child.stderr + child.stdout);
-    assert.match(child.stdout, /PREPARED_OUTPUTS_REQUIRED/);
+    assert.match(child.stdout, /result_submission_not_complete/);
 
     const blocked = runSuccessfulSubmit({
       modeEnv: {
