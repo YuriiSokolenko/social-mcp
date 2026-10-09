@@ -459,6 +459,15 @@ export default function (pi) {
         budgetVerified: submission.providerEvidence?.verified === true,
         surfaceVerified: submission.providerSurfaceVerified,
       })}`);
+      // The executor may already have committed a terminal result. A later
+      // malformed/incomplete turn must not request another submit_result, even
+      // if an extra blocked tool_call marked the earlier control as invalid.
+      // Never accept without complete verification; preserve work and abort.
+      if (control?.executed === true) {
+        await submissionFailure('result_submission_post_execution_incomplete',
+          'Terminal tool executed but the provider turn did not complete verification', ctx);
+        return;
+      }
       if (!submission.providerEvidence?.verified) {
         await submissionFailure('result_submission_budget_unverified', 'Actual provider output budget does not match submission phase', ctx);
         return;
