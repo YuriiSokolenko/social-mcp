@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { readScript } from './helpers/resolved-source.mjs';
-import { PRODUCT_CI_STEPS, allowedFiles, devCiVerdict, infraRetryEndpoint, issueNumber, prCiVerdict } from '../scripts/pi-auto-merge.mjs';
+import { allowedFiles, devCiVerdict, infraRetryEndpoint, issueNumber, prCiVerdict, productCiSteps } from '../scripts/pi-auto-merge.mjs';
 
 const repo = 'owner/social-mcp';
 
@@ -128,12 +128,12 @@ test('current dev CI must be green before a merge attempt, including explicit po
 test('terminal PR CI wakes merge gate only after workflow completion while push and explicit dev CI keep their green-CI wake', () => {
   const workflow = parseWorkflow('.github/workflows/ci.yml');
   const wake = workflow.jobs['wake-merge-gate'];
-  assert.deepEqual(wake.needs, ['test', 'docker']);
+  assert.deepEqual(wake.needs, ['test', 'docker', 'harness', 'harness-images']);
 
   const condition = wake.if.replace(/\s+/g, ' ').trim();
   assert.equal(
     condition,
-    "always() && contains(fromJSON('[\"push\",\"workflow_dispatch\"]'), github.event_name) && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success'",
+    "always() && contains(fromJSON('[\"push\",\"workflow_dispatch\"]'), github.event_name) && github.ref == 'refs/heads/dev' && needs.test.result == 'success' && needs.docker.result == 'success' && needs.harness.result == 'success' && needs['harness-images'].result == 'success'",
   );
   assert.ok(wake.steps.map(step => step.name).includes('Continue merge queue after green dev CI'));
 
@@ -156,13 +156,14 @@ test('terminal PR CI wakes merge gate only after workflow completion while push 
 
 test('repairable CI step names are present in the parsed workflow and Docker failures stay conservative', () => {
   const workflow = parseWorkflow('.github/workflows/ci.yml');
-  const testStepNames = new Set(workflow.jobs.test.steps.map(step => step.name));
-  for (const name of PRODUCT_CI_STEPS) {
-    assert.ok(testStepNames.has(name), `PRODUCT_CI_STEPS contains unknown CI step: ${name}`);
+  const checkStepNames = new Set(['test', 'harness'].flatMap(job => workflow.jobs[job].steps.map(step => step.name)));
+  assert.ok(productCiSteps().size > 0);
+  for (const name of productCiSteps()) {
+    assert.ok(checkStepNames.has(name), `checks.ciRepairableSteps contains unknown CI step: ${name}`);
   }
 
-  const dockerStepNames = new Set(workflow.jobs.docker.steps.map(step => step.name));
-  for (const name of PRODUCT_CI_STEPS) {
+  const dockerStepNames = new Set(['docker', 'harness-images'].flatMap(job => workflow.jobs[job].steps.map(step => step.name)));
+  for (const name of productCiSteps()) {
     assert.ok(!dockerStepNames.has(name), `Docker step must not be auto-classified as repairable: ${name}`);
   }
 });
@@ -196,7 +197,7 @@ test('merge gate merges at most one PR per dev CI cycle and explicitly starts th
   assert.match(gate, /if \(devCi\.state !== 'success'\)/);
   assert.match(gate, /return 'blocked'/);
   assert.match(gate, /await dispatchWorkflow\('ci\.yml'\)/);
-  assert.match(ci, /needs: \[test, docker\]/);
+  assert.match(ci, /needs: \[test, docker, harness, harness-images\]/);
   assert.match(ci, /github\.ref == 'refs\/heads\/dev'/);
   assert.match(ci, /workflow-dispatch\.mjs pi-auto-merge\.yml/);
 });

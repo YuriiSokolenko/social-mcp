@@ -202,13 +202,13 @@ test('CI validation jobs inherit read-only token permissions while post-dev cont
   const header = workflow.split('\njobs:')[0];
   assert.match(header, /permissions:\n  contents: read\n/);
   assert.doesNotMatch(header, /^  (actions|contents|issues|pull-requests): write$/m);
-  const testJob = workflow.split('\n  test:')[1].split('\n  docker:')[0];
-  const dockerJob = workflow.split('\n  docker:')[1].split('\n  wake-merge-gate:')[0];
-  assert.doesNotMatch(testJob, /^    permissions:/m);
-  assert.doesNotMatch(dockerJob, /^    permissions:/m);
+  // Product (test, docker) and harness (harness, harness-images) validation jobs all precede the wake job.
+  const validationJobs = workflow.split('\njobs:')[1].split('\n  wake-merge-gate:')[0];
+  for (const job of ['test', 'harness', 'harness-images', 'docker']) assert.match(validationJobs, new RegExp(`\\n  ${job}:\\n`));
+  assert.doesNotMatch(validationJobs, /^    permissions:/m);
   const wakeJob = workflow.split('\n  wake-merge-gate:')[1];
   assert.match(wakeJob, /permissions:\n      actions: write\n      contents: write\n      issues: write\n      pull-requests: read/);
-  assert.match(wakeJob, /needs: \[test, docker\]/);
+  assert.match(wakeJob, /needs: \[test, docker, harness, harness-images\]/);
 });
 
 test('automation mode transitions run on the always-on control lane without a model or general runner', () => {
