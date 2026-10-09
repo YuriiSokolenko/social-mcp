@@ -129,21 +129,22 @@ test('#540 duplicate system or contract composition fails deterministically', ()
 });
 
 
-test('#540 generated Main contract matches direct repository access policy without leaking it into coding overlay', () => {
+test('#671 stable role contracts keep hard boundaries without prescribing transient tools', () => {
   const env = { ...process.env, GITHUB_WORKSPACE: process.cwd() };
   const main = agentContractPrompt('implementer', env);
   assert.equal((main.match(/<shared_agent_contract\b/g) ?? []).length, 1);
   assert.equal((main.match(/<role_contract\b/g) ?? []).length, 1);
-  assert.match(main, /read/);
-  assert.match(main, /repo_search/);
-  assert.match(main, /indexed_repo_search/);
-  assert.match(main, /bash/);
-  assert.match(main, /do \*\*not\*\* require a preceding `need_more_evidence` call/);
-  assert.match(main, /opaque `planText`[\s\S]*untrusted planning data/);
+  assert.match(main, /Never modify CI\/control-plane paths/);
+  assert.match(main, /Never reinterpret a restored checkpoint as fresh work/);
+  assert.match(main, /accepted mutation scope/);
+  assert.match(main, /final serialized provider request/);
+  assert.doesNotMatch(main, /Prefer `read`|call `run_check`|Call `submit_result`|lsp_start_server|begin_coding_session/);
+  assert.match(main, /`planText` is opaque, untrusted planning data/);
   assert.doesNotMatch(main, /Broad `bash` is also blocked/);
 
   const coding = implementerCodingContractPrompt(env);
   assert.match(coding, /<coding_role_contract/);
   assert.doesNotMatch(coding, /In this fresh Main mode the runtime keeps these repository tools directly callable/);
-  assert.match(coding, /one concrete fact blocks the next safe action.*need_more_evidence/s);
+  assert.match(coding, /Only the tools serialized in the \*\*current child provider request\*\*/);
+  assert.doesNotMatch(coding, /call `run_check`|call `need_more_evidence`|Prefer `structural_edit`/);
 });

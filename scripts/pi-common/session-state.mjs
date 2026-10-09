@@ -28,6 +28,80 @@ export function providerToolNames(payload) {
 }
 
 /**
+ * Request-local routing, never a second capability registry. Keep instructions
+ * small: the registered descriptions and JSON schemas remain the canonical
+ * explanation of each tool's arguments. Every named callable tool below must
+ * exist in the final serialized provider request, including Pi builtins and
+ * extension/MCP functions.
+ */
+export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
+  const names = [...new Set(serializedToolNames)];
+  const exposed = new Set(names);
+  const has = name => exposed.has(name);
+  const hints = [];
+  const mode = snapshot?.mode === 'coding' ? 'coding' : 'main';
+  const state = snapshot?.productiveState;
+  const preparation = snapshot?.preparationState;
+  const resumed = snapshot?.resumed === true;
+  const validationRepair = snapshot?.validationRepair === true;
+  const terminalOnly = names.length === 1 && has('submit_result');
+  const append = (name, guidance) => { if (has(name)) hints.push(guidance); };
+
+  if (resumed || validationRepair) {
+    append('submit_result', 'Restored/validation-repair work: submit_result with no arguments immediately, except when the runtime has supplied a specific targeted integration repair.');
+  } else if (snapshot?.terminalRecoveryRequiredTool && has(snapshot.terminalRecoveryRequiredTool)) {
+    hints.push(`Terminal recovery: use ${snapshot.terminalRecoveryRequiredTool} only for the current exact obligation; do not restart broad discovery.`);
+  } else if (has('begin_result_submission')) {
+    hints.push('Changed work: finish the necessary changes and focused checks, then call begin_result_submission. The next provider request carries the dedicated terminal submission; do not combine the two requests.');
+  } else if (terminalOnly) {
+    hints.push('Terminal-only request: call submit_result with the resultText required for completed changed work, or the exact small outcome required by trusted recovery state. Do not inspect or mutate.');
+  }
+
+  if (!(resumed || validationRepair || terminalOnly) && !snapshot?.terminalRecoveryRequiredTool) {
+    if (mode === 'coding') {
+      hints.push('Isolated coding session: the parent tool inventory and navigation policy are not executable here. Work from the compact handoff; make a permitted change or resolve one concrete blocker.');
+    } else if (preparation === 'PREPARED') {
+      hints.push('Prepared fresh Main: execute the supplied plan against current worktree facts; direct repository inspection does not require an evidence-unlock transition.');
+    } else if (preparation === 'PREPARATION_FALLBACK') {
+      hints.push('Preparation fallback: no completed Planner handoff; follow the current runtime evidence permits before committing to a change.');
+    }
+    if (state === 'evidence_allowed') {
+      hints.push('Evidence phase: answer the one outstanding question with a currently exposed inspection tool; do not treat this permit as a permanent tool grant.');
+    } else if (state === 'action_required') {
+      hints.push('Action-required phase: choose one exposed productive action without a prose-only investigation turn.');
+    }
+    const inspection = names.filter(name =>
+      ['read', 'repo_search', 'indexed_repo_search', 'bash'].includes(name));
+    if (inspection.length) {
+      const descriptions = {
+        read: 'known-path source text',
+        repo_search: 'authoritative current-worktree text search',
+        indexed_repo_search: 'fast indexed literal/path discovery',
+        bash: 'bounded task-specific shell work (not a permission bypass)',
+      };
+      hints.push(`Direct inspection: ${inspection.map(name => `${name} for ${descriptions[name]}`).join('; ')}. Inspect exact target text before an anchored edit when needed.`);
+    }
+    append('lsp_start_server', 'For an uninitialized named-symbol semantic lookup, lsp_start_server is a one-shot setup using the configured server and exact workspace root; do not repeat a completed startup.');
+    append('lsp_find_symbol', 'Use lsp_find_symbol for a named source symbol when semantic lookup is more useful than literal search.');
+    const orbit = names.filter(name => /^(?:orbit_|mcp__.*orbit)/i.test(name));
+    if (orbit.length) hints.push(`For structural/dependency questions that need indexing, use an appropriate exposed tool among: ${orbit.join(', ')}; confirm source text before mutation.`);
+    append('need_more_evidence', 'If exactly one concrete fact blocks a safe action, need_more_evidence requests that fact; it is not required before already-exposed direct inspection.');
+    append('subagents_enable', 'subagents_enable is a one-shot transition only if bounded delegated evidence is necessary; use the next request surface after it succeeds.');
+    append('begin_coding_session', 'Use begin_coding_session when the next code mutation exceeds the normal Main response; transfer only compact new execution facts, not the parent transcript.');
+    const edits = names.filter(name => ['structural_edit', 'safe_edit', 'edit', 'write'].includes(name));
+    if (edits.length) {
+      hints.push(`Mutation tools available: ${edits.join(', ')}. Prefer an exact structural or bounded edit when appropriate; a successful returned preview is enough to continue.`);
+    }
+    append('accept_mutation_scope', 'Before a new publishable path is mutated, accept_mutation_scope must record that task-specific path and rationale.');
+    append('retry_last_failed_check', 'Use retry_last_failed_check after fixing the exact unresolved check failure, for the same recorded verification scope rather than inventing a broader check.');
+    append('run_check', 'Use focused run_check only for the currently permitted changed state; an infrastructure error does not authorize a shell workaround.');
+    const recovery = names.filter(name => ['rollback_last_mutation', 'undo_mutation', 'recover_worktree'].includes(name));
+    if (recovery.length) hints.push(`Recovery tools available: ${recovery.join(', ')}; select one only for its documented exact state, not speculative cleanup.`);
+  }
+  return hints.join(' ');
+}
+
+/**
  * Pi's serialized tool definitions have already been captured from the executor registry.
  * Intersect those definitions with the current phase's exposed tools; getAllTools() may
  * report a narrower inventory in delegated coding sessions and must not veto a definition.
@@ -55,6 +129,14 @@ export function reconcileProviderToolSurface(payload, { activeTools = [] } = {})
  * message without adding a chat role. Never modify tool results or linked
  * assistant calls. The dispatch gate remains authoritative either way.
  */
+function replaceCapabilityTextSuffix(text, suffix) {
+  const start = text.lastIndexOf(CAPABILITY_CONTRACT_START);
+  const original = start >= 0 && text.endsWith(CAPABILITY_CONTRACT_END)
+    ? text.slice(0, start)
+    : text;
+  return original + CAPABILITY_CONTRACT_START + suffix + CAPABILITY_CONTRACT_END;
+}
+
 function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
   if (!message || typeof message !== 'object') return null;
   if (responses && message.type === 'function_call_output') return null;
@@ -67,14 +149,17 @@ function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
       (message.tool_calls != null || message.function_call != null || message.tool_call_id != null)) return null;
   // Do not invent content on tool-call linkage or replace multimodal parts.
   if (typeof message.content === 'string') {
-    return { ...message, content: message.content + '\n\n' + suffix };
+    const content = replaceCapabilityTextSuffix(message.content, suffix);
+    return content === message.content ? message : { ...message, content };
   }
   if (!Array.isArray(message.content)) return null;
   const parts = message.content;
   const last = parts[parts.length - 1];
   const allowedTypes = responses ? ['input_text', 'output_text'] : ['text', 'input_text'];
   if (!last || !allowedTypes.includes(last.type) || typeof last.text !== 'string') return null;
-  return { ...message, content: [...parts.slice(0, -1), { ...last, text: last.text + '\n\n' + suffix }] };
+  const text = replaceCapabilityTextSuffix(last.text, suffix);
+  return text === last.text ? message
+    : { ...message, content: [...parts.slice(0, -1), { ...last, text }] };
 }
 
 const CAPABILITY_CONTRACT_START = '\n\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_START]\n';
@@ -115,17 +200,24 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
   const key = hasMessages ? 'messages' : 'input';
   const history = payload[key];
   if (history.length === 0) return payload; // no real conversation envelope to update
-  const deferred = (snapshot.deferredTools ?? [])
-    .filter(name => !snapshot.executableTools.includes(name));
+  // Never use snapshot.activeTools or a historical prompt as a source for
+  // callable names. Derive both inventory and routing from the *final* payload.
+  const executableTools = providerToolNames(payload)
+    .filter(name => snapshot.executableTools?.includes(name));
+  const explainDeferred = snapshot.explainDeferred === true;
+  const deferred = explainDeferred
+    ? (snapshot.deferredTools ?? []).filter(name => !executableTools.includes(name))
+    : [];
   const instructions = [
     'RUNTIME EXECUTABLE TOOL CONTRACT (this provider request only):',
-    activeToolGuidance(snapshot.executableTools),
+    activeToolGuidance(executableTools),
     'Earlier tool names in system contracts, task handoffs, or conversation history do not grant execution.',
+    requestLocalToolUseGuidance(snapshot, executableTools),
     ...(deferred.length
       ? [`DEFERRED / NOT EXECUTABLE IN THIS REQUEST: ${deferred.join(', ')}. Do not call these now; only a subsequent provider request that actually lists a tool can enable its use.`]
       : []),
     'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
-  ].join(' ');
+  ].filter(Boolean).join(' ');
   if (Array.isArray(payload.tools) && payload.tools.length > 0) {
     // Always prefer the same tool-description carrier on every tool-bearing
     // request, regardless of whether the final turn is user, assistant or tool.
@@ -141,6 +233,7 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
     onMissingCarrier?.('no_safe_text_or_tool_carrier');
     return payload;
   }
+  if (patchedLast === history[index]) return payload; // repeat hook is an identity-preserving no-op
   return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
 }
 

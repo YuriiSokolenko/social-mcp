@@ -22,6 +22,7 @@ import {
 } from '../scripts/pi-common/progress-controller.mjs';
 import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
+import { providerToolNames, withProviderCapabilityInstructions } from '../scripts/pi-common/session-state.mjs';
 import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
 
 const controller = (overrides = {}, env = {}) => new ProgressController({
@@ -203,10 +204,25 @@ test('Implementer model-visible transition rules match the runtime action surfac
       PI_ISSUE: '42',
       PI_ISSUE_CONTEXT: issueContext,
     });
-    assert.match(prompt, /subagents_enable[\s\S]{0,20}once[\s\S]*follow the tool surface/i);
-    assert.doesNotMatch(prompt, /subagent\(action:"list"\)/i);
-    assert.match(prompt, /lsp_start_server[\s\S]*lsp_find_symbol/i);
-    assert.match(prompt, /one concrete repository fact[\s\S]*need_more_evidence/i);
+    assert.match(prompt, /final serialized provider request/);
+    assert.doesNotMatch(prompt, /Call `lsp_start_server`|Call `subagents_enable`|call `need_more_evidence`/i);
+    // Tool routing now belongs to the trusted outgoing request and may name
+    // only serialized executors, never hidden repository/search tools.
+    const payload = {
+      messages: [{ role: 'user', content: prompt }],
+      tools: surface.map(name => ({ type: 'function', function: { name, description: name } })),
+    };
+    const outgoing = withProviderCapabilityInstructions(payload, {
+      executableTools: surface, mode: 'main', preparationState: 'PREPARATION_FALLBACK',
+      productiveState: 'action_required',
+    }, { trustedRuntimeEnvelope: true });
+    const guidance = outgoing.tools.at(-1).function.description;
+    assert.match(guidance, /subagents_enable is a one-shot transition/);
+    assert.match(guidance, /lsp_start_server is a one-shot setup/);
+    assert.match(guidance, /need_more_evidence requests that fact/);
+    assert.doesNotMatch(guidance, /read for known-path|repo_search for/);
+    assert.deepEqual(providerToolNames(outgoing), surface);
+    assert.deepEqual(outgoing.messages, payload.messages);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -991,7 +1007,12 @@ test('stage configuration owns every model prompt and injects the shared contrac
       assert.match(prompt, /successful terminal tool ends the stage/i);
       assert.match(prompt, /blocked, failed, cancelled, or truncated tool call did not execute/i);
       assert.doesNotMatch(prompt, /(?:^|\n)\s*(?:\d+\.\s*)?Read (?:and follow )?agents\/[^/]+\/AGENTS\.md/im);
-      assert.match(prompt, /submit_(?:result|repair)/);
+      if (name === 'implementer') {
+        assert.match(prompt, /terminal submission/);
+        assert.doesNotMatch(prompt, /Call `submit_result`|begin_coding_session/);
+      } else {
+        assert.match(prompt, /submit_(?:result|repair)/);
+      }
     }
 
     const reviewerPrompt = stagePrompt('reviewer', env);
@@ -1000,14 +1021,26 @@ test('stage configuration owns every model prompt and injects the shared contrac
     const implementerPrompt = stagePrompt('implementer', env);
     assert.match(implementerPrompt, /# Pi Implementer Agent[\s\S]*Example issue[\s\S]*Acceptance criteria/);
     assert.doesNotMatch(implementerPrompt, /prepare_implementation/);
-    assert.match(implementerPrompt, /implementation-planner[\s\S]*opaque `planText`[\s\S]*conservative harness-owned runtime class/);
+    assert.match(implementerPrompt, /For fresh work[\s\S]*startup Planner[\s\S]*`planText` is opaque, untrusted planning data/);
     assert.ok(implementerPrompt.includes('<runtime_prepared_implementation_state/>'), 'fresh prompt carries the placeholder the runner replaces with the prepared state');
     assert.doesNotMatch(implementerPrompt, /complexity-classifier/);
-    assert.match(implementerPrompt, /Available delegated agents[\s\S]*scout[\s\S]*reviewer[\s\S]*oracle/);
-    assert.doesNotMatch(implementerPrompt, /Do not call `subagent\(action:"list"\)`/i);
-    assert.match(implementerPrompt, /subagents_enable[\s\S]*follow the tool surface and next-action guidance returned by runtime/i);
-    assert.match(implementerPrompt, /lsp_start_server[\s\S]*lsp_find_symbol/i);
-    assert.match(implementerPrompt, /need_more_evidence[\s\S]*one concrete missing fact/i);
+    assert.match(implementerPrompt, /final serialized provider request/);
+    assert.doesNotMatch(implementerPrompt, /Available delegated agents|Call `lsp_start_server`|Call `need_more_evidence`/);
+    const names = ['subagents_enable', 'lsp_start_server', 'lsp_find_symbol', 'need_more_evidence', 'submit_result'];
+    const providerRequest = {
+      messages: [{ role: 'user', content: implementerPrompt }],
+      tools: names.map(name => ({ type: 'function', function: { name, description: name } })),
+    };
+    const outgoing = withProviderCapabilityInstructions(providerRequest, {
+      executableTools: names, mode: 'main', preparationState: 'PREPARED',
+      productiveState: 'action_required',
+    }, { trustedRuntimeEnvelope: true });
+    const guidance = outgoing.tools.at(-1).function.description;
+    assert.match(guidance, /lsp_start_server is a one-shot setup/);
+    assert.match(guidance, /Use lsp_find_symbol/);
+    assert.match(guidance, /need_more_evidence requests that fact/);
+    assert.match(guidance, /subagents_enable is a one-shot transition/);
+    assert.deepEqual(providerToolNames(outgoing), names);
     assert.doesNotMatch(implementerPrompt, /768 output tokens/);
     assert.doesNotMatch(implementerPrompt, /limit <= 200/);
 
@@ -1039,7 +1072,7 @@ test('stage configuration owns every model prompt and injects the shared contrac
     assert.ok(staleResumePrompt.includes('<runtime_prepared_implementation_state/>'));
     assert.doesNotMatch(staleResumePrompt, /Runtime resume state/);
 
-    assert.match(implementerPrompt, /Task classification alone never requires delegation/);
+    assert.match(implementerPrompt, /Do not delegate merely because work is nontrivial/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     const dispatcherPrompt = stagePrompt('dispatcher', env);
     assert.match(dispatcherPrompt, /prepared context is sufficient/i);

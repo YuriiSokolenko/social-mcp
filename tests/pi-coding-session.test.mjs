@@ -37,7 +37,7 @@ test('coding-session prompt is a compact canonical subset, not the startup Imple
   assert.equal(count(main, '<shared_agent_contract '), 1);
   assert.equal(count(main, '<role_contract '), 1);
   assert.match(main, /## Startup/);
-  assert.match(main, /## Repository access routing/);
+  assert.match(main, /## Repository evidence and mutation invariants/);
   assert.doesNotMatch(main, /## Coding-session contract/);
 
   assert.equal(count(coding, '<shared_agent_contract '), 1);
@@ -46,9 +46,9 @@ test('coding-session prompt is a compact canonical subset, not the startup Imple
   assert.match(coding, /## Coding-session contract/);
   assert.match(coding, /## Engineering constraints/);
   assert.doesNotMatch(coding, /## Startup|### Available delegated agents|## Repository access routing|implementation-planner|begin_coding_session|request_large_mutation_budget|lsp_|Orbit/);
-  assert.match(coding, /does \*\*not\*\* inherit the parent transcript/);
+  assert.match(coding, /does \*\*not\*\* inherit the parent(?:'s)? transcript/);
   assert.match(coding, /No generic or startup navigation policy is inherited into this phase/);
-  assert.match(coding, /If one concrete fact blocks the next safe action/);
+  assert.match(coding, /If one concrete missing fact blocks a safe action/);
   assert.match(coding, /Tests should exercise public behavior and public APIs/);
 });
 

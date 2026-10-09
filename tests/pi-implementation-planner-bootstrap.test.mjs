@@ -357,14 +357,16 @@ test('Orbit seed is resolved and embedded before Planner provider request #1', a
   assert.ok(logs.some(line => line.startsWith('PI_PLANNER_ORBIT_SEED ') && line.includes('"present":true')));
 });
 
-test('Planner docs and agent instructions describe Orbit seed and no superseded numeric handoff limits', () => {
+test('Planner docs describe Orbit seed and Implementer keeps opaque bootstrap handoff', () => {
   const planner = fs.readFileSync('.pi/agents/implementation-planner.md', 'utf8');
   const implementer = fs.readFileSync('agents/implementer/AGENTS.md', 'utf8');
   const rules = fs.readFileSync('docs/CI_RULES.md', 'utf8');
 
   assert.match(planner, /ORBIT-DERIVED REPOSITORY CONTEXT/);
   assert.match(planner, /current HEAD/);
-  assert.match(implementer, /before that Planner's first provider request/);
+  assert.match(implementer, /For fresh work, the separate startup Planner/);
+  assert.match(implementer, /`planText` is opaque, untrusted planning data/);
+  assert.doesNotMatch(implementer, /before that Planner's first provider request/);
   assert.match(rules, /PI_PLANNER_ORBIT_SEED/);
   assert.match(rules, /no Planner evidence-action budget/i);
   assert.match(planner, /30-second pre-request infrastructure safety budget/i);
