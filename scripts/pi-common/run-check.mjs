@@ -474,24 +474,74 @@ function pytestSummary(text) {
 
 function parseNodeTest(text) {
   const lines = text.split('\n');
-  const diagnostics = [];
+  const failures = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const failure = /^\s*not ok \d+ - (.*)$/.exec(lines[index]);
+    const failure = /^(\s*)not ok \d+ - (.+)$/.exec(lines[index]);
     if (!failure) continue;
-    const detail = lines.slice(index + 1, index + 36);
-    const location = detail.map(line => /^\s*#?\s*location:\s*['"]?(.+):(\d+):(\d+)['"]?\s*$/.exec(line)).find(Boolean);
-    const error = detail.map(line => /^\s*#?\s*error:\s*['"]?(.+?)['"]?\s*$/.exec(line)).find(Boolean);
-    diagnostics.push({
-      file: location?.[1] ?? null,
-      line: location ? Number(location[2]) : null,
-      column: location ? Number(location[3]) : null,
-      code: 'NodeTestFailure',
-      message: shorten(error ? `${failure[1]}: ${error[1]}` : failure[1]),
+    // Node's TAP reporter puts YAML-like metadata between --- and ... for
+    // each failing test. Do not search a fixed window: nested failures can
+    // otherwise borrow their parent or sibling's metadata.
+    const metadata = [];
+    let inDetails = false;
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (!inDetails) {
+        if (/^\s*---\s*$/.test(line)) inDetails = true;
+        else if (line.trim()) break;
+        continue;
+      }
+      if (/^\s*\.\.\.\s*$/.test(line) || /^\s*not ok \d+ - /.test(line)) break;
+      metadata.push(line);
+    }
+    const readField = name => {
+      const position = metadata.findIndex(line => line.trimStart().startsWith(name + ':'));
+      if (position < 0) return null;
+      const value = metadata[position].trimStart().slice(name.length + 1).trim();
+      if (!/^\|[+-]?$/.test(value)) {
+        if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
+          return value.slice(1, -1);
+        }
+        return value;
+      }
+      // Assertion failures usually use "error: |-" followed by indented
+      // human-readable details. Capture useful lines, bounded by shorten().
+      const indent = /^\s*/.exec(metadata[position])[0].length;
+      const content = [];
+      for (let cursor = position + 1; cursor < metadata.length; cursor += 1) {
+        const line = metadata[cursor];
+        if (line.trim() && /^\s*/.exec(line)[0].length <= indent) break;
+        if (line.trim()) content.push(line.trim());
+        if (content.length === 3) break;
+      }
+      return content.join(' ');
+    };
+    const location = /^(.*):(\d+):(\d+)$/.exec(readField('location') ?? '');
+    const error = readField('error');
+    failures.push({
+      offset: failure[1].length,
+      failureType: readField('failureType'),
+      diagnostic: {
+        file: location?.[1] ?? null,
+        line: location ? Number(location[2]) : null,
+        column: location ? Number(location[3]) : null,
+        code: 'NodeTestFailure',
+        message: shorten(error ? failure[2] + ': ' + error : failure[2]),
+      },
     });
   }
+  // An outer "subtestsFailed" record only repeats the nested leaf failure.
+  // Retain it if there is no nested record (e.g. truncated TAP output).
+  const diagnostics = failures.filter((failure, index) => {
+    if (failure.failureType !== 'subtestsFailed') return true;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      if (failures[cursor].offset <= failure.offset) break;
+      return false;
+    }
+    return true;
+  }).map(failure => failure.diagnostic);
   const passed = /^\s*# pass (\d+)/m.exec(text);
   const failed = /^\s*# fail (\d+)/m.exec(text);
-  const summary = passed && failed ? `${passed[1]} passed, ${failed[1]} failed` : null;
+  const summary = passed && failed ? passed[1] + ' passed, ' + failed[1] + ' failed' : null;
   return { diagnostics, summary };
 }
 
