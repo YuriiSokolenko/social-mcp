@@ -221,3 +221,30 @@ test('#685 Main hook uses task prompt while isolated coding and non-Main session
     else process.env.PI_CODING_SESSION = child;
   }
 });
+
+
+test('#685 provider-boundary metrics distinguish featured from indexed entries on first/later turns', () => {
+  const system = curateImplementerSkillPrompt('<role>safe</role>\n' + catalog(allNames), {
+    taskText: 'Create src/app.py with pytest',
+  });
+  const first = {
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: '<shared_agent_contract/><role_contract/>' },
+    ],
+    tools: [],
+  };
+  const metadata = mainPromptRequestMetadata(first);
+  assert.ok(metadata.skillCount > 0 && metadata.skillCount <= 5);
+  assert.equal(metadata.indexedSkillCount + metadata.skillCount, 31);
+  assert.equal(metadata.discoverableSkillCount, 31);
+  assert.ok(metadata.skillCatalogBytes < 10398,
+    'fixture: the curated catalog must be smaller than the #677 reference bytes');
+  assert.equal(metadata.systemTextBytes, Buffer.byteLength(system));
+  const next = mainPromptRequestMetadata({
+    ...first,
+    messages: [...first.messages, { role: 'assistant', content: 'verification complete' }],
+  }, metadata);
+  assert.equal(next.changedFromPrevious.system, false);
+  assert.equal(next.discoverableSkillCount, metadata.discoverableSkillCount);
+});
