@@ -291,7 +291,7 @@ function runtimeScenario(mode) {
       const registrations = [];
       const registered = new Map();
       let aborts = 0;
-      let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'submit_result', 'need_more_evidence',
+      let active = ['read', 'write', 'edit', 'bash', 'safe_edit', 'structural_edit', 'accept_mutation_scope', 'run_check', 'begin_result_submission', 'submit_result', 'need_more_evidence',
         'request_large_mutation_budget', 'begin_coding_session', 'rollback_last_mutation', 'repo_search', 'indexed_repo_search', 'subagents_enable'];
       if (mode === 'no-submit-recovery-dead-end') {
         active = active.filter(name => name !== 'run_check');
