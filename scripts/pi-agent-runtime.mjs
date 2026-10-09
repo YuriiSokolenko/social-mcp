@@ -1579,7 +1579,8 @@ export default function (pi) {
   function recordProviderToolNameViolation(event, origin, liveTools = pi.getActiveTools()) {
     const snapshot = providerCapabilitySnapshot;
     const classification = classifyProviderReturnedTool(event.toolName, snapshot, {
-      activeTools: liveTools, knownTools: unrestrictedActiveTools ?? [],
+      activeTools: liveTools,
+      knownTools: [...(unrestrictedActiveTools ?? []), ...(pi.getAllTools?.() ?? []).map(tool => tool?.name)],
     });
     if (classification === 'allowed' || classification === 'missing_request_snapshot') return false;
     const key = event.toolCallId ?? `${snapshot.request}:${safeToolName(event.toolName)}`;
@@ -1613,7 +1614,7 @@ export default function (pi) {
     };
     recordRuntimeAbort(code, reason, detail);
     console.error(code + ' ' + JSON.stringify({ stage, ...detail, reason, outcome: 'aborted' }));
-    ctx.abort();
+    ctx?.abort?.();
   }
 
   // pi reports `Tool X not found` through tool_execution_end and/or tool_result for the same call.
@@ -2473,7 +2474,7 @@ export default function (pi) {
           providerCapabilitySnapshot.toolChoiceExemption = decision.exemption;
           providerCapabilitySnapshot.executableTools = wireTools;
           // The URL is intentionally limited to route identity; no credentials or query values.
-          const rawRoute = process.env.PI_MODEL_BASE_URL ?? '';
+          const rawRoute = process.env.PI_MODEL_BASE_URL ?? ctx?.model?.baseUrl ?? '';
           try {
             const route = new URL(rawRoute);
             providerCapabilitySnapshot.providerRoute = route.origin + route.pathname;
@@ -2482,7 +2483,8 @@ export default function (pi) {
           }
           if (providerNameCorrectionPending) {
             providerNameCorrectionPending = false;
-            if (!wireTools.length || (terminalRecoveryRequiredTool && !wireTools.includes(terminalRecoveryRequiredTool))) {
+            if (!wireTools.length || decision.toolChoice === 'none' ||
+                (terminalRecoveryRequiredTool && !wireTools.includes(terminalRecoveryRequiredTool))) {
               abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED',
                 'no phase-authorized serialized tool is available for the bounded correction');
               return withoutProviderTools(patched);
