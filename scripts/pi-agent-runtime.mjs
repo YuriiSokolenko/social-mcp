@@ -124,6 +124,7 @@ const CODING_SESSION_HANDOFF_MAX_LENGTH = 1200;
 const CODING_SESSION_ARGUMENT_CORRECTION_LIMIT = 1;
 const UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT = 1;
 const LARGE_MUTATION_ACTION_RETRY_LIMIT = 1;
+const CODING_TOOL_TRANSPORT_RECOVERY_LIMIT = 3; // Separate incidents; never an unbounded loop.
 // Five non-improving failures leaves room for bounded diagnostic phase changes
 // (for example collection/import -> assertions) without allowing an endless repair loop.
 const CODING_EQUIVALENT_FAILURE_LIMIT = 5;
@@ -512,6 +513,7 @@ export default function (pi) {
   let codingToolTransportErrors = [];
   let codingToolTransportRecovery = null;
   let codingToolTransportRecoveryUsed = false;
+  let codingToolTransportRecoveryCount = 0;
   // Successful trusted recovery transitions in this process; releases the incapable-fork guard.
   let trustedRecoveryEpoch = 0;
   let lastProviderProductiveState = null;
@@ -2061,7 +2063,7 @@ export default function (pi) {
             }));
           }
         }
-        if (codingToolTransportRecovery && codingToolTransportRecovery.request == null) {
+        if (codingToolTransportRecovery && !codingToolTransportRecovery.issued) {
           const permitted = new Set([codingToolTransportRecovery.tool]);
           if (codingToolTransportRecovery.mode === 'elevated') {
             permitted.add(ACCEPT_MUTATION_SCOPE_TOOL);
@@ -2250,7 +2252,7 @@ export default function (pi) {
       // tool filtering. Neither ctx.model.maxTokens nor a successful setModel()
       // proves the provider received the requested correction budget.
       providerWireOutputBudget = serializedProviderOutputBudget(patched);
-      if (codingToolTransportRecovery && codingToolTransportRecovery.request == null) {
+      if (codingToolTransportRecovery && !codingToolTransportRecovery.issued) {
         const correction = codingToolTransportRecovery;
         const executable = providerToolNames(patched);
         const needed = correction.mode === 'elevated'
@@ -2272,7 +2274,16 @@ export default function (pi) {
           );
           return { ...patched, tools: [], tool_choice: 'none' };
         }
-        correction.request = providerCapabilitySnapshot?.request ?? null;
+        // Do not treat a missing request identity as a second unissued retry.
+        if (!Number.isSafeInteger(providerCapabilitySnapshot?.request) ||
+            providerCapabilitySnapshot.request <= 0) {
+          abortCodingTransportRecovery(ctx, 'PI_CODING_TOOL_CORRECTION_FAILED',
+            'correction provider request has no authoritative request identity',
+            { selected_correction: correction.mode, incomplete_tool_transport: true });
+          return { ...patched, tools: [], tool_choice: 'none' };
+        }
+        correction.request = providerCapabilitySnapshot.request;
+        correction.issued = true;
         console.warn('PI_CODING_TOOL_TRANSPORT_CORRECTION_REQUEST ' + JSON.stringify({
           stage, request: correction.request, tool: correction.tool,
           selected_correction: correction.mode,
@@ -3853,8 +3864,9 @@ export default function (pi) {
     const truncatedText = resultText(event.result);
     recordCodingTransportError(event.toolName, event.isError, truncatedText, event.toolCallId, 'tool_execution_end');
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text: truncatedText });
-    if (truncated && !incompleteCodingToolError({ toolName: event.toolName, isError: event.isError, text: truncatedText }) &&
-        !truncationGuidedCalls.has(event.toolCallId)) {
+    // Restore legacy explicit-error guidance even when verified recovery is
+    // ineligible. If recovery is eligible, its newer directive follows at turn_end.
+    if (truncated && !truncationGuidedCalls.has(event.toolCallId)) {
       truncationGuidedCalls.add(event.toolCallId);
       console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated, source: 'tool_execution_end' })}`);
       await pi.sendUserMessage(`RUNTIME: ${truncationGuidance(event.toolName)}`, { deliverAs: 'steer' });
@@ -4274,7 +4286,7 @@ export default function (pi) {
     const text = resultText(event);
     recordCodingTransportError(event.toolName, event.isError, text, event.toolCallId, 'tool_result');
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
-    if (!truncated || incompleteCodingToolError({ toolName: event.toolName, isError: event.isError, text })) return undefined;
+    if (!truncated) return undefined;
     if (event.toolCallId) {
       if (truncationGuidedCalls.has(event.toolCallId)) return undefined;
       truncationGuidedCalls.add(event.toolCallId);
