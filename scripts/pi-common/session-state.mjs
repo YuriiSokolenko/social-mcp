@@ -64,6 +64,19 @@ export function withProviderCapabilityInstructions(payload, snapshot) {
   const hasMessages = Array.isArray(payload.messages);
   const hasInput = Array.isArray(payload.input);
   if (hasMessages === hasInput) return payload; // unknown or ambiguous provider envelope
+  // Real Main and coding requests contain the authoritative role overlay once.
+  // Synthetic / recovery envelope fragments without any contract must be
+  // forwarded unmodified (including object identity) for Pi's retry/replay path.
+  const history = hasMessages ? payload.messages : payload.input;
+  const isTrustedRuntimeEnvelope = history.some(message => {
+    const parts = typeof message?.content === 'string'
+      ? [message.content]
+      : Array.isArray(message?.content)
+        ? message.content.map(part => part?.text).filter(text => typeof text === 'string')
+        : [];
+    return parts.some(text => text.includes('<role_contract ') || text.includes('<coding_role_contract '));
+  });
+  if (!isTrustedRuntimeEnvelope) return payload;
   const deferred = (snapshot.deferredTools ?? [])
     .filter(name => !snapshot.executableTools.includes(name));
   const instructions = [
