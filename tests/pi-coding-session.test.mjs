@@ -433,6 +433,7 @@ function runtimeScenario(mode) {
         const firstRequestTools = firstActionRequest.tools.map(tool => tool.function?.name ?? tool.name);
         assert.ok(firstRequestTools.includes('need_more_evidence'), 'bounded evidence transition remains reachable');
         assert.ok(!firstRequestTools.includes('read'), 'inherited parent read intent is not advertised on the first request');
+        assert.ok(!firstRequestTools.includes('run_check'), 'verification cannot be enabled by the broad registration allowlist');
         assert.ok(!firstRequestTools.includes('bash'), 'forbidden cleanup shell is not advertised on the first request');
       if (mode === 'incapable-repeat' || mode === 'incapable-transition') {
           // #396/#399: the fork was launched for cleanup that needs raw bash. The model omits
@@ -1204,6 +1205,22 @@ function runtimeScenario(mode) {
         assert.match(request.task, /<prepared_implementation>/);
         assert.match(request.task, /<parent_execution_handoff>/);
         assert.match(request.task, /<runtime_state>/);
+        // #700: the registered Coding allowlist is trusted host inventory, not
+        // a promise of tools executable in the current or any later provider turn.
+        const stateStart = request.task.indexOf('<runtime_state>') + '<runtime_state>'.length;
+        const stateEnd = request.task.indexOf('</runtime_state>');
+        const handoffState = JSON.parse(request.task.slice(stateStart, stateEnd).trim());
+        assert.deepEqual(Object.keys(handoffState).sort(), ['acceptedMutationScope', 'changedFiles'],
+          'Coding handoff carries worktree facts, never the registered tool catalog');
+        if (mode === 'flow') {
+          const registeredTools = registered.get(request.agent).tools;
+          for (const name of ['read', 'run_check', 'write']) {
+            assert.ok(registeredTools.includes(name), 'registered inventory still includes ' + name);
+          }
+          assert.doesNotMatch(request.task.slice(stateStart, stateEnd), /read|run_check|codingTools/,
+            'the broader registration catalog must not leak into runtime_state');
+          console.log('CODING_HANDOFF_REQUEST_LOCAL_TOOLS_OK');
+        }
         if (mode === 'fallback') assert.doesNotMatch(request.task, /Planner fact marker/);
         else assert.equal(request.task.match(/Planner fact marker/g)?.length, 1, 'prepared repository facts are handed off exactly once');
         assert.doesNotMatch(request.task, /## Startup|Available delegated agents|Repository access routing|PARENT_TRANSCRIPT_ONLY_MARKER/);
