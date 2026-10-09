@@ -152,6 +152,90 @@ test('pytest pass and failing-test diagnostics with node id, line and message', 
   assert.equal(pass.summary, '5 passed in 0.1s');
 });
 
+test('#635 node_test runs Arkanoid .test.mjs with trusted fixed argv and bounded TAP diagnostics', async t => {
+  const dir = worktree({
+    'examples/workflow-smoke/arkanoid/engine.test.mjs': "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('engine works', () => assert.equal(2 + 2, 4));\n",
+    'examples/workflow-smoke/arkanoid/broken.test.js': "const test = require('node:test');\nconst assert = require('node:assert/strict');\ntest('engine breaks', () => assert.equal(2 + 2, 5));\n",
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const backend = {
+    async run({ request, spec, root, env, timeoutMs }) {
+      assert.equal(request.kind, 'node_test');
+      assert.equal(spec.command, process.execPath);
+      assert.deepEqual(spec.args.slice(0, 2), ['--test', '--test-reporter=tap']);
+      assert.ok(spec.args.slice(2).every(file => /\.test\.(?:mjs|js)$/.test(file)));
+      return (await runCheck(root, request, directOptions({ bins: { node: process.execPath }, timeoutMs }))).status === 'pass'
+        ? { exitCode: 0, durationMs: 1, stdout: '# pass 1\n# fail 0\n', stderr: '' }
+        : { exitCode: 1, durationMs: 1, stdout: 'not ok 1 - engine breaks\n# pass 0\n# fail 1\n', stderr: '' };
+    },
+  };
+  // Execute the real Node runner directly first (no network or production-sandbox claim).
+  const pass = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, directOptions({ bins: { node: process.execPath } }));
+  assert.equal(pass.status, 'pass', pass.stderr_tail || pass.stdout_tail);
+  assert.match(pass.summary, /1 passed, 0 failed/);
+  const failed = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/broken.test.js'] }, directOptions({ bins: { node: process.execPath } }));
+  assert.equal(failed.status, 'fail', failed.stderr_tail || failed.stdout_tail);
+  assert.match(failed.summary, /0 passed, 1 failed/);
+  assert.equal(failed.diagnostics[0].code, 'NodeTestFailure');
+  assert.match(failed.diagnostics[0].message, /engine breaks/);
+  assert.ok(failed.stdout_tail.length <= 3000);
+  assert.equal(failed.truncated, Boolean(failed.truncated));
+
+  const forwarded = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, {
+    backend,
+    bins: { node: process.execPath },
+  });
+  assert.equal(forwarded.status, 'pass');
+});
+
+test('#635 invalid framework and unsafe Node paths never invoke a runner or arm failed-check recovery', async t => {
+  const dir = worktree({
+    'examples/workflow-smoke/arkanoid/engine.test.mjs': "import test from 'node:test'; test('ok', () => {});\n",
+    'tests/test_engine.py': 'def test_ok(): assert True\n',
+    'tests/not-a-test.mjs': '',
+  });
+  const outside = worktree({ 'escape.test.mjs': '' });
+  t.after(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+  fs.symlinkSync(outside, path.join(dir, 'escape'));
+  let executed = 0;
+  const backend = { run: async () => { executed++; throw Error('invalid request executed'); } };
+  for (const request of [
+    { kind: 'pytest', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] },
+    { kind: 'node_test', targets: ['tests/test_engine.py'] },
+    { kind: 'node_test', targets: ['tests/not-a-test.mjs'] },
+    { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs::test_name'] },
+    { kind: 'node_test', targets: ['../escape.test.mjs'] },
+    { kind: 'node_test', targets: ['escape/escape.test.mjs'] },
+    { kind: 'node_test', targets: ['does-not-exist.test.mjs'] },
+    { kind: 'node_test', targets: ['--inspect'] },
+    { kind: 'node_test', targets: Array.from({ length: 21 }, () => 'tests/test_engine.py') },
+    { kind: 'node_test', targets: ['tests/test_engine.py'], command: 'bash' },
+    { kind: 'shell', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] },
+  ]) {
+    const result = await runCheck(dir, request, { backend });
+    assert.equal(result.status, 'invalid', JSON.stringify(request));
+    assert.equal(result.diagnostics.length, 0);
+  }
+  assert.equal(executed, 0, 'invalid checks never become code failures that require a retry');
+  const mismatch = await runCheck(dir, { kind: 'pytest', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, { backend });
+  assert.match(mismatch.summary, /use kind=node_test/);
+  const inverse = await runCheck(dir, { kind: 'node_test', targets: ['tests/test_engine.py'] }, { backend });
+  assert.match(inverse.summary, /use kind=pytest/);
+});
+
+test('#635 Node timeout returns timeout, never a test failure', async t => {
+  const dir = worktree({ 'tests/hanging.test.mjs': "import test from 'node:test'; test('hangs', async () => new Promise(resolve => setTimeout(resolve, 30000)));\n" });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const result = await runCheck(dir, { kind: 'node_test', targets: ['tests/hanging.test.mjs'] }, directOptions({
+    bins: { node: process.execPath }, timeoutMs: 400,
+  }));
+  assert.equal(result.status, 'timeout', result.stderr_tail || result.stdout_tail);
+  assert.match(result.summary, /process tree killed/);
+});
+
 test('timeout kills the whole subprocess tree', async () => {
   const dir = worktree({ 'tests/test_slow.py': '' });
   const pidFile = path.join(dir, 'grandchild.pid');
@@ -192,7 +276,7 @@ test('#503 pytest focused-check scope has no hidden -k or marker filters', async
 
 test('no arbitrary command is expressible through the public contract', async () => {
   const dir = worktree({ 'ok.py': '' });
-  assert.deepEqual(CHECK_KINDS, ['python_compile', 'ruff', 'pytest', 'profile']);
+  assert.deepEqual(CHECK_KINDS, ['python_compile', 'ruff', 'pytest', 'node_test', 'profile']);
   for (const request of [
     { kind: 'shell', command: 'id' },
     { kind: 'ruff', paths: ['ok.py'], command: 'id' },
