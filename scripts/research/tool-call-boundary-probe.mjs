@@ -9,9 +9,10 @@ import { fileURLToPath } from 'node:url';
 export const TOOL_SCHEMAS = {
   write: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false },
   submit_result: { type: 'object', properties: { resultText: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } }, required: ['resultText','files'], additionalProperties: false },
+  submit_plan: { type: 'object', properties: { planText: { type: 'string', minLength: 1 } }, required: ['planText'], additionalProperties: false },
 };
 export function compressEvidenceBuffer(bytes) { return gzipSync(bytes, { level: 9 }); }
-const TOOLS = Object.entries(TOOL_SCHEMAS).map(([name, parameters]) => ({ type: 'function', function: { name, description: name === 'write' ? 'Write synthetic source code into a file' : 'Submit a synthetic implementation summary', strict: true, parameters } }));
+const TOOLS = Object.entries(TOOL_SCHEMAS).map(([name, parameters]) => ({ type: 'function', function: { name, description: name === 'write' ? 'Write synthetic source code into a file' : name === 'submit_plan' ? 'Submit the complete synthetic implementation plan' : 'Submit a synthetic implementation summary', strict: true, parameters } }));
 
 // Incremental SSE parser. raw contains the exact received bytes (as UTF-8 text); event data
 // and argument strings are retained verbatim after SSE framing, without JSON repair.
@@ -73,6 +74,7 @@ export function validateToolCall(call) {
     for (const [key, value] of Object.entries(parsed)) {
       if (!Object.hasOwn(schema.properties, key)) issues.push(`${key}: additional property is not allowed`);
       else if (key === 'files' ? (!Array.isArray(value) || value.some(item => typeof item !== 'string')) : typeof value !== 'string') issues.push(`${key}: must be ${key === 'files' ? 'string[]' : 'string'}`);
+      else if (key === 'planText' && !value.trim()) issues.push('planText: must be a nonempty string');
     }
   }
   return { status: issues.length ? 'schema_error' : 'valid', error: issues.join('; ') || null, parsed, missing };
@@ -100,10 +102,48 @@ const PROMPTS = {
     large: `Call write exactly once with path "probe/synthetic_large.py". The content must be a valid Python module with exactly 180 functions named transform_001 through transform_180, each accepting value, having a short docstring, and returning a deterministic f-string prefixed case-N:. Include the exact first marker # BEGIN TOOL_CALL_BOUNDARY_PROBE and final marker # END TOOL_CALL_BOUNDARY_PROBE. Do not summarize or omit functions. This synthetic file is not to be executed.`,
   },
   submit_result: { result: 'Call submit_result exactly once with resultText exactly: "Synthetic probe completed; no files were written and no generated code was executed." and files exactly ["probe/synthetic.py"].' },
+  submit_plan: { plan: 'Finish the implementation plan for the issue from the verified repository observations. This is the submission phase: there are no repository tools available. Provide the complete actionable plan.' },
 };
+// Synthetic but structurally realistic: prior read-only calls and the completed
+// begin_plan_submission are retained in the model's conversation, but the sole
+// executable tool advertised for this new provider request is submit_plan.
+// No exact planText string is supplied. These calls are NEVER executed.
+export function plannerSyntheticMessages(contextVariant = 'research') {
+  const messages = [
+    { role: 'system', content: 'You are the implementation Planner. Repository research is read-only. After begin_plan_submission has executed, the plan must be submitted through submit_plan; plain assistant prose is not an accepted terminal handoff. All artifacts and calls in this diagnostic are synthetic.' },
+    { role: 'user', content: 'Issue: Fix retry behavior in src/social_mcp/sender.py, preserve public signatures and add tests in tests/test_sender.py. Inspect how async sends handle 429/503, cancellations and Retry-After. Prepare a narrowly scoped change, do not execute any code.' },
+  ];
+  if (contextVariant === 'research') {
+    for (let i = 0; i < 16; i++) {
+      const id = 'synthetic_read_' + String(i).padStart(2, '0');
+      const file = i % 3 === 0 ? 'src/social_mcp/sender.py'
+        : i % 3 === 1 ? 'src/social_mcp/retry_policy.py' : 'tests/test_sender.py';
+      messages.push({
+        role: 'assistant', content: null,
+        tool_calls: [{ id, type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: file, offset: i * 20, limit: 40 }) } }],
+      });
+      const lines = Array.from({ length: 10 }, (_, n) =>
+        (i * 20 + n + 1) + ': observed ' + file + ': coroutine ' +
+        (n % 3 ? 'send_with_retry' : 'classify_error') + ' handles status ' +
+        (n % 2 ? 429 : 503) + '; preserve cancellation, deduplicate retry scheduling, respect total deadline and avoid double sends.');
+      messages.push({ role: 'tool', tool_call_id: id, content: lines.join('\n') });
+    }
+  } else if (contextVariant !== 'short') {
+    throw new Error('Unsupported Planner probe context variant: ' + contextVariant);
+  }
+  messages.push({ role: 'assistant', content: null, tool_calls: [{
+    id: 'synthetic_begin_submission', type: 'function',
+    function: { name: 'begin_plan_submission', arguments: '{}' },
+  }] });
+  messages.push({ role: 'tool', tool_call_id: 'synthetic_begin_submission',
+    content: 'Research closed. All repository tools are disabled; the next request exposes only submit_plan.' });
+  messages.push({ role: 'user', content: PROMPTS.submit_plan.plan });
+  return messages;
+}
+
 function scenarios(args) {
-  const suite = argValue(args, 'suite', 'quick'); if (!['quick', 'full', 'followup', 'targeted'].includes(suite)) throw new Error('--suite must be quick, full, followup, or targeted');
-  const repeat = Number(argValue(args, 'repeat', ['full','followup'].includes(suite) ? 5 : 1)); if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) throw new Error('--repeat must be 1..100');
+  const suite = argValue(args, 'suite', 'quick'); if (!['quick', 'full', 'followup', 'targeted', 'planner'].includes(suite)) throw new Error('--suite must be quick, full, followup, targeted, or planner');
+  const repeat = Number(argValue(args, 'repeat', ['full','followup'].includes(suite) ? 5 : suite === 'planner' ? 3 : 1)); if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) throw new Error('--repeat must be 1..100');
   const list = [];
   if (suite === 'quick') list.push(
     { tool: 'write', toolChoice: 'required', strict: true, stream: true, payload: 'small', budget: 2048, reasoning: 'default' },
@@ -129,6 +169,15 @@ function scenarios(args) {
     ];
     for (const [tool,toolChoice,strict,stream,payload,budget,reasoning] of rows) list.push({tool,toolChoice,strict,stream,payload,budget,reasoning});
   }
+  // #681: identical input for each direct-vs-proxy pair, and the same history
+  // for each auto/required/named triplet. Short and long synthetic research
+  // histories exercise the terminal boundary without a quoted planText.
+  if (suite === 'planner') for (const contextVariant of ['short', 'research']) {
+    for (const toolChoice of ['auto', 'required', 'named']) {
+      list.push({ tool: 'submit_plan', toolChoice, strict: true, stream: true, payload: 'plan',
+        contextVariant, budget: 4096, reasoning: 'default' });
+    }
+  }
   if (suite === 'targeted') list.push({ tool: argValue(args,'tool','write'), toolChoice: argValue(args,'tool-choice','required'), strict: boolArg(argValue(args,'strict','true'),'strict'), stream: boolArg(argValue(args,'stream','true'),'stream'), payload: argValue(args,'payload','small'), budget: Number(argValue(args,'budget','2048')), reasoning: argValue(args,'reasoning','default') });
   if (args.has('probe-reasoning')) {
     const base = list.filter(x => x.reasoning === 'default'); for (const item of base) list.push({ ...item, reasoning: 'thinking-off' });
@@ -136,8 +185,11 @@ function scenarios(args) {
   for (const x of list) {
     if (!TOOL_SCHEMAS[x.tool]) throw new Error(`Unsupported tool: ${x.tool}`);
     if (!['auto','required','named'].includes(x.toolChoice)) throw new Error(`Unsupported tool choice: ${x.toolChoice}`);
-    if (!['small','large','result'].includes(x.payload) || (x.tool === 'write' && x.payload === 'result') || (x.tool === 'submit_result' && x.payload !== 'result')) throw new Error(`Payload ${x.payload} does not match ${x.tool}`);
-    if (![2048,16384].includes(Number(x.budget))) throw new Error('Budget must be 2048 or 16384');
+    if (!['small','large','result','plan'].includes(x.payload) ||
+      (x.tool === 'write' && !['small','large'].includes(x.payload)) ||
+      (x.tool === 'submit_result' && x.payload !== 'result') ||
+      (x.tool === 'submit_plan' && x.payload !== 'plan')) throw new Error(`Payload ${x.payload} does not match ${x.tool}`);
+    if (![2048,4096,8192,16384].includes(Number(x.budget))) throw new Error('Budget must be 2048, 4096, 8192, or 16384');
     x.budget = Number(x.budget);
   }
   return { suite, repeat, cases: list };
@@ -145,9 +197,12 @@ function scenarios(args) {
 function requestFor(s) {
   const tool = TOOLS.filter(t => t.function.name === s.tool).map(t => ({ ...t, function: { ...t.function, strict: s.strict } }));
   const toolChoice = s.toolChoice === 'named' ? { type: 'function', function: { name: s.tool } } : s.toolChoice;
-  let user = s.tool === 'write' ? PROMPTS.write[s.payload] : PROMPTS.submit_result.result;
+  let user = s.tool === 'write' ? PROMPTS.write[s.payload]
+    : s.tool === 'submit_plan' ? PROMPTS.submit_plan.plan : PROMPTS.submit_result.result;
   if (s.tool === 'write' && s.payload === 'large') user += `\n\nRequired deterministic reference structure (do not copy as a shortcut; generate the complete content):\n${largePayload()}`;
-  const body = { model: null, messages: [{ role: 'system', content: 'You are a diagnostic model. All tool calls are synthetic data; never execute them. Return the requested tool call.' }, { role: 'user', content: user }], tools: tool, tool_choice: toolChoice, max_completion_tokens: s.budget, temperature: 0, stream: s.stream };
+  const messages = s.tool === 'submit_plan' ? plannerSyntheticMessages(s.contextVariant ?? 'short')
+    : [{ role: 'system', content: 'You are a diagnostic model. All tool calls are synthetic data; never execute them. Return the requested tool call.' }, { role: 'user', content: user }];
+  const body = { model: null, messages, tools: tool, tool_choice: toolChoice, max_completion_tokens: s.budget, temperature: 0, stream: s.stream };
   if (s.reasoning === 'thinking-off') body.chat_template_kwargs = { enable_thinking: false };
   return body;
 }
@@ -168,7 +223,7 @@ export function classifyToolResponse(s, parsed, calls, validations, response, mo
   const requiredViolation = !parsed.transportError && !parsed.missingDone && response?.status >= 200 && response.status < 300 && s.toolChoice !== 'auto' && calls.length === 0;
   return { category, requiredViolation, reasoningOnly: !calls.length && !text && Boolean(reasoning), ordinaryText: !calls.length && Boolean(text), tokenCeilingReached: truncated, modelsComparable };
 }
-function summaryRow(result) { return `${result.id} | ${result.endpointName} | ${result.case.tool}/${result.case.toolChoice}/${result.case.strict?'strict':'non-strict'}/${result.case.stream?'stream':'non-stream'}/${result.case.payload}/${result.case.budget}/${result.case.reasoning} | ${result.outcome.category} | ${result.validation.map(x=>x.status).join(',')||'no tool call'} | [raw](raw-responses/${result.id}.bin)`; }
+function summaryRow(result) { return `${result.id} | ${result.endpointName} | ${result.case.tool}/${result.case.toolChoice}/${result.case.strict?'strict':'non-strict'}/${result.case.stream?'stream':'non-stream'}/${result.case.payload}/${result.case.contextVariant ?? 'default'}/${result.case.budget}/${result.case.reasoning} | ${result.outcome.category} | ${result.validation.map(x=>x.status).join(',')||'no tool call'} | [raw](raw-responses/${result.id}.bin)`; }
 function p95(xs) { if (!xs.length) return null; return [...xs].sort((a,b)=>a-b)[Math.ceil(xs.length*.95)-1]; }
 function median(xs) { if (!xs.length) return null; const sorted=[...xs].sort((a,b)=>a-b); const middle=Math.floor(sorted.length/2); return sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2; }
 export function pairComparisonRecords(results) {
@@ -185,7 +240,7 @@ export function evaluateComparability(environments, selectedModels) {
 export function timeoutSettings(args, timeout) { return {cliMs:timeout,defaultMs:600000,origin:args.has('timeout-ms')?'explicit_cli':'default',effectiveRequestTimeoutMs:timeout,outerDeadlineMs:null,abortSource:'AbortSignal.timeout in probe'}; }
 
 export async function run(argv = process.argv.slice(2)) {
-  const args = parseArgs(argv); if (args.has('help')) { console.log('Usage: node scripts/research/tool-call-boundary-probe.mjs --direct-url URL --proxy-url URL [--suite quick|full|targeted] [--dry-run]'); return 0; }
+  const args = parseArgs(argv); if (args.has('help')) { console.log('Usage: node scripts/research/tool-call-boundary-probe.mjs --direct-url URL --proxy-url URL [--suite quick|full|targeted|planner] [--dry-run]'); return 0; }
   const major = Number(process.versions.node.split('.')[0]); if (major < 22) throw new Error(`Node.js 22 or newer is required; found ${process.version}`);
   const plan = scenarios(args);
   const direct = localUrl(argValue(args,'direct-url','http://192.168.8.210:3009/v1'));
