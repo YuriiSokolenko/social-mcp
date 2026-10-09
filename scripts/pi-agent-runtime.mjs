@@ -2112,6 +2112,19 @@ export default function (pi) {
         providerCapabilitySnapshot = {
           request: ++providerRequestSequence,
           productiveState,
+          // Phase and startup facts are trusted controller/runtime state, not Planner
+          // prose or the child handoff. The guidance builder uses them only to
+          // choose advice for definitions actually serialized above.
+          mode: codingSession ? 'coding' : 'main',
+          preparationState: controller.preparationState,
+          resumed: resumedImplementer,
+          validationRepair,
+          verificationState: controller.verificationLifecycleState(),
+          terminalRecoveryRequiredTool,
+          explainDeferred: Boolean(
+            unavailableCapabilityCorrectionPending ||
+            (terminalRecoveryRequiredTool && !executableTools.includes(terminalRecoveryRequiredTool))
+          ),
           activeTools: executableTools,
           executableTools,
           liveActiveTools,
