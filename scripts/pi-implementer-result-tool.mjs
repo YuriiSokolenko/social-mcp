@@ -63,6 +63,33 @@ function trustedRestoredNoDiffProof(changedBeforeIntegration) {
 // File names, PR title, validation and security status always belong to the runtime.
 export const RESULT_SUBMISSION_TOKENS = 4096;
 export const RESULT_SUBMISSION_RETRY_TOKENS = 8192;
+// Initial submission plus at most one correction and one truncation retry.
+export const RESULT_SUBMISSION_MAX_REQUESTS = 3;
+
+// Force a named tool only for recognized wire formats; unknown formats remain closed.
+export function restrictResultSubmissionPayload(payload) {
+  const closed = { ...payload, tools: [], tool_choice: 'none' };
+  if (!Array.isArray(payload?.tools) || Object.hasOwn(payload, 'toolChoice')) return closed;
+  const choice = payload.tool_choice;
+  const knownChoice = choice == null || ['auto', 'none', 'required'].includes(choice) ||
+    (typeof choice === 'object' && choice.type === 'function' &&
+      (choice.function?.name === 'submit_result' || choice.name === 'submit_result'));
+  if (!knownChoice) return closed;
+  const matching = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === 'submit_result');
+  if (matching.length !== 1) return closed;
+  const tool = matching[0];
+  if (tool.type === 'function' && tool.function?.name === 'submit_result') {
+    return { ...payload, tools: matching, tool_choice: { type: 'function', function: { name: 'submit_result' } } };
+  }
+  if (tool.type === 'function' && tool.name === 'submit_result') {
+    return { ...payload, tools: matching, tool_choice: { type: 'function', name: 'submit_result' } };
+  }
+  // Legacy Pi adapters omit type. Auto remains safe with the terminal admission gate.
+  if (tool.type == null && tool.function?.name === 'submit_result') {
+    return { ...payload, tools: matching, tool_choice: 'auto' };
+  }
+  return closed;
+}
 
 export function resultProviderBudgetEvidence(payload, expected) {
   const fields = [
@@ -210,9 +237,18 @@ export default function (pi) {
   const validationRepair = validationRepairWork();
   const runtimeOwnedMetadata = restored || validationRepair;
 
-  const submission = { phase: 'coding', budget: null, retryUsed: false, control: null,
-    lastAssistant: null, providerEvidence: null, providerRequest: 0, lastInputTokens: null,
+  const submission = { phase: 'coding', budget: null, retryUsed: false, correctionUsed: false, control: null,
+    lastAssistant: null, providerEvidence: null, providerSurfaceVerified: false,
+    providerRequest: 0, lastInputTokens: null,
     truncatedToolArguments: false, originalModel: null };
+
+  const resetSubmissionAttempt = () => {
+    submission.control = null;
+    submission.lastAssistant = null;
+    submission.providerEvidence = null;
+    submission.providerSurfaceVerified = false;
+    submission.truncatedToolArguments = false;
+  };
 
   const restoreSubmissionBudget = async () => {
     if (!submission.originalModel) return;
