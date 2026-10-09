@@ -4314,6 +4314,29 @@ export default function (pi) {
     const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
     forcedProviderRequestInFlight = false;
 
+    // Cancellation must not queue a compensating mutation. Preserve all work
+    // already accepted by the unchanged scope/journal safeguards.
+    if (event.message?.stopReason === 'aborted') {
+      if (codingToolTransportRecovery) {
+        console.warn('PI_CODING_TOOL_TRANSPORT_CANCELLED ' + JSON.stringify({
+          stage, request: codingToolTransportRecovery.request,
+          selected_correction: codingToolTransportRecovery.mode,
+          checkpoint: { worktree_preserved: true },
+        }));
+        codingToolTransportRecovery = null;
+        codingToolTransportRecoveryUsed = false;
+        controller.resetLargeMutationBudget();
+        requireToolOnNextProviderRequest = false;
+      }
+      return undefined;
+    }
+    if (event.message?.stopReason === 'error' && codingToolTransportRecovery?.issued) {
+      abortCodingTransportRecovery(ctx, 'PI_CODING_TOOL_CORRECTION_FAILED',
+        'correction provider request failed before a verified coding mutation',
+        { provider_status: status, incomplete_tool_transport: false });
+      return undefined;
+    }
+
     if (event.message?.stopReason === 'error' && repairRequest) {
       if (retryableProviderErrorStatus(status)) {
         if (codingValidationRepair?.key === repairRequest.key) {
