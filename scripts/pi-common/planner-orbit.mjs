@@ -133,16 +133,22 @@ function missingRepositoryPath(cwd, value, { trustedHint = false } = {}) {
   let ancestor = absolute;
   let traversed = 0;
   while (ancestor !== root && traversed <= ORBIT_NEARBY_MAX_ANCESTORS) {
+    let exists = false;
     try {
-      // lstat detects escaping (or broken) symlinks even for an otherwise missing child.
       fs.lstatSync(ancestor);
-      const real = fs.realpathSync(ancestor);
+      exists = true;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return null;
+    }
+    if (exists) {
+      // An existing symlink that is broken or escapes the worktree is never
+      // converted into an advisory query against one of its parents.
+      let real;
+      try { real = fs.realpathSync(ancestor); } catch { return null; }
       if (!insideWorktree(root, real) || ancestor === absolute ||
           !fs.statSync(real).isDirectory()) return null;
       return { relative, extension: fileLike ? extension : null,
         parent: path.relative(root, ancestor).split(path.sep).join('/') };
-    } catch (error) {
-      if (error?.code !== 'ENOENT') return null;
     }
     ancestor = path.dirname(ancestor);
     traversed += 1;
