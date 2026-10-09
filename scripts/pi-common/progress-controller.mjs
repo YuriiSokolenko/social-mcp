@@ -64,7 +64,9 @@ export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMIN
 // Scope declaration is a trusted prelude, not the mutation payload itself. It is allowed while
 // an elevated mutation budget is active, but must not consume that budget before the real edit.
 export const ELEVATED_MUTATION_TURN_TOOLS = new Set([...FINISH_TOOLS, ACCEPT_MUTATION_SCOPE_TOOL]);
-const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
+// Closing coding is a nonterminal control transition, but it is productive progress:
+// the watchdog must not classify this deliberate phase change as a prose-only turn.
+const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS, 'begin_result_submission']);
 const ANCHOR_GATED_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
 
 function normalizedRepositoryPath(value) {
