@@ -2475,7 +2475,31 @@ function runtimeScenario(mode) {
         }, ctx);
         assert.equal(correctedRequest.tool_choice, 'required', 'wrong-tool correction keeps provider action forcing');
 
+        // The single contract correction must execute an in-scope tool. A blocked
+        // recovery read is NOT successful correction and must not buy another attempt.
         handlers.get('turn_start')({ turnIndex: turn });
+        const correctionRead = {
+          toolName: 'read',
+          toolCallId: 'corrected-recovery-read-' + turn,
+          input: { path: 'generated.py' },
+        };
+        assert.equal(await handlers.get('tool_call')(correctionRead, ctx), undefined);
+        const recovered = { content: [{ type: 'text', text: fs.readFileSync(cwd + '/generated.py', 'utf8') }] };
+        await handlers.get('tool_execution_end')({ ...correctionRead, isError: false, result: recovered }, ctx);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: {
+          stopReason: 'toolUse',
+          toolCalls: [{ id: correctionRead.toolCallId, name: 'read' }],
+          usage: { output: 100 },
+        } }, ctx);
+        assert.equal(aborts, 0, 'an authorized recovery read resolves the one corrective provider request');
+        assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
+
+        // A later out-of-scope read is still blocked under the ordinary recovery
+        // policy, independently of the already-resolved provider-name incident.
+        handlers.get('turn_start')({ turnIndex: turn });
+        handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+        }, ctx);
         const unrelatedRead = await handlers.get('tool_call')({
           toolName: 'read',
           toolCallId: 'unrelated-recovery-read-' + turn,
@@ -2486,9 +2510,6 @@ function runtimeScenario(mode) {
         console.log('CODING_RECOVERY_WRONG_PATH_BLOCKED_OK');
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
         assert.equal(aborts, 0, 'wrong-path read is rejected without consuming the preserved recovery state');
-
-        const recovered = await call('read', { path: 'generated.py' });
-        assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
         assert.ok(active.includes('safe_edit') || active.includes('edit'), 'bounded inspection opens local accepted-scope repair');
         assert.ok(!active.includes('begin_coding_session'), 'inspection does not reopen a second coding fork');
         assert.ok(!active.includes('bash'), 'inspection does not reopen raw shell');
