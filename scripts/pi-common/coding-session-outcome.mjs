@@ -5,11 +5,9 @@ function errorText(error) {
 }
 
 /**
- * Historical child errors are diagnostic once a valid final receipt exists:
- * final successful submission is authoritative even if the session reported an
- * earlier (or later transport) error. An invalid/stale receipt is different:
- * it means "not submitted yet", so the parent may retry rather than turning the
- * receipt diagnostic itself into a terminal execution failure.
+ * The pinned adapter resolves earlier recoverable tool errors BEFORE returning
+ * completed. A failed/cancelled/timed-out delegation must not be upgraded to
+ * success by a tool receipt left behind in the child's worktree.
  */
 export function normalizeCodingSessionOutcome({
   submitted,
@@ -18,19 +16,17 @@ export function normalizeCodingSessionOutcome({
   receiptError = null,
 } = {}) {
   const semanticOutcome = ['changed', 'already_satisfied', 'blocked'].includes(outcome) ? outcome : null;
-  const terminalSubmitted = submitted === true;
+  const terminalSubmitted = submitted === true && !sessionError;
   const successful = terminalSubmitted && semanticOutcome !== 'blocked';
-  const recoveredErrors = successful && sessionError ? [errorText(sessionError)] : [];
-  const unresolvedTerminalError = successful
-    ? null
-    : errorText(sessionError);
+  const recoveredErrors = []; // Earlier recoverable tool errors were handled inside Pi.
+  const unresolvedTerminalError = errorText(sessionError);
   const receiptDiagnostic = successful ? null : errorText(receiptError);
 
   return {
     submitted: terminalSubmitted,
     successful_final_submission: successful,
-    outcome: submitted === true ? semanticOutcome : null,
-    status: semanticOutcome === 'blocked' ? 'blocked' : successful ? 'ok' : (unresolvedTerminalError ? 'error' : 'incomplete'),
+    outcome: terminalSubmitted ? semanticOutcome : null,
+    status: terminalSubmitted && semanticOutcome === 'blocked' ? 'blocked' : successful ? 'ok' : (unresolvedTerminalError ? 'error' : 'incomplete'),
     recovered_errors: recoveredErrors.filter(Boolean),
     unresolved_terminal_error: unresolvedTerminalError,
     receipt_error: receiptDiagnostic,
