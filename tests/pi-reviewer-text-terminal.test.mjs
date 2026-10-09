@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-704-review-'));
 const loader = path.join(temp, 'typebox-loader.mjs');
@@ -211,6 +212,29 @@ test('#704 phase handoff, executed toolUse and run-bound receipt publish authori
   assertReviewReceipt(result, process.env);
   assert.throws(() => assertReviewReceipt({ ...result, text: 'modified' }, process.env),
     /receipt_invalid/);
+});
+
+test('#704 missing receipt is not a PASS even with a complete review-result entry', () => {
+  envSetup();
+  const result = validateTextReview({
+    verdict: 'PASS', reviewText: evidenceText, acceptanceCriteria: criteria,
+  });
+  const events = JSON.stringify({ type: 'entry_appended', entry: {
+    type: 'custom', customType: 'review-result', data: result,
+  } });
+  // Direct consumer must enforce the trusted terminal receipt.
+  assert.throws(() => parseReviewResult(events, process.env), /review_terminal_receipt_missing/);
+  // Production CLI must NOT silently drop receipt validation when PI_STAGE is
+  // absent in its environment (e.g. invoking after a previous shell step).
+  const raw = path.join(temp, 'missing-receipt-704.jsonl');
+  fs.writeFileSync(raw, events + '\n');
+  const { PI_STAGE: _stage, ...envWithoutStage } = process.env;
+  const executed = spawnSync(process.execPath, [
+    path.join(process.cwd(), 'scripts/pi-review-result.mjs'), raw,
+  ], { encoding: 'utf8', env: envWithoutStage });
+  assert.equal(executed.status, 4);
+  assert.match(executed.stderr, /review_terminal_receipt_missing/);
+  assert.equal(executed.stdout, '');
 });
 
 test('#704 bound verdict cannot be changed by submit_result argument', async () => {
