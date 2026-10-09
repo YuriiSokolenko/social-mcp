@@ -44,6 +44,7 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
   const preparation = snapshot?.preparationState;
   const resumed = snapshot?.resumed === true;
   const validationRepair = snapshot?.validationRepair === true;
+  const terminalOnly = names.length === 1 && has('submit_result');
   const append = (name, guidance) => { if (has(name)) hints.push(guidance); };
 
   if (resumed || validationRepair) {
@@ -52,11 +53,11 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
     hints.push(`Terminal recovery: use ${snapshot.terminalRecoveryRequiredTool} only for the current exact obligation; do not restart broad discovery.`);
   } else if (has('begin_result_submission')) {
     hints.push('Changed work: finish the necessary changes and focused checks, then call begin_result_submission. The next provider request carries the dedicated terminal submission; do not combine the two requests.');
-  } else if (has('submit_result') && names.length === 1) {
+  } else if (terminalOnly) {
     hints.push('Terminal-only request: call submit_result with the resultText required for completed changed work, or the exact small outcome required by trusted recovery state. Do not inspect or mutate.');
   }
 
-  if (!(resumed || validationRepair) && !snapshot?.terminalRecoveryRequiredTool) {
+  if (!(resumed || validationRepair || terminalOnly) && !snapshot?.terminalRecoveryRequiredTool) {
     if (mode === 'coding') {
       hints.push('Isolated coding session: the parent tool inventory and navigation policy are not executable here. Work from the compact handoff; make a permitted change or resolve one concrete blocker.');
     } else if (preparation === 'PREPARED') {
