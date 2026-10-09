@@ -1594,9 +1594,24 @@ export default function (pi) {
       knownTools: [...(unrestrictedActiveTools ?? []), ...(pi.getAllTools?.() ?? []).map(tool => tool?.name)],
     });
     if (classification === 'allowed' || classification === 'missing_request_snapshot') return false;
-    const key = event.toolCallId ?? `${snapshot.request}:${safeToolName(event.toolName)}`;
-    if (providerNameViolationCalls.has(key)) return true;
     const returnedToolName = safeToolName(event.toolName);
+    const anonymousKey = `${snapshot.request}:${returnedToolName}`;
+    const toolCallId = typeof event.toolCallId === 'string' && event.toolCallId.length
+      ? event.toolCallId : null;
+    const key = toolCallId ?? anonymousKey;
+    if (providerNameViolationCalls.has(key)) return true;
+    // Pi may omit toolCallId in tool_call but provide it in the decoded turn
+    // (or vice versa). Promote the anonymous entry once instead of treating the
+    // same provider call as TWO independent violations and aborting early.
+    if (toolCallId && providerNameViolationCalls.has(anonymousKey)) {
+      providerNameViolationCalls.delete(anonymousKey);
+      providerNameViolationCalls.set(key, returnedToolName);
+      return true;
+    }
+    if (!toolCallId && origin === 'turn_end' &&
+        [...providerNameViolationCalls.values()].includes(returnedToolName)) {
+      return true;
+    }
     providerNameViolationCalls.set(key, returnedToolName);
     unavailableCapabilityAttemptedThisTurn = true;
     unavailableCapabilityToolThisTurn = returnedToolName;
