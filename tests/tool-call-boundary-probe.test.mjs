@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
-import { SseToolCallParser, classifyToolResponse, compressEvidenceBuffer, evaluateComparability, pairComparisonRecords, timeoutSettings, validateToolCall } from '../scripts/research/tool-call-boundary-probe.mjs';
+import { spawnSync } from 'node:child_process';
+import { SseToolCallParser, classifyToolResponse, compressEvidenceBuffer, evaluateComparability, pairComparisonRecords, timeoutSettings, validateToolCall, plannerSyntheticMessages } from '../scripts/research/tool-call-boundary-probe.mjs';
 
 const frame = payload => `data: ${JSON.stringify(payload)}\n\n`;
 
@@ -54,6 +55,43 @@ test('JSON parseable wrong tool names are classified independently', () => {
 test('both tool schemas accept their required string fields', () => {
   assert.equal(validateToolCall({name:'write',arguments:'{"path":"p.py","content":"print(1)"}'}).status,'valid');
   assert.equal(validateToolCall({name:'submit_result',arguments:'{"resultText":"done","files":["a.py"]}'}).status,'valid');
+});
+
+test('#681 planner probe dry-run produces matched auto, required and named tool-choice cases', () => {
+  const child = spawnSync(process.execPath, [
+    'scripts/research/tool-call-boundary-probe.mjs', '--suite', 'planner',
+    '--dry-run', '--repeat', '1', '--max-requests', '12',
+  ], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(child.status, 0, child.stderr);
+  const manifest = JSON.parse(child.stdout);
+  assert.equal(manifest.requestCount, 12);
+  assert.equal(manifest.cases.length, 6);
+  assert.deepEqual(manifest.cases.map(c => c.toolChoice),
+    ['auto', 'required', 'named', 'auto', 'required', 'named']);
+  assert.deepEqual(manifest.cases.map(c => c.contextVariant),
+    ['short', 'short', 'short', 'research', 'research', 'research']);
+  assert.ok(manifest.cases.every(c => c.tool === 'submit_plan' && c.budget === 4096 &&
+    c.payload === 'plan' && c.stream === true && c.strict === true));
+  assert.equal(manifest.requests.filter(r => r.endpoint === 'direct').length, 6);
+  assert.equal(manifest.requests.filter(r => r.endpoint === 'proxy').length, 6);
+  assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":"Update src/a.py and test."}' }).status, 'valid');
+  assert.deepEqual(validateToolCall({ name: 'submit_plan', arguments: '{}' }).missing, ['planText']);
+  assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":123}' }).status, 'schema_error');
+  assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":""}' }).status, 'schema_error');
+});
+
+test('#681 synthetic Planner research history includes completed begin and retains only submit_plan at wire', () => {
+  const short = plannerSyntheticMessages('short');
+  const research = plannerSyntheticMessages('research');
+  assert.ok(short.length < research.length);
+  assert.equal(research.filter(m => m.role === 'tool').length, 17);
+  assert.equal(research.filter(m => m.role === 'assistant' && m.tool_calls?.[0]?.function?.name === 'read').length, 16);
+  assert.equal(research.at(-2).tool_call_id, 'synthetic_begin_submission');
+  assert.equal(research.at(-1).role, 'user');
+  assert.match(research.at(-1).content, /complete actionable plan/);
+  assert.doesNotMatch(research.at(-1).content, /planText exactly|Call submit_plan exactly/);
+  assert.ok(JSON.stringify(research).length > 10000);
+  assert.ok(research.some(m => m.role === 'tool' && m.content.includes('preserve cancellation')));
 });
 
 test('submit_result files must be an array of strings, not JSON encoded text', () => {
