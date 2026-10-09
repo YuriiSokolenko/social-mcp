@@ -138,7 +138,7 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
         { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
       );
       assert.equal(denied?.block, true, 'zero tools means zero dispatch privileges');
-      assert.match(denied.reason, /not executable in this provider request/);
+      assert.match(denied.reason, /DEFERRED, not executable now|not executable in this provider request/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
