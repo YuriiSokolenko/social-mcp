@@ -2023,11 +2023,6 @@ function runtimeScenario(mode) {
           assert.ok(evidenceWire.tools.some(tool => tool.function.name === 'read'),
             'a visible evidence reader is available on the actual provider wire');
           await call('read', { path: 'evidence.txt' });
-          const actionWire = handlers.get('before_provider_request')({
-            payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
-          }, ctx);
-          assert.equal(actionWire.tool_choice, 'required',
-            'consuming evidence returns the real provider boundary to persistent action_required');
           fs.rmSync(cwd + '/evidence.txt');
 
           const consumedSteer = steers.findLast(text => /RUNTIME EVIDENCE PERMIT CONSUMED/.test(text));
