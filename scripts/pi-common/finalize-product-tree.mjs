@@ -41,7 +41,12 @@ export function integrateLatestDev({ conflictMessage, allowConflicts = false }) 
       if (allowConflicts) return { conflicts };
       throw new Error(conflictMessage(conflicts));
     }
-    throw new Error(merge.out || `Failed to merge latest ${baseBranch()}`);
+    // Git writes merge failures such as "local changes would be overwritten"
+    // to stderr while stdout may contain only "Updating <sha>..<sha>".
+    // Preserve both streams, with stderr first, so callers receive the real
+    // failure cause instead of a misleading progress message.
+    const details = [merge.err, merge.out].filter(Boolean).join('\n');
+    throw new Error(`Failed to merge latest ${baseBranch()} (exit ${merge.status})${details ? `:\n${details}` : ''}`);
   }
   return { conflicts: [] };
 }
