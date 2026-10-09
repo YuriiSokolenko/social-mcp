@@ -11,6 +11,7 @@ import {
   acceptedTerminalImplementerReceipt,
   patchPiSubagentsSource,
 } from '../infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs';
+import { acquireImplementerTerminalSession } from '../scripts/pi-common/terminal-session-binding.mjs';
 
 const receiptId = 'planner-run-617';
 const toolCallId = 'submit-617';
@@ -460,4 +461,106 @@ test('#643 validation-repair and already_satisfied retain their terminal semanti
     agentName: 'implementer-coding-session', ...satisfied,
     env: {}, errInfo: { hasError: false },
   }).result.exitCode, 0);
+});
+
+function deferredTerminalBarrier() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('#645 overlapping asynchronous coding delegations reject before clobbering the active terminal session', async () => {
+  const key = 'PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID';
+  const changes = [];
+  const backing = { [key]: 'pre-existing-session' };
+  const env = new Proxy(backing, {
+    set(target, field, value) {
+      if (field === key) changes.push(value);
+      return Reflect.set(target, field, value);
+    },
+  });
+  const entered = deferredTerminalBarrier();
+  const finish = deferredTerminalBarrier();
+  async function delegate(sessionId, work) {
+    const release = acquireImplementerTerminalSession(sessionId, env);
+    try { return await work(); }
+    finally {
+      release();
+      release(); // Accidental double cleanup must not restore a second time.
+    }
+  }
+
+  const first = delegate('coding-A', async () => {
+    assert.equal(env[key], 'coding-A');
+    entered.resolve();
+    await finish.promise;
+    const sample = validImplementerEnvelope();
+    sample.receipt.session_id = 'coding-A';
+    const accepted = runPatchedDecision({
+      agentName: 'implementer-coding-session',
+      ...sample, sessionId: env[key], errInfo: { hasError: false },
+    }).result;
+    assert.equal(accepted.exitCode, 0, 'first receipt belongs to its active session');
+    sample.receipt.session_id = 'coding-B';
+    const foreign = runPatchedDecision({
+      agentName: 'implementer-coding-session',
+      ...sample, sessionId: env[key], errInfo: { hasError: false },
+    }).result;
+    assert.equal(foreign.exitCode, 1, 'cross-session receipt is rejected');
+  });
+  await entered.promise;
+  try {
+    await assert.rejects(delegate('coding-B', async () => {
+      throw new Error('overlap must not launch the second fork');
+    }), error => error.code === 'PI_IMPLEMENTER_TERMINAL_SESSION_OVERLAP');
+    assert.equal(env[key], 'coding-A', 'rejected fork leaves active ID intact');
+    assert.deepEqual(changes, ['coding-A'], 'overlap did not write the process environment');
+  } finally {
+    finish.resolve();
+  }
+  await first;
+  assert.equal(env[key], 'pre-existing-session');
+  assert.deepEqual(changes, ['coding-A', 'pre-existing-session'], 'first ID restored exactly once');
+
+  await delegate('coding-B', async () => {
+    assert.equal(env[key], 'coding-B');
+    const sample = validImplementerEnvelope();
+    sample.receipt.session_id = 'coding-B';
+    assert.equal(runPatchedDecision({
+      agentName: 'implementer-coding-session',
+      ...sample, sessionId: env[key], errInfo: { hasError: false },
+    }).result.exitCode, 0, 'next delegation can accept its own receipt');
+    sample.receipt.session_id = 'coding-A';
+    assert.equal(runPatchedDecision({
+      agentName: 'implementer-coding-session',
+      ...sample, sessionId: env[key], errInfo: { hasError: false },
+    }).result.exitCode, 1, 'prior session receipt must not be reused');
+  });
+  assert.deepEqual(changes, ['coding-A', 'pre-existing-session', 'coding-B', 'pre-existing-session']);
+});
+
+test('#645 terminal session lease cleans up on throw, abort and timeout, including absent prior env', async () => {
+  const key = 'PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID';
+  const env = {};
+  async function delegate(sessionId, work) {
+    const release = acquireImplementerTerminalSession(sessionId, env);
+    try { return await work(); }
+    finally { release(); }
+  }
+  for (const kind of ['error', 'abort', 'timeout']) {
+    await assert.rejects(delegate('coding-' + kind, async () => {
+      assert.equal(env[key], 'coding-' + kind);
+      if (kind === 'abort') {
+        const signal = new AbortController();
+        signal.abort();
+        assert.equal(signal.signal.aborted, true);
+      }
+      throw new Error(kind);
+    }), new RegExp(kind));
+    assert.equal(Object.hasOwn(env, key), false, kind + ' removed absent prior ID');
+  }
+  await delegate('coding-after-failures', async () => assert.equal(env[key], 'coding-after-failures'));
+  assert.equal(Object.hasOwn(env, key), false);
+  assert.throws(() => acquireImplementerTerminalSession('', env), /non-empty coding terminal session ID/);
+  assert.equal(Object.hasOwn(env, key), false);
 });
