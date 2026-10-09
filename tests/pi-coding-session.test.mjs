@@ -1295,6 +1295,12 @@ function runtimeScenario(mode) {
         handlers.get('turn_start')({ turnIndex: turn });
         const event = { toolName: name, toolCallId: name + turn, input };
         assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked');
+        // Pi completes the provider assistant message before executing its tool calls.
+        // The result admission gate checks this completed message and the same toolCallId.
+        if (name === 'submit_result' && input?.resultText) {
+          await handlers.get('message_end')?.({ message: { role: 'assistant',
+            stopReason: 'toolUse', content: [{ type: 'toolCall', id: event.toolCallId, name }] } }, ctx);
+        }
         let result; let isError = false;
         try {
           if (tools.has(name)) result = await tools.get(name).execute(event.toolCallId, input, signal.signal, null, ctx);
@@ -1312,7 +1318,7 @@ function runtimeScenario(mode) {
         if (expectError) assert.equal(isError, true, name + ' should fail');
         persist({ type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name, arguments: input }] } });
         persist({ type: 'message', message: { role: 'toolResult', toolName: name, content: result.content } });
-        if (name === 'begin_result_submission' || (name === 'submit_result' && input?.resultText)) {
+        if (name === 'begin_result_submission') {
           await handlers.get('message_end')?.({ message: { role: 'assistant',
             stopReason: 'toolUse', content: [{ type: 'toolCall', id: event.toolCallId, name }] } }, ctx);
         }
