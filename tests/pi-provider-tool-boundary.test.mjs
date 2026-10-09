@@ -126,6 +126,30 @@ test('#634 no safe guidance carrier reports omission and zero-tool dispatch rema
   assert.deepEqual(omitted, ['no_safe_text_or_tool_carrier']);
 });
 
+test('#671 zero-tool guidance replaces its prior suffix without growing the prompt', () => {
+  const original = {
+    messages: [{ role: 'user', content: 'Existing trusted task context' }],
+    tools: [],
+  };
+  const one = withProviderCapabilityInstructions(original, {
+    executableTools: [], mode: 'coding', productiveState: 'action_required',
+  }, { trustedRuntimeEnvelope: true });
+  const two = withProviderCapabilityInstructions(one, {
+    executableTools: [], mode: 'main', preparationState: 'PREPARATION_FALLBACK', productiveState: 'evidence_allowed',
+  }, { trustedRuntimeEnvelope: true });
+  assert.equal(one.messages.length, 1);
+  assert.equal(two.messages.length, 1);
+  assert.equal((two.messages[0].content.match(/RUNTIME EXECUTABLE TOOL CONTRACT/g) ?? []).length, 1);
+  assert.match(two.messages[0].content, /Preparation fallback/);
+  assert.doesNotMatch(two.messages[0].content, /Isolated coding session/);
+  assert.deepEqual(two.tools, []);
+  const three = withProviderCapabilityInstructions(two, {
+    executableTools: [], mode: 'main', preparationState: 'PREPARATION_FALLBACK', productiveState: 'evidence_allowed',
+  }, { trustedRuntimeEnvelope: true });
+  assert.equal(three, two, 'idempotent hook passes must not grow request-local text');
+  assert.equal(original.messages[0].content, 'Existing trusted task context', 'persisted history stays unchanged');
+});
+
 test('#634 strict chat-template role ordering survives a tool result and consecutive user steers', () => {
   const snapshot = { executableTools: ['safe_edit'], deferredTools: ['read', 'run_check'] };
   const assistantCall = {
