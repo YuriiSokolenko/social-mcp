@@ -42,10 +42,10 @@ Choose complexity from the review scope:
 - **normal** — ordinary code/test change requiring local semantic context.
 - **complex** — broad multi-component, architectural, conflict-heavy, or security-sensitive change requiring substantial synthesis.
 
-After complexity is declared, follow this evidence-driven loop. Runtime caps these action-oriented review responses at 1024 output tokens and does not allow repeated prose-only deliberation: each turn must either call `submit_result` or call one concrete evidence tool for an unresolved question.
+After complexity is declared, follow this evidence-driven loop. Runtime caps these action-oriented review responses at 1024 output tokens and does not allow repeated prose-only deliberation: each turn must either call `begin_review_submission` or call one concrete evidence tool for an unresolved question.
 
 1. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue, diff, and changed code already inspected?**
-2. If yes, decide the verdict immediately and call `submit_result`.
+2. If yes, decide the verdict immediately and call `begin_review_submission({verdict})`.
 3. If no, state the specific unresolved review question to yourself, inspect only the context needed to answer that question, then return to step 1.
 
 Additional investigation is allowed whenever it answers a concrete review question. This can include repository history, prior implementations/PRs, surrounding code, tests, configuration, documentation, or a relevant skill. Reused training/test issues may legitimately require history to distinguish the current change from earlier attempts.
@@ -83,7 +83,7 @@ For a trivial review:
 1. Read the issue.
 2. Inspect the complete diff and changed content.
 3. Verify the exact acceptance criteria.
-4. If they are resolved, submit the verdict immediately.
+4. If they are resolved, call `begin_review_submission({verdict})` immediately.
 5. If a concrete question remains, investigate that question only and then submit.
 
 Do not repeat a check merely for reassurance. History or prior attempts are valid when they materially answer a concrete question, including reused training/test issues. A static exact-content change does not otherwise require architecture, regression, test-design, or security exploration unless the diff itself introduces such a concern.
@@ -153,18 +153,14 @@ KISS, YAGNI, and SOLID are heuristics for an already-existing review question, n
 
 ## Verdict and submission
 
-Call `submit_result` exactly once as your final action. PASS requires one `criteria_evidence` item per material acceptance criterion. CHANGES_REQUESTED may omit the field when the blocking defect is not an acceptance-criterion finding. Keep each item compact enough to fit the review response budget.
+Investigation and terminal submission are separate provider requests. When done, call one nonterminal `begin_review_submission({verdict:"PASS"})` or `begin_review_submission({verdict:"CHANGES_REQUESTED"})`. It binds the verdict to the review run, session and PR HEAD, and never publishes or mutates files.
 
-`submit_result({"verdict":"PASS","summary":"...","criteria_evidence":[{"criterion":"Reject non-integer capacity","status":"ESTABLISHED","evidence":["Constructor rejects bool before int acceptance; trusted bool-capacity probe passes."]}]})`
+On the NEXT dedicated request the runtime exposes ONLY `submit_result({reviewText:"..."})` with a 4096-token output budget and an optional bounded 8192-token truncation retry. Call that tool exactly once. No nested JSON, verdict argument, repository tools, hidden tools, or prose-only completion.
 
-When policy wording is genuinely ambiguous, record the interpretation instead of presenting it as proven fact:
+For PASS, write Markdown with `## Acceptance evidence` and exactly one `### Criterion N: <criterion from issue>` section for EACH of the runtime-provided acceptance criteria, in order. Each needs `Status: ESTABLISHED` and `Evidence: <precise code/test reference and observed behavior>`. Genuine ambiguity uses `Status: ASSUMPTION` plus `Assumption: <explicit interpretation>`. A generic claim that tests pass is not evidence. Never manufacture missing acceptance evidence or use a transmission probe as a PASS.
 
-`submit_result({"verdict":"PASS","summary":"...","criteria_evidence":[{"criterion":"Accept numeric interval bounds","status":"ASSUMPTION","evidence":["Issue says numeric but does not enumerate numeric classes."],"assumption":"Treat numbers.Real plus Decimal as the intended ordered numeric domain."}]})`
+For CHANGES_REQUESTED, include `## Blocking findings`, identify actionable blocking defects and their exact source/test references and consequences. Do not invent evidence.
 
-For `CHANGES_REQUESTED`, include structured evidence when it helps identify the failed criterion, but do not invent a criterion entry for an unrelated blocking defect. The blocking summary must still state the concrete defect.
+Use **PASS** only if all issue requirements are met and no concrete blocker exists. Use **CHANGES_REQUESTED** only for established actionable blockers. Keep cosmetic observations nonblocking.
 
-Use **PASS** when the PR satisfies the linked issue and you found no concrete blocking defect in the relevant correctness, regression, test, architecture, or security dimensions.
-
-Use **CHANGES_REQUESTED** only for concrete actionable blocking findings. State what is wrong, where it occurs, and why it matters. Keep optional/cosmetic observations out of the blocking verdict.
-
-For PASS, keep the summary concise and state what was actually verified.
+The runtime validates all acceptance sections and the actual provider toolUse, then publishes only a durable receipt-bound result. A failed submission may be retried only on an explicit runtime-approved correction/truncation request.

@@ -136,7 +136,17 @@ jobs:
           fi
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
+          # The stage runner alone owns the terminal receipt path.
           node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" reviewer --raw "$RAW"
+
+      - name: Parse independent review result
+        id: parse
+        if: steps.independent.outcome == 'success'
+        continue-on-error: true
+        run: |
+          # The separate shell step receives the stage-owned receipt path via GITHUB_ENV.
+          # The parser must verify that receipt before any verdict is publishable.
+          RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
 
@@ -150,7 +160,7 @@ jobs:
           retention-days: 14
 
       - name: Apply review result
-        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success' && steps.independent.outcome == 'success'
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success' && steps.independent.outcome == 'success' && steps.parse.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_RUN_ID: ${{ github.run_id }}
@@ -192,9 +202,10 @@ jobs:
       - name: Fail job after independent review infrastructure failure
         if: >-
           always() &&
-          contains(fromJSON('["failure","cancelled"]'), steps.independent.outcome)
+          (contains(fromJSON('["failure","cancelled"]'), steps.independent.outcome) ||
+           contains(fromJSON('["failure","cancelled"]'), steps.parse.outcome))
         run: |
-          echo "Independent review ended with ${{ steps.independent.outcome }}; workflow_run recovery owns the bounded retry."
+          echo "Independent review: ${{ steps.independent.outcome }}, receipt parsing: ${{ steps.parse.outcome }}; workflow_run recovery owns the bounded retry."
           exit 1
 
       - name: Upload sanitized runtime diagnostics
