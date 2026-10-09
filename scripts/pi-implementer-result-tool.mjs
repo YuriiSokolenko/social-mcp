@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { restoredWork } from '../infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs';
 import { Type } from 'typebox';
 
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
@@ -63,6 +64,33 @@ function trustedRestoredNoDiffProof(changedBeforeIntegration) {
 // File names, PR title, validation and security status always belong to the runtime.
 export const RESULT_SUBMISSION_TOKENS = 4096;
 export const RESULT_SUBMISSION_RETRY_TOKENS = 8192;
+// Initial submission plus at most one correction and one truncation retry.
+export const RESULT_SUBMISSION_MAX_REQUESTS = 3;
+
+// Force a named tool only for recognized wire formats; unknown formats remain closed.
+export function restrictResultSubmissionPayload(payload) {
+  const closed = { ...payload, tools: [], tool_choice: 'none' };
+  if (!Array.isArray(payload?.tools) || Object.hasOwn(payload, 'toolChoice')) return closed;
+  const choice = payload.tool_choice;
+  const knownChoice = choice == null || ['auto', 'none', 'required'].includes(choice) ||
+    (typeof choice === 'object' && choice.type === 'function' &&
+      (choice.function?.name === 'submit_result' || choice.name === 'submit_result'));
+  if (!knownChoice) return closed;
+  const matching = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === 'submit_result');
+  if (matching.length !== 1) return closed;
+  const tool = matching[0];
+  if (tool.type === 'function' && tool.function?.name === 'submit_result') {
+    return { ...payload, tools: matching, tool_choice: { type: 'function', function: { name: 'submit_result' } } };
+  }
+  if (tool.type === 'function' && tool.name === 'submit_result') {
+    return { ...payload, tools: matching, tool_choice: { type: 'function', name: 'submit_result' } };
+  }
+  // Legacy Pi adapters omit type. Auto remains safe with the terminal admission gate.
+  if (tool.type == null && tool.function?.name === 'submit_result') {
+    return { ...payload, tools: matching, tool_choice: 'auto' };
+  }
+  return closed;
+}
 
 export function resultProviderBudgetEvidence(payload, expected) {
   const fields = [
@@ -121,12 +149,6 @@ export function submitResultParameters() {
       description: 'Fresh work only: concrete contradictory requirement, verified against the current repository.',
     })),
   }, { additionalProperties: false });
-}
-
-function restoredWork() {
-  if (process.env.PI_RESUME_ACTIVE != null) return process.env.PI_RESUME_ACTIVE === 'true';
-  const patch = process.env.PI_RESUME_PATCH;
-  return Boolean(patch && fs.existsSync(patch) && fs.statSync(patch).size > 0);
 }
 
 function validationRepairWork() {
@@ -210,9 +232,18 @@ export default function (pi) {
   const validationRepair = validationRepairWork();
   const runtimeOwnedMetadata = restored || validationRepair;
 
-  const submission = { phase: 'coding', budget: null, retryUsed: false, control: null,
-    lastAssistant: null, providerEvidence: null, providerRequest: 0, lastInputTokens: null,
+  const submission = { phase: 'coding', budget: null, retryUsed: false, correctionUsed: false, control: null,
+    lastAssistant: null, providerEvidence: null, providerSurfaceVerified: false,
+    providerRequest: 0, lastInputTokens: null,
     truncatedToolArguments: false, originalModel: null };
+
+  const resetSubmissionAttempt = () => {
+    submission.control = null;
+    submission.lastAssistant = null;
+    submission.providerEvidence = null;
+    submission.providerSurfaceVerified = false;
+    submission.truncatedToolArguments = false;
+  };
 
   const restoreSubmissionBudget = async () => {
     if (!submission.originalModel) return;
@@ -260,23 +291,33 @@ export default function (pi) {
         return { content: [{ type: 'text', text: 'Coding closed. Next request: submit_result({resultText}) with complete Markdown; no other tools.' }] };
       },
     });
-    pi.on('before_provider_request', event => {
+    pi.on('before_provider_request', (event, ctx) => {
       if (submission.phase !== 'submission_pending' && submission.phase !== 'failed') return undefined;
       const payload = event?.payload;
       if (!payload) return undefined;
-      const tools = submission.phase === 'submission_pending'
-        ? (payload.tools ?? []).filter(tool => (tool.function?.name ?? tool.name) === 'submit_result')
-        : [];
-      submission.providerEvidence = resultProviderBudgetEvidence(payload, submission.budget);
       submission.providerRequest += 1;
+      if (submission.providerRequest > RESULT_SUBMISSION_MAX_REQUESTS) {
+        submission.phase = 'failed';
+        submission.providerEvidence = null;
+        submission.providerSurfaceVerified = false;
+        console.error('PI_IMPLEMENTER_SUBMISSION_FAILED ' + JSON.stringify({
+          code: 'result_submission_request_limit', checkpoint: { worktree_preserved: true },
+        }));
+        ctx?.abort?.();
+        return { ...payload, tools: [], tool_choice: 'none' };
+      }
+      const restricted = submission.phase === 'submission_pending'
+        ? restrictResultSubmissionPayload(payload)
+        : { ...payload, tools: [], tool_choice: 'none' };
+      submission.providerEvidence = resultProviderBudgetEvidence(payload, submission.budget);
+      submission.providerSurfaceVerified = restricted.tools.length === 1;
       console.log(`PI_IMPLEMENTER_SUBMISSION_REQUEST ${JSON.stringify({
         request: submission.providerRequest, phase: submission.phase,
         budget: submission.budget, actualBudget: submission.providerEvidence.effective,
         verified: submission.providerEvidence.verified, reason: submission.providerEvidence.reason,
-        tools: tools.map(tool => tool.function?.name ?? tool.name),
+        tools: restricted.tools.map(tool => tool.function?.name ?? tool.name),
       })}`);
-      if (tools.length !== 1) return { ...payload, tools: [], tool_choice: 'none' };
-      return { ...payload, tools, tool_choice: 'auto' };
+      return restricted;
     });
     pi.on('tool_call', event => {
       if (event.toolName === 'begin_result_submission') {
@@ -291,9 +332,15 @@ export default function (pi) {
         if (event.toolName !== 'submit_result') {
           return { block: true, reason: 'Implementer submission phase forbids repository evidence and mutations.' };
         }
-        if (submission.control) return { block: true, reason: 'Only one submit_result tool call is allowed per submission request.' };
+        if (submission.control) {
+          submission.control.kind = 'invalid';
+          return { block: true, reason: 'Only one submit_result tool call is allowed per submission request.' };
+        }
         const text = event.input?.resultText;
-        submission.control = typeof text === 'string' && text.trim() && !event.input?.already_satisfied && !event.input?.blocked_reason
+        const onlyResultText = event.input && typeof event.input === 'object' &&
+          !Array.isArray(event.input) && Object.keys(event.input).length === 1 &&
+          Object.hasOwn(event.input, 'resultText');
+        submission.control = onlyResultText && typeof text === 'string' && text.trim()
           ? { kind: 'submit', id: event.toolCallId, executed: false }
           : { kind: 'invalid', id: event.toolCallId, executed: false };
       } else if (submission.phase === 'failed' || submission.phase === 'submitted') {
@@ -333,7 +380,8 @@ export default function (pi) {
       const last = submission.lastAssistant;
       const control = submission.control;
       const complete = last?.reason === 'tooluse' && last.calls.length === 1 &&
-        last.calls[0].id === control?.id;
+        last.calls[0].id === control?.id &&
+        last.calls[0].name === (control?.kind === 'begin' ? 'begin_result_submission' : 'submit_result');
       if (submission.phase === 'coding') {
         if (control?.kind !== 'begin') return;
         submission.control = null;
@@ -343,6 +391,7 @@ export default function (pi) {
           return;
         }
         submission.phase = 'submission_pending';
+        resetSubmissionAttempt();
         pi.setActiveTools?.(['submit_result']);
         console.log(`PI_IMPLEMENTER_SUBMISSION_PHASE ${JSON.stringify({ phase: 'submission_pending', budget: submission.budget })}`);
         await pi.sendUserMessage?.('CODING CLOSED. On this NEW request call only submit_result({resultText}) with your complete Markdown description. No repository tools or structured metadata.', { deliverAs: 'steer' });
@@ -354,29 +403,47 @@ export default function (pi) {
         console.log(`PI_IMPLEMENTER_SUBMISSION_ACCEPTED ${JSON.stringify({ budget: submission.budget, providerBudgetVerified: submission.providerEvidence?.verified })}`);
         return;
       }
-      submission.control = null;
       if (!submission.providerEvidence?.verified) {
         await submissionFailure('result_submission_budget_unverified', 'Actual provider output budget does not match submission phase', ctx);
         return;
       }
+      if (!submission.providerSurfaceVerified) {
+        await submissionFailure('result_submission_surface_unverified', 'Unknown provider tool or tool-choice format', ctx);
+        return;
+      }
       const truncated = last?.reason === 'length' || submission.truncatedToolArguments;
-      submission.truncatedToolArguments = false;
-      if (!truncated) {
-        await submissionFailure('result_submission_incomplete', 'No complete and valid submit_result tool call', ctx);
-        return;
+      if (truncated) {
+        if (submission.retryUsed) {
+          await submissionFailure('result_submission_retry_exhausted', 'Truncation retry was incomplete', ctx);
+          return;
+        }
+        submission.retryUsed = true;
+        if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_RETRY_TOKENS))) {
+          await submissionFailure('result_submission_context_exhausted', '8192 token retry unsupported or cannot fit', ctx);
+          return;
+        }
+      } else {
+        if (submission.correctionUsed) {
+          await submissionFailure('result_submission_correction_exhausted', 'No complete and valid submit_result tool call after correction', ctx);
+          return;
+        }
+        submission.correctionUsed = true;
+        if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_TOKENS))) {
+          await submissionFailure('result_submission_budget_unavailable', '4096 token correction request unavailable', ctx);
+          return;
+        }
       }
-      if (submission.retryUsed) {
-        await submissionFailure('result_submission_retry_exhausted', 'Submission-only retry was incomplete', ctx);
-        return;
-      }
-      submission.retryUsed = true;
-      if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_RETRY_TOKENS))) {
-        await submissionFailure('result_submission_context_exhausted', '8192 token retry unsupported or cannot fit', ctx);
-        return;
-      }
+      resetSubmissionAttempt();
       pi.setActiveTools?.(['submit_result']);
-      console.log(`PI_IMPLEMENTER_SUBMISSION_RETRY ${JSON.stringify({ budget: submission.budget, reason: last?.reason ?? 'truncated_arguments' })}`);
-      await pi.sendUserMessage?.('SUBMISSION RETRY ONLY: previous tool arguments were truncated. Using existing work only, call submit_result({resultText}) with the FULL Markdown result. Do not inspect or mutate.', { deliverAs: 'steer' });
+      console.log(`PI_IMPLEMENTER_SUBMISSION_RETRY ${JSON.stringify({
+        mode: truncated ? 'truncation' : 'correction', budget: submission.budget,
+        correctionUsed: submission.correctionUsed, truncationUsed: submission.retryUsed,
+        requestLimit: RESULT_SUBMISSION_MAX_REQUESTS,
+      })}`);
+      const steer = truncated
+        ? 'TRUNCATED SUBMISSION: Call ONLY submit_result({resultText:"FULL Markdown result"}) once, with complete arguments. No prose response, repository inspection, or mutation.'
+        : 'FORMAT CORRECTION ONLY: Your last submission was not a complete valid tool call. You MUST call ONLY submit_result({resultText:"COMPLETE Markdown implementation description"}) with one nonblank string argument. Do not reply in prose or inspect/mutate the repository.';
+      await pi.sendUserMessage?.(steer, { deliverAs: 'steer' });
     });
   }
 
@@ -395,6 +462,10 @@ export default function (pi) {
         const last = submission.lastAssistant;
         const admitted = submission.phase === 'submission_pending' &&
           submission.providerEvidence?.verified === true &&
+          submission.providerSurfaceVerified === true &&
+          submission.providerRequest <= RESULT_SUBMISSION_MAX_REQUESTS &&
+          params && typeof params === 'object' && !Array.isArray(params) &&
+          Object.keys(params).length === 1 && Object.hasOwn(params, 'resultText') &&
           submission.control?.kind === 'submit' && submission.control.id === toolCallId &&
           last?.reason === 'tooluse' && last.calls.length === 1 &&
           last.calls[0].name === 'submit_result' && last.calls[0].id === toolCallId &&
