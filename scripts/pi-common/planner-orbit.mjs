@@ -102,7 +102,10 @@ function existingRepositoryTarget(cwd, value, { trustedHint = false } = {}) {
   return target;
 }
 
-const ORBIT_NEARBY_MAX_ENTRIES = 48;
+// Bound directory iteration even for very large trees; 256 covers our tests/ layout.
+const ORBIT_NEARBY_MAX_ENTRIES_SCANNED = 256;
+const ORBIT_NEARBY_MAX_SIBLING_DIRECTORIES = 8;
+const ORBIT_NEARBY_MAX_FALLBACK_ATTEMPTS = 16;
 const ORBIT_NEARBY_MAX_ANCESTORS = 8;
 const ORBIT_NEARBY_MAX_FALLBACK_TARGETS = 8;
 const ORBIT_ADDITIVE_ROOTS = new Set([
@@ -158,14 +161,23 @@ function missingRepositoryPath(cwd, value, { trustedHint = false } = {}) {
 }
 
 function nearbyEntries(directory) {
+  let handle;
+  const entries = [];
   try {
-    const entries = fs.readdirSync(directory, { withFileTypes: true });
-    if (entries.length > ORBIT_NEARBY_MAX_ENTRIES) return [];
-    return entries.filter(entry => !entry.name.startsWith('.'))
-      .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    // Reading only a capped prefix avoids materializing arbitrarily large directories.
+    // Sort the sampled candidates so target ranking and tie-breaking stay deterministic.
+    handle = fs.opendirSync(directory);
+    for (let i = 0; i < ORBIT_NEARBY_MAX_ENTRIES_SCANNED; i += 1) {
+      const entry = handle.readSync();
+      if (!entry) break;
+      if (!entry.name.startsWith('.')) entries.push(entry);
+    }
   } catch {
     return [];
+  } finally {
+    handle?.closeSync();
   }
+  return entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }
 
 function nearbyConventionTarget(cwd, missing) {
@@ -206,8 +218,10 @@ function nearbyConventionTarget(cwd, missing) {
   // One neighboring example/package is enough when a whole new subtree is requested.
   // Do not traverse children of broad top-level roots or perform a global search.
   if (parentDepth >= 2) {
+    let scannedDirectories = 0;
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
+      if (scannedDirectories++ >= ORBIT_NEARBY_MAX_SIBLING_DIRECTORIES) break;
       const directory = path.posix.join(missing.parent, entry.name);
       for (const child of nearbyEntries(path.resolve(root, directory))) {
         if (child.isFile()) consider(path.posix.join(directory, child.name), true);
@@ -225,6 +239,7 @@ function selectPlannerOrbitSeedTargets(issue, { layoutHint = null, cwd = null } 
   const seen = new Set();
   let missingCandidates = 0;
   let fallbackCount = 0;
+  let fallbackAttempts = 0;
   const add = (value, options = {}) => {
     const existing = existingRepositoryTarget(cwd, value, options);
     if (existing) {
@@ -234,7 +249,9 @@ function selectPlannerOrbitSeedTargets(issue, { layoutHint = null, cwd = null } 
     const missing = missingRepositoryPath(cwd, value, options);
     if (!missing) return;
     missingCandidates += 1;
-    if (fallbackCount >= ORBIT_NEARBY_MAX_FALLBACK_TARGETS) return;
+    if (fallbackCount >= ORBIT_NEARBY_MAX_FALLBACK_TARGETS ||
+        fallbackAttempts >= ORBIT_NEARBY_MAX_FALLBACK_ATTEMPTS) return;
+    fallbackAttempts += 1;
     const contextual = nearbyConventionTarget(cwd, missing);
     if (!contextual || seen.has(contextual)) return;
     seen.add(contextual);
