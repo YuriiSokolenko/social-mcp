@@ -96,7 +96,7 @@ function runtimeChangedMetadata(resultText, files) {
   return {
     title: deterministicTitle(context),
     // Untrusted prose is for the PR description only; never parse it for metadata.
-    summary: resultText,
+    summary: resultText,\n    result_text: resultText,
     changes: files,
     security_notes: 'Security impact was not independently assessed by the model. CI and review remain authoritative.',
     limitations: 'Authoritative product checks run after submission; any unverified assertions in the model description are not validation evidence.',
@@ -183,7 +183,7 @@ export function implementerActionNudge(activeToolNames, { restored = false, vali
     parts.push('If submit_result reports a targeted cleanup mutation_id, call undo_mutation with that id and the intended final files, then retry submit_result.');
   }
   if (active.has('submit_result')) {
-    if (active.has('begin_result_submission')) parts.push('For completed changed work call begin_result_submission() once; the next request exposes only submit_result({resultText}).');
+    if (active.has('begin_result_submission')) parts.push('For completed changed work call begin_result_submission() once; the next request exposes only submit_result({resultText}).');\n    else if (!restored && !validationRepair) parts.push('Submission phase: call submit_result({resultText:"complete Markdown description"}) now; no other tools are available.');
     if (restored || validationRepair) {
       parts.push('For restored or harness validation-repair work call submit_result({}) now.');
     } else {
@@ -328,7 +328,7 @@ export default function (pi) {
       if (submission.phase !== 'submission_pending') return;
       if (control?.kind === 'submit' && control.executed) {
         submission.phase = 'submitted';
-        console.log(`PI_IMPLEMENTER_SUBMISSION_ACCEPTED ${JSON.stringify({ bytes: Buffer.byteLength(String(event?.message?.content?.find?.(x => x.type === 'toolCall')?.arguments?.resultText ?? ''), 'utf8'), budget: submission.budget })}`);
+        console.log(`PI_IMPLEMENTER_SUBMISSION_ACCEPTED ${JSON.stringify({ budget: submission.budget, providerBudgetVerified: submission.providerEvidence?.verified })}`);
         return;
       }
       submission.control = null;
