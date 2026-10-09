@@ -48,20 +48,48 @@ export function reconcileProviderToolSurface(payload, { activeTools = [] } = {})
 }
 
 /**
- * A short, request-local instruction is appended ONLY to the serialized provider payload,
- * not Pi's saved conversation. This supersedes generic tool names in a Main/coding contract
- * and stale handoff/history without granting any new capability or moving linked tool turns.
+ * Request-local guidance belongs inside the final existing provider message. Adding a
+ * new role=user at the tail of a tool/assistant response can violate strict chat
+ * templates (and creates consecutive user turns after runtime steers). A suffix
+ * leaves role order, call IDs and the cached request prefix intact. It never
+ * changes Pi's saved transcript, only the outgoing cloned provider payload.
+ *
+ * Unknown/non-text final message forms are left untouched rather than inventing
+ * an extra role or corrupting a linked tool call. The dispatch gate still
+ * enforces the serialized tool snapshot regardless of whether text can be added.
  */
+function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
+  if (!message || typeof message !== 'object') return null;
+  if (responses && message.type === 'function_call_output') {
+    return typeof message.output === 'string'
+      ? { ...message, output: message.output + '\n\n' + suffix }
+      : null;
+  }
+  if (responses && message.type !== 'message') return null;
+  if (message.role !== 'user' && message.role !== 'tool' && message.role !== 'assistant') return null;
+  // A pending assistant function call without text is not an instruction carrier.
+  // Do not invent content on tool-call linkage or replace multimodal parts.
+  if (typeof message.content === 'string') {
+    return { ...message, content: message.content + '\n\n' + suffix };
+  }
+  if (!Array.isArray(message.content)) return null;
+  const parts = message.content;
+  const last = parts[parts.length - 1];
+  const allowedTypes = responses ? ['input_text', 'output_text'] : ['text', 'input_text'];
+  if (!last || !allowedTypes.includes(last.type) || typeof last.text !== 'string') return null;
+  return { ...message, content: [...parts.slice(0, -1), { ...last, text: last.text + '\n\n' + suffix }] };
+}
+
 export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false } = {}) {
   if (!payload || !snapshot || !trustedRuntimeEnvelope) return payload;
   const hasMessages = Array.isArray(payload.messages);
   const hasInput = Array.isArray(payload.input);
   if (hasMessages === hasInput) return payload; // unknown or ambiguous provider envelope
-  // Trust comes from the caller (the installed Implementer runtime), NOT an
-  // arbitrary substring in model/tool-result history. This also survives
-  // history compaction that removes the original role overlay.
-  const history = hasMessages ? payload.messages : payload.input;
-  if (history.length === 0) return payload; // incomplete synthetic/replay envelope
+  // Trust comes from the installed Implementer runtime, not tool-result contents.
+  // This also survives compaction that removes the original role overlay.
+  const key = hasMessages ? 'messages' : 'input';
+  const history = payload[key];
+  if (history.length === 0) return payload;
   const deferred = (snapshot.deferredTools ?? [])
     .filter(name => !snapshot.executableTools.includes(name));
   const instructions = [
@@ -73,11 +101,10 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
       : []),
     'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
   ].join(' ');
-  if (hasMessages) return { ...payload, messages: [...payload.messages, { role: 'user', content: instructions }] };
-  return {
-    ...payload,
-    input: [...payload.input, { type: 'message', role: 'user', content: [{ type: 'input_text', text: instructions }] }],
-  };
+  const index = history.length - 1;
+  const patchedLast = appendCapabilitySuffix(history[index], instructions, { responses: hasInput });
+  if (!patchedLast) return payload;
+  return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
 }
 
 /**
