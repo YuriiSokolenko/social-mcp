@@ -85,9 +85,9 @@ export function resultProviderBudgetEvidence(payload, expected) {
 }
 
 function deterministicTitle(context) {
-  const title = clean(context?.title).replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ');
+  const title = clean(context?.title).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ');
   const issue = String(context?.number ?? process.env.PI_ISSUE ?? process.env.ISSUE ?? '').replace(/[^0-9]/g, '');
-  const safe = title.replace(/^\\[(?:P[0-9]|priority[^\\]]*)\\]\\s*/i, '').slice(0, 110).trim();
+  const safe = title.replace(/^\[(?:P[0-9]|priority[^\]]*)\]\s*/i, '').slice(0, 110).trim();
   return (safe || (issue ? `Implement issue #${issue}` : 'Implement requested change')).slice(0, 120);
 }
 
@@ -96,7 +96,8 @@ function runtimeChangedMetadata(resultText, files) {
   return {
     title: deterministicTitle(context),
     // Untrusted prose is for the PR description only; never parse it for metadata.
-    summary: resultText,\n    result_text: resultText,
+    summary: resultText,
+    result_text: resultText,
     changes: files,
     security_notes: 'Security impact was not independently assessed by the model. CI and review remain authoritative.',
     limitations: 'Authoritative product checks run after submission; any unverified assertions in the model description are not validation evidence.',
