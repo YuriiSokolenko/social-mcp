@@ -388,7 +388,17 @@ function runtimeScenario(mode) {
         for (const extensionPath of definition.extensions) {
           if (extensionPath.endsWith('/pi-bash-timeout.mjs')) continue;
           const { default: extension } = await import(new URL('file://' + extensionPath).href);
-          extension(childPi);
+          if (extensionPath.endsWith('/pi-implementer-result-tool.mjs')) {
+            // This legacy runtime scenario stubs the terminal executor and verifies
+            // coding/recovery gates, not the real result-phase protocol. Its hook
+            // lifecycle is replayed separately by the dedicated submission test.
+            const on = childPi.on;
+            childPi.on = () => {};
+            extension(childPi);
+            childPi.on = on;
+          } else {
+            extension(childPi);
+          }
         }
         // Thinking off on the wire, from the trusted runtime, whatever the settings say.
         const providerPatch = childHandlers.get('before_provider_request');
@@ -1302,6 +1312,10 @@ function runtimeScenario(mode) {
         if (expectError) assert.equal(isError, true, name + ' should fail');
         persist({ type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name, arguments: input }] } });
         persist({ type: 'message', message: { role: 'toolResult', toolName: name, content: result.content } });
+        if (name === 'begin_result_submission' || (name === 'submit_result' && input?.resultText)) {
+          await handlers.get('message_end')?.({ message: { role: 'assistant',
+            stopReason: 'toolUse', content: [{ type: 'toolCall', id: event.toolCallId, name }] } }, ctx);
+        }
         await handlers.get('tool_execution_end')({ ...event, isError, result }, ctx);
         await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
         return result;
@@ -2185,14 +2199,13 @@ function runtimeScenario(mode) {
         // for integrateLatestDev()/git publication checks. Match production here.
         process.chdir(cwd);
         assert.equal(fs.realpathSync(process.cwd()), fs.realpathSync(cwd));
-        await call('submit_result', {
-          title: 'Parent submit',
-          summary: 'Publish coding-session changes from the parent.',
-          changes: ['Add generated implementation and test'],
-          files: ['generated.py', 'test_generated.py'],
-          security_notes: 'No security impact.',
-          limitations: 'None.',
-        });
+        await call('begin_result_submission', {});
+        const resultOnly = handlers.get('before_provider_request')({ payload: {
+          model: 'm', messages: [], max_completion_tokens: 4096,
+          tools: [{ type: 'function', function: { name: 'submit_result' } }],
+        } }, ctx);
+        assert.deepEqual(resultOnly.tools.map(tool => tool.function.name), ['submit_result']);
+        await call('submit_result', { resultText: 'Publish coding-session changes from the parent.' });
         const metadata = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
         assert.equal(metadata.scope_enforcement, 'predeclared');
         assert.deepEqual(metadata.accepted_scope.accepted.map(entry => entry.path), ['generated.py', 'test_generated.py']);
