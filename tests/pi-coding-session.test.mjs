@@ -2029,6 +2029,8 @@ function runtimeScenario(mode) {
         const originalSetTimeout = globalThis.setTimeout;
         let deadlineTimersIntercepted = 0;
         let deadlineCallbackInvoked = false;
+        let unrelatedTimerFired = false;
+        let unrelatedTimer = null;
         const executions = [];
         const executeCoding = (callId, controller) => {
           const invoke = () => tools.get('begin_coding_session').execute(
@@ -2076,12 +2078,9 @@ function runtimeScenario(mode) {
               }
               return originalSetTimeout(callback, ms, ...args);
             };
-            const unrelatedTimer = setTimeout(() => {
-              throw new Error('unrelated long timer must not fire during delegation');
+            unrelatedTimer = setTimeout(() => {
+              unrelatedTimerFired = true;
             }, deadlineDelayMs + 1000);
-            assert.equal(unrelatedTimer._idleTimeout, deadlineDelayMs + 1000,
-              'an unrelated long timer keeps its original delay');
-            clearTimeout(unrelatedTimer);
           }
           const first = executeCoding('first', controller);
           if (mode === 'terminal-binding-overlap') {
@@ -2123,6 +2122,7 @@ function runtimeScenario(mode) {
             await assert.rejects(first, /did not return within/, 'real delegation deadline rejects pending call');
             assert.equal(deadlineTimersIntercepted, 1, 'only the expected delegation deadline is accelerated');
             assert.equal(deadlineCallbackInvoked, true, 'production deadline callback actually ran');
+            assert.equal(unrelatedTimerFired, false, 'unrelated long timer was not accelerated');
           }
           assert.equal(process.env[key], expectedPrevious, 'completed/failed path restores exact prior binding');
           assert.equal(Object.hasOwn(process.env, key), mode === 'terminal-binding-overlap');
@@ -2141,6 +2141,7 @@ function runtimeScenario(mode) {
           console.log('TERMINAL_BINDING_' + mode.toUpperCase().replaceAll('-', '_') + '_OK');
         } finally {
           globalThis.setTimeout = originalSetTimeout;
+          if (unrelatedTimer) clearTimeout(unrelatedTimer);
           // Teardown unblocks all pending requests even when an assertion fails.
           for (const request of heldTerminalRequests) {
             respond(request, { status: 'completed', result: { kind: 'text', value: 'teardown' }, usage: { output: 1 } });
