@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arkanoid smoke</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Arkanoid / Breakout</h1>
+
+      <div class="hud">
+        <span>Score: <strong id="score">0</strong></span>
+        <span>Lives: <strong id="lives">3</strong></span>
+        <span>Level: <strong id="level">1</strong></span>
+        <span>Status: <strong id="status">ready</strong></span>
+      </div>
+
+      <canvas id="game" width="640" height="480"></canvas>
+
+      <div class="controls">
+        <button id="start" type="button">Start</button>
+        <button id="pause" type="button">Pause</button>
+        <button id="restart" type="button">Restart</button>
+      </div>
+
+      <p class="help">
+        Move the paddle with Arrow keys or A / D, or with pointer and touch.
+        Space or Enter serves the ball, P / Esc pauses, R restarts.
+      </p>
+    </main>
+
+    <script type="module" src="main.mjs"></script>
+  </body>
+</html>

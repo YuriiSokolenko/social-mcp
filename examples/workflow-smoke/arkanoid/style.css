@@ -1,0 +1,76 @@
+/* Layout for the disposable Arkanoid smoke game. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  background: #0b111b;
+  color: #f0f4f8;
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: center;
+  width: min(100%, 46rem);
+  padding: 1rem;
+}
+
+h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.hud,
+.controls {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.hud strong {
+  color: #ffd166;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  max-width: 40rem;
+  background: #101826;
+  border: 1px solid #22304a;
+  border-radius: 4px;
+  /* Pointer/touch drags the paddle without scrolling the page. */
+  touch-action: none;
+}
+
+button {
+  padding: 0.4rem 0.9rem;
+  background: #22304a;
+  color: #f0f4f8;
+  border: 1px solid #38507a;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2d3f61;
+}
+
+.help {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #9fb0c8;
+  text-align: center;
+}
