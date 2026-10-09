@@ -1017,6 +1017,8 @@ function runtimeScenario(mode) {
           ];
           for (let index = 0; index < flipFlop.length; index++) {
             await settleSyntheticDifferentScopePass();
+            // Each new failed-check scope reopens an evidence-only provider turn.
+            // Read the authoritative test before the next mutation turn.
             if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
             await childCall('safe_edit', {
               path: 'test_generated.py',
@@ -1037,6 +1039,7 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-volatile-message') {
+          // Repair evidence must precede a new request containing mutation tools.
           if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
@@ -1052,6 +1055,7 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-semantic-number') {
+          // Evidence-only and mutation-only provider phases are distinct requests.
           if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
@@ -1096,6 +1100,7 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-pass-reset') {
+          // An authoritative failed check exposes read before a scoped fix.
           if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
@@ -1224,6 +1229,12 @@ function runtimeScenario(mode) {
       }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
+      // That deliberately malformed provider probe is NOT the subsequent model
+      // response. Serialize the actual active definitions before replaying tool calls:
+      // a zero-tool request must never gain permissions from getActiveTools().
+      handlers.get('before_provider_request')({
+        payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+      }, ctx);
       if (mode === 'deferred-capability' || mode === 'deferred-then-removed') {
         // #441: submit_result became active after pi assembled this payload.
         handlers.get('turn_start')({ turnIndex: 0 });
@@ -1286,6 +1297,11 @@ function runtimeScenario(mode) {
       let turn = 0;
       async function call(name, input = {}, { expectError = null } = {}) {
         handlers.get('turn_start')({ turnIndex: turn });
+        // Every helper invocation stands in for a new model turn. Newly exposed
+        // tools enter ONLY through this request boundary, never mid-response.
+        handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(toolName => ({ type: 'function', function: { name: toolName } })) },
+        }, ctx);
         const event = { toolName: name, toolCallId: name + turn, input };
         assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked');
         let result; let isError = false;
