@@ -11,6 +11,7 @@ import {
   acceptedTerminalImplementerReceipt,
   patchPiSubagentsSource,
 } from '../infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs';
+import { restoredWork } from '../scripts/pi-common/restored-work.mjs';
 import { acquireImplementerTerminalSession } from '../scripts/pi-common/terminal-session-binding.mjs';
 
 const receiptId = 'planner-run-617';
@@ -193,7 +194,10 @@ test('runner build applies pinned patch before saving Pi package seed', () => {
   const dockerfile = fs.readFileSync('infra/github-runner-autoscaler/worker.Dockerfile','utf8');
   assert.match(dockerfile, /ARG PI_SUBAGENTS_VERSION=0\.76\.1/);
   const install = dockerfile.indexOf('pi install --no-approve "npm:pi-subagents@');
-  const patch = dockerfile.indexOf('node \/home\/runner\/build-tools\/patch-pi-subagents-planner-terminal\.mjs');
+  const patch = dockerfile.indexOf('node /home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs');
+  const helperCopy = dockerfile.indexOf('COPY --chown=1001:1001 scripts/pi-common/restored-work.mjs /home/runner/build-tools/scripts/pi-common/restored-work.mjs');
+  const patchCopy = dockerfile.indexOf('COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs /home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs');
+  assert.ok(helperCopy >= 0 && helperCopy < patch && patchCopy >= 0 && patchCopy < patch);
   const seed = dockerfile.indexOf('cp -a \/home\/runner\/\.pi\/agent\/npm \/opt\/pi-package-seed/');
   assert.ok(install >= 0 && install < patch && patch < seed);
   assert.match(dockerfile, /node --check \/home\/runner\/\.pi\/agent\/npm\/node_modules\/pi-subagents\/src\/runs\/foreground\/execution\.js/);
@@ -345,6 +349,30 @@ function runtimeOwnedImplementerEnvelope() {
   return sample;
 }
 
+test('#649 shared predicate remains self-contained after source injection', () => {
+  const isolated = vm.runInNewContext('(' + restoredWork.toString() + ')', {
+    existsSync: fs.existsSync, statSync: fs.statSync,
+  }, { timeout: 1000 });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-restore-helper-649-'));
+  const patch = path.join(dir, 'resume.patch');
+  fs.writeFileSync(patch, 'restored changes\n');
+  try {
+    assert.equal(restoredWork({ PI_RESUME_PATCH: patch }), true);
+    assert.equal(isolated({ PI_RESUME_PATCH: patch }), true);
+    assert.equal(isolated({ PI_RESUME_ACTIVE: 'true' }), true);
+    assert.equal(isolated({ PI_RESUME_ACTIVE: 'false', PI_RESUME_PATCH: patch }), false);
+    assert.equal(isolated({ PI_RESUME_ACTIVE: '', PI_RESUME_PATCH: patch }), false);
+    assert.equal(isolated({ PI_RESUME_ACTIVE: 'TRUE', PI_RESUME_PATCH: patch }), false);
+    assert.equal(isolated({ PI_RESUME_PATCH: dir }), false);
+    const failingStat = vm.runInNewContext('(' + restoredWork.toString() + ')', {
+      existsSync: () => true, statSync: () => { throw new Error('EACCES'); },
+    }, { timeout: 1000 });
+    assert.equal(failingStat({ PI_RESUME_PATCH: patch }), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('#643 patched adapter accepts patch-only resume and rejects missing, empty and disabled patch', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-resume-643-'));
   const nonempty = path.join(dir, 'resume.patch');
@@ -362,6 +390,7 @@ test('#643 patched adapter accepts patch-only resume and rejects missing, empty 
       ['no patch or flag', {}, false],
       ['explicit false suppresses patch fallback', { PI_RESUME_ACTIVE: 'false', PI_RESUME_PATCH: nonempty }, false],
       ['explicit empty flag suppresses patch fallback', { PI_RESUME_ACTIVE: '', PI_RESUME_PATCH: nonempty }, false],
+      ['explicit other value suppresses patch fallback', { PI_RESUME_ACTIVE: 'TRUE', PI_RESUME_PATCH: nonempty }, false],
       ['explicit true works with no patch', { PI_RESUME_ACTIVE: 'true' }, true],
     ]) {
       const sample = runtimeOwnedImplementerEnvelope();
