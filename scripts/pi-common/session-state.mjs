@@ -48,15 +48,12 @@ export function reconcileProviderToolSurface(payload, { activeTools = [] } = {})
 }
 
 /**
- * Request-local guidance must never introduce a new chat role. Append to the
- * final existing user/assistant text when possible; do NOT rewrite tool
- * results (often machine-readable JSON) or linked assistant tool calls. For
- * those tails, use the description of an already serialized executable tool.
- * This preserves chat role order, tool-call linkage, tool-result bytes and
- * Pi's saved transcript; only the outgoing cloned payload is rewritten.
- *
- * If neither a safe text carrier nor a provider tool description exists,
- * leave the payload unchanged. Dispatch still gates on the request snapshot.
+ * Keep the request-local capability guidance in ONE stable carrier: the final
+ * serialized tool definition. Switching between message text and tool schema
+ * changes a much earlier llama.cpp prompt prefix on tool-result turns.
+ * An empty tool list has no schema carrier; fall back to an existing safe text
+ * message without adding a chat role. Never modify tool results or linked
+ * assistant calls. The dispatch gate remains authoritative either way.
  */
 function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
   if (!message || typeof message !== 'object') return null;
@@ -80,23 +77,30 @@ function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
   return { ...message, content: [...parts.slice(0, -1), { ...last, text: last.text + '\n\n' + suffix }] };
 }
 
+const CAPABILITY_CONTRACT_START = '\n\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_START]\n';
+const CAPABILITY_CONTRACT_END = '\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_END]';
+
 function appendToolDescriptionGuidance(payload, instructions) {
   const definitions = payload.tools;
-  if (!Array.isArray(definitions)) return payload;
-  // Prefer the last valid serialized definition so prior schemas retain their
-  // prompt-cache prefix. The instruction is a global provider capability rule,
-  // not advice about the particular tool that happens to carry it.
+  if (!Array.isArray(definitions) || definitions.length === 0) return payload;
+  // Tool definitions are already reconciled against the active phase. Keep
+  // the rest of the schema array intact for llama.cpp prefix-cache reuse.
   const index = definitions.findLastIndex(tool => {
     const definition = tool?.function ?? tool;
-    return typeof definition?.name === 'string' && definition.name.length > 0 &&
-      typeof definition?.description === 'string';
+    return typeof definition?.name === 'string' && definition.name.length > 0;
   });
   if (index < 0) return payload;
   const current = definitions[index];
   const nested = current.function && typeof current.function === 'object';
   const definition = nested ? current.function : current;
   const description = typeof definition.description === 'string' ? definition.description : '';
-  const patchedDefinition = { ...definition, description: [description, instructions].filter(Boolean).join('\n\n') };
+  const start = description.lastIndexOf(CAPABILITY_CONTRACT_START);
+  const original = start >= 0 && description.endsWith(CAPABILITY_CONTRACT_END)
+    ? description.slice(0, start)
+    : description;
+  const next = original + CAPABILITY_CONTRACT_START + instructions + CAPABILITY_CONTRACT_END;
+  if (description === next) return payload; // repeated provider hook: no double append
+  const patchedDefinition = { ...definition, description: next };
   const patchedTool = nested ? { ...current, function: patchedDefinition } : patchedDefinition;
   return { ...payload, tools: [...definitions.slice(0, index), patchedTool, ...definitions.slice(index + 1)] };
 }
@@ -122,9 +126,14 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
       : []),
     'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
   ].join(' ');
+  if (Array.isArray(payload.tools) && payload.tools.length > 0) {
+    // Always prefer the same tool-description carrier on every tool-bearing
+    // request, regardless of whether the final turn is user, assistant or tool.
+    return appendToolDescriptionGuidance(payload, instructions);
+  }
   const index = history.length - 1;
   const patchedLast = appendCapabilitySuffix(history[index], instructions, { responses: hasInput });
-  if (!patchedLast) return appendToolDescriptionGuidance(payload, instructions);
+  if (!patchedLast) return payload;
   return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
 }
 
