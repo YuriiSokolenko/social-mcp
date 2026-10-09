@@ -1,0 +1,128 @@
+/* Layout and canvas scaling for the disposable Snake smoke demo.
+   No external fonts, images or colour frameworks: platform CSS only. */
+:root {
+  --bg: #10141a;
+  --panel: #1b222c;
+  --grid: #232c38;
+  --snake: #6ee7a0;
+  --snake-head: #d1fae5;
+  --food: #fca5a5;
+  --text: #e5e9f0;
+  --muted: #93a0b4;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.4 system-ui, sans-serif;
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: center;
+  /* Never force horizontal scrolling, even at 320 px viewports. */
+  max-width: min(100vw - 1rem, 32rem);
+  margin: 0 auto;
+  padding: 0.75rem 0.5rem 1.5rem;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  align-items: baseline;
+  width: 100%;
+}
+
+.head h1 {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+.stats {
+  display: flex;
+  gap: 1rem;
+  margin: 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+canvas {
+  /* Logical grid x devicePixelRatio sets the bitmap; CSS scales it down. */
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 28rem;
+  background: var(--panel);
+  border-radius: 4px;
+  touch-action: none;
+}
+
+.controls,
+.pad {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.pad {
+  display: grid;
+  grid-template-areas: ". up ." "left down right";
+  gap: 0.4rem;
+}
+
+#up { grid-area: up; }
+#down { grid-area: down; }
+#left { grid-area: left; }
+#right { grid-area: right; }
+
+button {
+  min-width: 3.5rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--snake);
+  outline-offset: 2px;
+}
+
+button[aria-pressed='true'] {
+  border-color: var(--snake);
+}
+
+#announce {
+  margin: 0;
+  min-height: 1.2em;
+  text-align: center;
+  color: var(--muted);
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  canvas {
+    image-rendering: auto;
+  }
+}

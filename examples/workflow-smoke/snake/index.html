@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snake &middot; workflow smoke</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./main.mjs"></script>
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="head">
+        <h1>Snake</h1>
+        <p class="stats">
+          <span>Score <strong id="score" data-testid="score">0</strong></span>
+          <span>Best <strong id="best" data-testid="best">0</strong></span>
+        </p>
+      </header>
+
+      <canvas id="board" width="21" height="21" aria-hidden="true" role="presentation"></canvas>
+
+      <div class="controls">
+        <button id="start" type="button">Start</button>
+        <button id="pause" type="button" aria-label="Pause or resume">Pause</button>
+        <button id="restart" type="button">Restart</button>
+      </div>
+
+      <div class="pad" aria-label="Touch controls">
+        <button id="up" type="button" aria-label="Turn up">&#9650;</button>
+        <button id="left" type="button" aria-label="Turn left">&#9664;</button>
+        <button id="down" type="button" aria-label="Turn down">&#9660;</button>
+        <button id="right" type="button" aria-label="Turn right">&#9654;</button>
+      </div>
+
+      <p id="announce" role="status" aria-live="polite">Press Start, then steer with the arrow keys or W A S D.</p>
+      <p class="hint">Space or Enter pauses. R starts a new game.</p>
+    </main>
+  </body>
+</html>
