@@ -356,6 +356,7 @@ test('#643 patched adapter accepts patch-only resume and rejects missing, empty 
       ['unset flag + nonempty patch', { PI_RESUME_PATCH: nonempty }, true],
       ['undefined flag + nonempty patch', { PI_RESUME_ACTIVE: undefined, PI_RESUME_PATCH: nonempty }, true],
       ['empty patch', { PI_RESUME_PATCH: empty }, false],
+      ['directory rather than patch file', { PI_RESUME_PATCH: dir }, false],
       ['missing patch', { PI_RESUME_PATCH: missing }, false],
       ['no patch or flag', {}, false],
       ['explicit false suppresses patch fallback', { PI_RESUME_ACTIVE: 'false', PI_RESUME_PATCH: nonempty }, false],
