@@ -97,11 +97,6 @@ export function recoveryCallMatchesPlan(plan, toolName, input = {}) {
       missing.every(field => Object.hasOwn(input, field));
   }
 
-  if (plan.kind === 'file_set_metadata_retry') {
-    return preservesPreviousTerminalInput(plan.previousInput, input, ['files']) &&
-      sameStringSet(input.files, plan.files);
-  }
-
   if (plan.tool === 'read' || plan.tool === 'write') {
     return typeof plan.target === 'string' &&
       String(input.path ?? '').trim() === plan.target;
@@ -155,21 +150,12 @@ export function selectTerminalRecovery({
   const accepted = new Set(uniqueStrings(acceptedPaths));
 
   if (obligation.kind === 'metadata') {
-    if (!hasTerminalInput) {
-      return blocked(
-        obligation,
-        'The previous terminal submission payload is unavailable, so publication metadata cannot be retried without dropping fields.',
-      );
-    }
-    if (!active.has('submit_result')) {
-      return blocked(obligation, 'submit_result is not executable in the current capability snapshot.', {
-        requiredTool: 'submit_result',
-      });
-    }
-    return repair(obligation, 'metadata_retry', 'submit_result', {
-      previousInput: compactArgs(terminalInput),
-      missingFields: uniqueStrings(obligation.missingFields),
-    });
+    // #631 made submit_result text-only for fresh changes. Missing runtime-owned
+    // publication fields cannot be repaired by replaying model-generated metadata.
+    // Retain the obsolete diagnostic as evidence, checkpoint and fail closed.
+    return blocked(obligation,
+      'The runtime-generated publication metadata is incomplete; submit_result cannot repair it from model arguments.',
+      { missingFields: uniqueStrings(obligation.missingFields), requiredTool: 'runtime_publication_metadata' });
   }
 
   if (obligation.kind === 'validation') {
@@ -303,23 +289,12 @@ export function selectTerminalRecovery({
     }
 
     if (missing.length || acceptedUnexpected.length) {
-      if (!hasTerminalInput) {
-        return blocked(
-          obligation,
-          'The previous terminal submission payload is unavailable, so file-set metadata cannot be retried without dropping publication fields.',
-        );
-      }
-      if (!active.has('submit_result')) {
-        return blocked(obligation, 'The file-set obligation is metadata-only, but submit_result is not executable now.', {
-          requiredTool: 'submit_result',
-        });
-      }
-      return repair(obligation, 'file_set_metadata_retry', 'submit_result', {
-        previousInput: compactArgs(terminalInput),
-        files: current,
-        missing,
-        acceptedUnexpected,
-      });
+      // Files are now derived from Git and the accepted mutation scope. Another
+      // submit_result({resultText}) cannot alter this canonical set, and replaying
+      // the removed "files" argument would create a deterministic model loop.
+      return blocked(obligation,
+        'The runtime Git-derived file set disagrees with the terminal diagnostic; resubmission cannot repair canonical file facts.',
+        { missing, acceptedUnexpected, requiredTool: 'runtime_file_set_verification' });
     }
 
     return blocked(obligation, 'The file-set obligation remains unresolved but no cleanup or metadata delta can be derived from trusted current state.');
@@ -339,9 +314,6 @@ export function terminalRecoveryGuidance(plan) {
   if (plan.kind === 'metadata_retry') {
     const fields = plan.missingFields.length ? plan.missingFields.join(', ') : '(unknown fields)';
     return `${marker}: deterministic metadata repair selected. Retry submit_result now using the previous submission as the base and fill exactly these missing publication fields: ${fields}. Do not explore, mutate files, or launch a coding session first.`;
-  }
-  if (plan.kind === 'file_set_metadata_retry') {
-    return `${marker}: deterministic file-set metadata repair selected. Retry submit_result now, preserve the previous submission metadata, and set files exactly to ${JSON.stringify(plan.files)}. These paths come from the current canonical changed-file set; do not authorize unrelated scratch files.`;
   }
   if (plan.kind === 'create_prepared_output') {
     return `${marker}: deterministic prepared-output repair selected. Call write next for ${plan.target}; provide only the task-required file content. Do not resubmit or explore first.`;
