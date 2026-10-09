@@ -26,7 +26,7 @@ import {
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -2169,17 +2169,17 @@ export default function (pi) {
           // Phase and startup facts are trusted controller/runtime state, not Planner
           // prose or the child handoff. The guidance builder uses them only to
           // choose advice for definitions actually serialized above.
-          mode: codingSession ? 'coding' : 'main',
-          preparationState: controller.preparationState,
-          resumed: resumedImplementer,
-          validationRepair,
-          // External validation-repair is a runner-authorized diagnostic stage;
-          // a coding repair window is armed only by an actual failed check.
-          // Neither grants any tool outside the final serialized definitions.
-          codingRepair: Boolean(codingSession && codingRepairWindowActive()),
-          repairAuthorized: Boolean(validationRepair || (codingSession && codingRepairWindowActive())),
-          verificationState: controller.verificationLifecycleState(),
-          terminalRecoveryRequiredTool,
+          ...implementerRequestPhaseSnapshot({
+            codingSession: Boolean(codingSession),
+            preparationState: controller.preparationState,
+            resumed: resumedImplementer,
+            validationRepair,
+            // The child repair window derives only from actual validation
+            // failure; it must not become a Main repair authorization.
+            codingRepair: Boolean(codingSession && codingRepairWindowActive()),
+            verificationState: controller.verificationLifecycleState(),
+            terminalRecoveryRequiredTool,
+          }),
           explainDeferred: Boolean(
             unavailableCapabilityCorrectionPending ||
             (terminalRecoveryRequiredTool && !executableTools.includes(terminalRecoveryRequiredTool))
