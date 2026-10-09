@@ -296,9 +296,9 @@ export function plannerProviderErrorStatus(message) {
     if (Number.isInteger(code) && code >= 100 && code <= 599) return code;
   }
   const text = String(message.errorMessage ?? '').trim();
-  const sdk = /^(?:([45]\\d{2})(?::(?:\\s|$)|\\s+(?=(?:status code\\b|[\\[{])))|[A-Za-z_$][\\w.$]*Error:\\s*([45]\\d{2})(?=[:\\s]|$))/.exec(text);
+  const sdk = /^(?:([45]\d{2})(?::(?:\s|$)|\s+(?=(?:status code\b|[\[{])))|[A-Za-z_$][\w.$]*Error:\s*([45]\d{2})(?=[:\s]|$))/.exec(text);
   if (sdk) return Number(sdk[1] ?? sdk[2]);
-  const api = /\\bAPI error \\((\\d{3})\\):/.exec(text);
+  const api = /\bAPI error \((\d{3})\):/.exec(text);
   return api ? Number(api[1]) : null;
 }
 
