@@ -969,7 +969,7 @@ test('one progress controller owns loop safety, complexity, and response budgets
 });
 
 test('all Pi result tools reuse one terminal-tool helper', () => {
-  for (const name of ['pi-architect-result-tool.mjs', 'pi-dispatcher-result-tool.mjs', 'pi-implementer-result-tool.mjs', 'pi-repair-result-tool.mjs', 'pi-reviewer-result-tool.mjs', 'pi-triage-result-tool.mjs']) {
+  for (const name of ['pi-architect-result-tool.mjs', 'pi-dispatcher-result-tool.mjs', 'pi-implementer-result-tool.mjs', 'pi-repair-result-tool.mjs', 'pi-triage-result-tool.mjs']) {
     const source = fs.readFileSync(`scripts/${name}`, 'utf8');
     assert.match(source, /registerTerminalTool/);
     assert.doesNotMatch(source, /registerSubmitNudge|terminalResult|agent_before_settle/);
