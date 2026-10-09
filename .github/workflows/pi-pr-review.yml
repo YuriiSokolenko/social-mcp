@@ -136,6 +136,10 @@ jobs:
           fi
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
+          # Bind the stage executor and the subsequent parser to the SAME durable
+          # receipt; writes to GITHUB_ENV are not visible in this shell step.
+          export PI_STAGE=reviewer
+          export PI_TERMINAL_RESULT_FILE="$RUNNER_TEMP/pi-terminal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" reviewer --raw "$RAW"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
