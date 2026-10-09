@@ -46,7 +46,7 @@ test('coding-session prompt is a compact canonical subset, not the startup Imple
   assert.match(coding, /## Coding-session contract/);
   assert.match(coding, /## Engineering constraints/);
   assert.doesNotMatch(coding, /## Startup|### Available delegated agents|## Repository access routing|implementation-planner|begin_coding_session|request_large_mutation_budget|lsp_|Orbit/);
-  assert.match(coding, /does \*\*not\*\* inherit the parent transcript/);
+  assert.match(coding, /does \*\*not\*\* inherit the parent(?:'s)? transcript/);
   assert.match(coding, /No generic or startup navigation policy is inherited into this phase/);
   assert.match(coding, /If one concrete missing fact blocks a safe action/);
   assert.match(coding, /Tests should exercise public behavior and public APIs/);
