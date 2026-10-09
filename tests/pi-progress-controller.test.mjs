@@ -1072,7 +1072,7 @@ test('stage configuration owns every model prompt and injects the shared contrac
     assert.ok(staleResumePrompt.includes('<runtime_prepared_implementation_state/>'));
     assert.doesNotMatch(staleResumePrompt, /Runtime resume state/);
 
-    assert.match(implementerPrompt, /Task classification alone never requires delegation/);
+    assert.match(implementerPrompt, /Do not delegate merely because work is nontrivial/);
     assert.match(stagePrompt('dispatcher', env), /pi-dispatcher-context\.json/);
     const dispatcherPrompt = stagePrompt('dispatcher', env);
     assert.match(dispatcherPrompt, /prepared context is sufficient/i);
