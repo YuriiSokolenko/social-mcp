@@ -1247,6 +1247,9 @@ function runtimeScenario(mode) {
           console.log('CODING_NO_HANDOFF_CONTEXT_ONCE_OK');
         }
         if (mode === 'flow') {
+          assert.equal(extract('parent_execution_handoff'),
+            'Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀',
+            'new parent execution delta is conveyed without replacing the prepared plan');
           const registeredTools = registered.get(request.agent).tools;
           for (const name of ['read', 'run_check', 'write']) {
             assert.ok(registeredTools.includes(name), 'registered inventory still includes ' + name);
@@ -1669,6 +1672,7 @@ function runtimeScenario(mode) {
           assert.equal(caps.at(-1), 16384, 'invalid launch preserves the elevated ceiling');
           assert.match(steers.at(-1), /handoff: must not have more than 1200 characters/);
           assert.match(steers.at(-1), /only new concrete facts or implementation decisions/);
+          assert.match(steers.at(-1), /WITHOUT handoff/, 'oversized handoff correction must prefer omitting the redundant field');
 
           // Real Pi emits a local synthetic error turn for the schema rejection after the
           // provider response. It is not another provider failure and must not consume the
