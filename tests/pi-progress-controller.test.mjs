@@ -670,7 +670,7 @@ test('runtime action-forces the elevated large-mutation request and preserves on
   assert.match(runtime, /LARGE_MUTATION_ACTION_RETRY_LIMIT = 1/);
   assert.match(runtime, /PI_LARGE_MUTATION_BUDGET/);
   assert.match(runtime, /PI_LARGE_MUTATION_TOOL_CHOICE_ARMED/);
-  assert.match(runtime, /source: repairActionForced/);
+  assert.match(runtime, /const explicitCorrectionSource = repairActionForced/);
   assert.match(runtime, /'coding_session_argument_correction'/);
   assert.match(runtime, /largeMutationActionForced[\s\S]*?'large_mutation'/);
   assert.match(runtime, /PI_LARGE_MUTATION_ACTION_REQUIRED/);
@@ -686,7 +686,7 @@ test('runtime action-forces the elevated large-mutation request and preserves on
   // The provider-visible surface is mutation/scope/terminal-only while the elevated grant is
   // active, and provider-level forcing is applied before model output can spend the 16K ceiling.
   assert.match(runtime, /largeMutationBudgetActive[\s\S]*elevatedMutationTurnToolNames\(unrestrictedActiveTools\)/);
-  assert.match(runtime, /controller\.largeMutationBudgetActive\(\)[\s\S]*PI_LARGE_MUTATION_TOOL_CHOICE_ARMED[\s\S]*requireToolChoiceInPayload\(patched\)/);
+  assert.match(runtime, /controller\.largeMutationBudgetActive\(\)[\s\S]*PI_LARGE_MUTATION_TOOL_CHOICE_ARMED[\s\S]*implementerToolChoiceDecision\(patched/);
   // Consumption is based on successful execution, not merely emitting a finish-tool call.
   assert.match(runtime, /if \(elevatedTurnSuccessfulFinishTool\)[\s\S]*controller\.resetLargeMutationBudget\(\)[\s\S]*else if \(elevatedTurnSuccessfulScopePrelude\)/);
   assert.match(runtime, /elevatedResponseHitCeiling[\s\S]*else if \(elevatedTurnObservedActionTool \|\| elevatedResponseHitCeiling\)[\s\S]*PI_LARGE_MUTATION_ACTION_RETRY/);
