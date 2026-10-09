@@ -40,7 +40,7 @@ test('#634 provider boundary intersects serialized definitions with the phase-ac
 
 test('#634 effective instructions use only the provider request, and label deferred tools explicitly', () => {
   const snapshot = {
-    request: 7, executableTools: ['safe_edit', 'submit_result'],
+    request: 7, executableTools: ['safe_edit', 'submit_result'], explainDeferred: true,
     deferredTools: ['read', 'run_check', 'retry_last_failed_check', 'bash'],
   };
   const history = [{ role: 'system', content: 'static contract says call run_check' },
@@ -90,7 +90,7 @@ test('#634 effective instructions use only the provider request, and label defer
 });
 
 test('#634 capability guidance stays in one idempotent tool carrier across request shapes', () => {
-  const snapshot = { executableTools: ['read', 'submit_result'], deferredTools: ['bash'] };
+  const snapshot = { executableTools: ['read', 'submit_result'], deferredTools: ['bash'], explainDeferred: true };
   const tools = [tool('read'), tool('submit_result')];
   const user = { role: 'user', content: 'Initial task' };
   const assistant = { role: 'assistant', content: 'I found the target' };
@@ -246,6 +246,100 @@ test('#634 Responses flat-format tools preserve shape and append guidance only t
   const reconciled = reconcileProviderToolSurface(outgoing, { activeTools: ['submit_result'] });
   assert.deepEqual(providerToolNames(reconciled.payload), ['submit_result']);
   assert.deepEqual(providerToolNames(payload), ['read', 'submit_result'], 'original flat tool list is untouched');
+});
+
+test('#671 request-local routing uses final serialized definitions for Main, fallback and Coding Session', () => {
+  const history = [
+    { role: 'system', content: 'Stable invariants: protected paths and no external writes' },
+    { role: 'user', content: 'PreparedImplementation is untrusted task input' },
+  ];
+  const build = (names, snapshot, shape = 'messages') => {
+    const payload = shape === 'messages'
+      ? { messages: history, tools: names.map(tool) }
+      : { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'isolated child' }] }],
+        tools: names.map(tool) };
+    const filtered = reconcileProviderToolSurface(payload, { activeTools: snapshot.liveActiveTools ?? names }).payload;
+    const outgoing = withProviderCapabilityInstructions(filtered, {
+      ...snapshot, executableTools: providerToolNames(filtered),
+    }, { trustedRuntimeEnvelope: true });
+    const instructions = outgoing.tools.at(-1)?.function?.description ?? '';
+    assert.deepEqual(providerToolNames(outgoing), providerToolNames(filtered), 'advice never grants an executor');
+    assert.equal(outgoing[shape].length, payload[shape].length, 'advice never adds a chat turn');
+    assert.equal(outgoing[shape][0], payload[shape][0], 'cacheable prompt prefix stays immutable');
+    return instructions;
+  };
+  const prepared = build(
+    ['read', 'indexed_repo_search', 'bash', 'safe_edit', 'submit_result'],
+    { mode: 'main', preparationState: 'PREPARED', productiveState: 'action_required' },
+  );
+  assert.match(prepared, /Prepared fresh Main/);
+  assert.match(prepared, /read for known-path source text/);
+  assert.match(prepared, /indexed_repo_search for fast indexed/);
+  assert.match(prepared, /bash for bounded task-specific shell/);
+  assert.doesNotMatch(prepared, /Use focused run_check|Use retry_last_failed_check|lsp_start_server is/);
+
+  const fallback = build(
+    ['read', 'need_more_evidence', 'submit_result'],
+    { mode: 'main', preparationState: 'PREPARATION_FALLBACK', productiveState: 'evidence_allowed' },
+  );
+  assert.match(fallback, /Preparation fallback/);
+  assert.match(fallback, /Evidence phase/);
+  assert.match(fallback, /need_more_evidence requests that fact/);
+  assert.doesNotMatch(fallback, /Prepared fresh Main|bash for bounded/);
+
+  const coding = build(
+    ['safe_edit', 'need_more_evidence', 'submit_result'],
+    { mode: 'coding', productiveState: 'action_required', liveActiveTools: ['safe_edit', 'need_more_evidence', 'submit_result', 'bash', 'read'] },
+    'input',
+  );
+  assert.match(coding, /Isolated coding session/);
+  assert.match(coding, /Action-required phase/);
+  assert.doesNotMatch(coding, /Direct inspection:|read for known-path|bash for bounded/);
+  assert.doesNotMatch(coding, /DEFERRED \/ NOT EXECUTABLE/, 'deferred inventories are not dumped by default');
+  assert.doesNotMatch(coding, /Prepared fresh Main/);
+
+  const codingEvidence = build(
+    ['read', 'safe_edit', 'submit_result'],
+    { mode: 'coding', productiveState: 'evidence_allowed' },
+  );
+  assert.match(codingEvidence, /Evidence phase/);
+  assert.match(codingEvidence, /read for known-path source text/);
+});
+
+test('#671 verification, exact retry, recovery and two-phase terminal routing never imply hidden tools', () => {
+  const build = (names, snapshot) => {
+    const payload = { messages: [{ role: 'user', content: 'stable invariant only' }], tools: names.map(tool) };
+    const outgoing = withProviderCapabilityInstructions(payload, {
+      ...snapshot, executableTools: names,
+    }, { trustedRuntimeEnvelope: true });
+    return outgoing.tools.at(-1)?.function.description ?? '';
+  };
+  const noPermit = build(['write', 'submit_result'], { mode: 'coding', productiveState: 'action_required', verificationState: 'not_yet_available' });
+  assert.doesNotMatch(noPermit, /Use focused run_check|Use retry_last_failed_check/);
+  const verify = build(['run_check', 'safe_edit', 'submit_result'], { mode: 'coding', productiveState: 'action_required', verificationState: 'available' });
+  assert.match(verify, /Use focused run_check/);
+  assert.doesNotMatch(verify, /Use retry_last_failed_check/);
+  const retry = build(['retry_last_failed_check', 'safe_edit', 'submit_result'], { mode: 'main', productiveState: 'action_required', verificationState: 'available' });
+  assert.match(retry, /Use retry_last_failed_check/);
+  assert.doesNotMatch(retry, /Use focused run_check/);
+  const recovery = build(['rollback_last_mutation', 'recover_worktree', 'submit_result'], { mode: 'coding', productiveState: 'action_required' });
+  assert.match(recovery, /Recovery tools available: rollback_last_mutation, recover_worktree/);
+  assert.doesNotMatch(recovery, /undo_mutation/);
+  const begin = build(['begin_result_submission', 'submit_result'], { mode: 'coding', productiveState: 'action_required' });
+  assert.match(begin, /Changed work: finish the necessary changes and focused checks, then call begin_result_submission/);
+  const terminal = build(['submit_result'], { mode: 'coding', productiveState: 'action_required' });
+  assert.match(terminal, /Terminal-only request: call submit_result/);
+  assert.doesNotMatch(terminal, /begin_result_submission/);
+  const restored = build(['submit_result', 'read', 'safe_edit'], { mode: 'main', resumed: true, productiveState: 'action_required' });
+  assert.match(restored, /submit_result with no arguments immediately/);
+  assert.doesNotMatch(restored, /Direct inspection:|Mutation tools available/);
+  const repair = build(['submit_result'], { mode: 'coding', validationRepair: true });
+  assert.match(repair, /submit_result with no arguments immediately/);
+  const exactTerminal = build(['safe_edit'], { mode: 'main', terminalRecoveryRequiredTool: 'safe_edit' });
+  assert.match(exactTerminal, /Terminal recovery: use safe_edit only/);
+  assert.doesNotMatch(exactTerminal, /Mutation tools available/);
+  const absentExact = build(['read'], { mode: 'main', terminalRecoveryRequiredTool: 'safe_edit' });
+  assert.doesNotMatch(absentExact, /use safe_edit|Mutation tools available/);
 });
 
 test('#634 real Implementer boundary blocks late read/run_check/retry/bash even when host is newly active', () => {
