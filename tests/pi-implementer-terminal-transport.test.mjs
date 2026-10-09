@@ -1,13 +1,54 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import registerResultTool, {
+import { register } from 'node:module';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+// CI installs TypeBox in the Pi runtime, not the repository Node test process.
+// Reuse the existing contract suite's transport-only TypeBox shim.
+const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-665-typebox-'));
+const shimLoader = path.join(shimDir, 'typebox-loader.mjs');
+fs.writeFileSync(shimLoader, `
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === 'typebox') {
+    const source = \`
+      const optional = schema => ({ ...schema, __optional: true });
+      export const Type = {
+        String: (options = {}) => ({ type: 'string', ...options }),
+        Boolean: (options = {}) => ({ type: 'boolean', ...options }),
+        Array: (items, options = {}) => ({ type: 'array', items, ...options }),
+        Optional: optional,
+        Object: (properties, options = {}) => {
+          const normalized = {};
+          const required = [];
+          for (const [name, schema] of Object.entries(properties)) {
+            const { __optional, ...rest } = schema;
+            normalized[name] = rest;
+            if (!__optional) required.push(name);
+          }
+          return { type: 'object', properties: normalized, required, ...options };
+        },
+      };
+    \`;
+    return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true };
+  }
+  return nextResolve(specifier, context);
+}
+`);
+register(pathToFileURL(shimLoader), import.meta.url);
+process.on('exit', () => fs.rmSync(shimDir, { recursive: true, force: true }));
+
+const {
+  default: registerResultTool,
   CHANGED_WORK_SUBMISSION_SCHEMA,
   restrictResultSubmissionPayload,
   resultProviderBudgetEvidence,
   RESULT_SUBMISSION_TOKENS,
   RESULT_SUBMISSION_RETRY_TOKENS,
-} from '../scripts/pi-implementer-result-tool.mjs';
+} = await import('../scripts/pi-implementer-result-tool.mjs');
 
 const submitTool = () => ({
   type: 'function',
