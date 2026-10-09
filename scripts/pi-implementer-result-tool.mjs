@@ -67,27 +67,49 @@ export const RESULT_SUBMISSION_RETRY_TOKENS = 8192;
 // Initial submission plus at most one correction and one truncation retry.
 export const RESULT_SUBMISSION_MAX_REQUESTS = 3;
 
-// Force a named tool only for recognized wire formats; unknown formats remain closed.
+// Match Planner's singleton-tool / auto-choice provider transport. In the
+// dedicated changed-work request, the only valid argument shape is resultText.
+// Other registered Pi terminal modes keep their original flexible schema.
+export const CHANGED_WORK_SUBMISSION_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: { resultText: { type: 'string', minLength: 1 } },
+  required: ['resultText'],
+  additionalProperties: false,
+});
+const CHANGED_WORK_SUBMISSION_DESCRIPTION =
+  'Only successful Implementer changed-work terminal operation. Supply complete Markdown in resultText on this dedicated larger-budget request.';
+
 export function restrictResultSubmissionPayload(payload) {
   const closed = { ...payload, tools: [], tool_choice: 'none' };
-  if (!Array.isArray(payload?.tools) || Object.hasOwn(payload, 'toolChoice')) return closed;
+  if (!Array.isArray(payload?.tools) || payload.tools.length !== 1 ||
+      Object.hasOwn(payload, 'toolChoice')) return closed;
   const choice = payload.tool_choice;
   const knownChoice = choice == null || ['auto', 'none', 'required'].includes(choice) ||
     (typeof choice === 'object' && choice.type === 'function' &&
       (choice.function?.name === 'submit_result' || choice.name === 'submit_result'));
   if (!knownChoice) return closed;
-  const matching = payload.tools.filter(tool => (tool.function?.name ?? tool.name) === 'submit_result');
-  if (matching.length !== 1) return closed;
-  const tool = matching[0];
-  if (tool.type === 'function' && tool.function?.name === 'submit_result') {
-    return { ...payload, tools: matching, tool_choice: { type: 'function', function: { name: 'submit_result' } } };
+  const tool = payload.tools[0];
+  if (tool?.type === 'function' && tool.function?.name === 'submit_result' &&
+      tool.name == null) {
+    return { ...payload, tools: [{ ...tool, function: {
+      ...tool.function, description: CHANGED_WORK_SUBMISSION_DESCRIPTION,
+      parameters: CHANGED_WORK_SUBMISSION_SCHEMA,
+    } }], tool_choice: 'auto' };
   }
-  if (tool.type === 'function' && tool.name === 'submit_result') {
-    return { ...payload, tools: matching, tool_choice: { type: 'function', name: 'submit_result' } };
+  if (tool?.type === 'function' && tool.name === 'submit_result' &&
+      tool.function == null) {
+    return { ...payload, tools: [{ ...tool,
+      description: CHANGED_WORK_SUBMISSION_DESCRIPTION,
+      parameters: CHANGED_WORK_SUBMISSION_SCHEMA,
+    }], tool_choice: 'auto' };
   }
-  // Legacy Pi adapters omit type. Auto remains safe with the terminal admission gate.
-  if (tool.type == null && tool.function?.name === 'submit_result') {
-    return { ...payload, tools: matching, tool_choice: 'auto' };
+  // Legacy Pi adapters omit the type discriminator.
+  if (tool?.type == null && tool.function?.name === 'submit_result' &&
+      tool.name == null) {
+    return { ...payload, tools: [{ ...tool, function: {
+      ...tool.function, description: CHANGED_WORK_SUBMISSION_DESCRIPTION,
+      parameters: CHANGED_WORK_SUBMISSION_SCHEMA,
+    } }], tool_choice: 'auto' };
   }
   return closed;
 }
@@ -235,7 +257,7 @@ export default function (pi) {
   const submission = { phase: 'coding', budget: null, retryUsed: false, correctionUsed: false, control: null,
     lastAssistant: null, providerEvidence: null, providerSurfaceVerified: false,
     providerRequest: 0, lastInputTokens: null,
-    truncatedToolArguments: false, originalModel: null };
+    truncatedToolArguments: false, toolExecutionError: false, originalModel: null };
 
   const resetSubmissionAttempt = () => {
     submission.control = null;
@@ -243,6 +265,7 @@ export default function (pi) {
     submission.providerEvidence = null;
     submission.providerSurfaceVerified = false;
     submission.truncatedToolArguments = false;
+    submission.toolExecutionError = false;
   };
 
   const restoreSubmissionBudget = async () => {
@@ -310,12 +333,16 @@ export default function (pi) {
         ? restrictResultSubmissionPayload(payload)
         : { ...payload, tools: [], tool_choice: 'none' };
       submission.providerEvidence = resultProviderBudgetEvidence(payload, submission.budget);
-      submission.providerSurfaceVerified = restricted.tools.length === 1;
+      submission.providerSurfaceVerified = restricted.tools.length === 1 &&
+        restricted.tool_choice === 'auto';
       console.log(`PI_IMPLEMENTER_SUBMISSION_REQUEST ${JSON.stringify({
         request: submission.providerRequest, phase: submission.phase,
         budget: submission.budget, actualBudget: submission.providerEvidence.effective,
         verified: submission.providerEvidence.verified, reason: submission.providerEvidence.reason,
         tools: restricted.tools.map(tool => tool.function?.name ?? tool.name),
+        toolChoice: restricted.tool_choice,
+        schemaRequired: restricted.tools[0]?.function?.parameters?.required ??
+          restricted.tools[0]?.parameters?.required ?? [],
       })}`);
       return restricted;
     });
@@ -359,10 +386,13 @@ export default function (pi) {
         : [];
       const input = Number(msg.usage?.inputTokens ?? msg.usage?.input_tokens ?? msg.usage?.input);
       if (Number.isFinite(input) && input >= 0) submission.lastInputTokens = input;
-      submission.lastAssistant = { reason, calls };
+      submission.lastAssistant = { reason, calls, providerError: Boolean(msg.errorMessage) };
     });
     pi.on('tool_execution_end', async event => {
-      if (submission.control && event.toolCallId === submission.control.id) submission.control.executed = !event.isError;
+      if (submission.control && event.toolCallId === submission.control.id) {
+        submission.control.executed = !event.isError;
+        if (event.isError) submission.toolExecutionError = true;
+      }
       // Restore the pre-submission model budget once the terminal executor has
       // committed a result; terminal completion may skip the turn_end event.
       if (submission.phase === 'submission_pending' && !event.isError &&
@@ -398,17 +428,45 @@ export default function (pi) {
         return;
       }
       if (submission.phase !== 'submission_pending') return;
-      if (control?.kind === 'submit' && control.executed) {
+      // A raw tool_calls delta or assistant prose is not execution. Keep the
+      // verified Pi toolUse + executor + durable adapter receipt contract intact.
+      if (control?.kind === 'submit' && control.executed && complete &&
+          submission.providerEvidence?.verified && submission.providerSurfaceVerified) {
         submission.phase = 'submitted';
-        console.log(`PI_IMPLEMENTER_SUBMISSION_ACCEPTED ${JSON.stringify({ budget: submission.budget, providerBudgetVerified: submission.providerEvidence?.verified })}`);
+        console.log(`PI_IMPLEMENTER_SUBMISSION_ACCEPTED ${JSON.stringify({
+          budget: submission.budget, providerBudgetVerified: true, toolExecuted: true,
+          stopReason: last?.reason,
+        })}`);
         return;
       }
+      const failureKind = !submission.providerEvidence?.verified ? 'budget_unverified'
+        : !submission.providerSurfaceVerified ? 'surface_unverified'
+        : last?.providerError ? 'provider_error'
+        : submission.toolExecutionError ? 'tool_execution_failed'
+        : last?.reason === 'length' || submission.truncatedToolArguments ? 'truncated'
+        : !last?.calls?.length ? 'missing_tool_call'
+        : last?.reason !== 'tooluse' ? 'stop_reason_mismatch'
+        : control?.kind !== 'submit' ? 'invalid_arguments_or_extra_tools'
+        : !control.executed ? 'tool_not_executed' : 'terminal_incomplete';
+      console.warn(`PI_IMPLEMENTER_SUBMISSION_OUTCOME ${JSON.stringify({
+        request: submission.providerRequest, outcome: failureKind,
+        stopReason: last?.reason ?? null, toolCalls: last?.calls?.length ?? 0,
+        terminalCalls: last?.calls?.filter(call => call.name === 'submit_result').length ?? 0,
+        admitted: control?.kind === 'submit', executed: control?.executed === true,
+        toolExecutionError: submission.toolExecutionError,
+        budgetVerified: submission.providerEvidence?.verified === true,
+        surfaceVerified: submission.providerSurfaceVerified,
+      })}`);
       if (!submission.providerEvidence?.verified) {
         await submissionFailure('result_submission_budget_unverified', 'Actual provider output budget does not match submission phase', ctx);
         return;
       }
       if (!submission.providerSurfaceVerified) {
         await submissionFailure('result_submission_surface_unverified', 'Unknown provider tool or tool-choice format', ctx);
+        return;
+      }
+      if (last?.providerError) {
+        await submissionFailure('result_submission_provider_error', 'Provider returned an error during terminal submission', ctx);
         return;
       }
       const truncated = last?.reason === 'length' || submission.truncatedToolArguments;
