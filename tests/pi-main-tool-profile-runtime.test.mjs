@@ -107,6 +107,10 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       assert.ok(names(full).includes('lsp_start_server'));
       assert.ok(names(full).includes('file_history'));
       assert.ok(!names(full).includes('request_capabilities'), 'three real grants exhaust the budget, not failed/repeat calls');
+      const exhausted = await handlers.get('tool_call')({ toolName: 'request_capabilities', toolCallId: 'exhausted', input: { group: 'delegation' } }, context);
+      assert.equal(exhausted.block, true);
+      assert.match(exhausted.reason, /three successful Main capability grants have been used/);
+      assert.doesNotMatch(exhausted.reason, /became active after/);
       const zero = handlers.get('before_provider_request')({ payload: { ...raw, tools: [] } });
       assert.equal(zero.tools, undefined, 'zero-tool request remains closed');
       assert.equal(zero.tool_choice, undefined);
