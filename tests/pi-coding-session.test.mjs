@@ -1934,8 +1934,13 @@ function runtimeScenario(mode) {
           if (mode === 'provider-fallback-recover') {
             // An actually successful auto response closes the incident; a later unrelated
             // context-length 400 must not inherit the previous rejection count.
+            const successful = { toolName: 'read', toolCallId: 'fallback-successful-read', input: { path: 'config.py' } };
+            assert.equal(await handlers.get('tool_call')(successful, ctx), undefined);
+            await handlers.get('tool_execution_end')({
+              ...successful, isError: false, result: { content: [{ type: 'text', text: 'ok' }] },
+            }, ctx);
             await handlers.get('turn_end')({ turnIndex: turn++, message: {
-              stopReason: 'stop', content: [{ type: 'text', text: 'continue' }], usage: { output: 100 },
+              stopReason: 'toolUse', content: [{ type: 'toolCall', name: 'read' }], usage: { output: 100 },
             } }, ctx);
             assert.equal(aborts, 0);
             const later = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
@@ -2984,7 +2989,11 @@ test('#669 per-request Main wire contract survives valid and failed tools and bo
   const records = logs.split('\n').filter(line => line.startsWith('PI_IMPLEMENTER_PROVIDER_WIRE '))
     .map(line => JSON.parse(line.slice('PI_IMPLEMENTER_PROVIDER_WIRE '.length)));
   assert.ok(records.length >= 5);
-  assert.ok(records.every(req => req.productiveState === 'action_required' && req.toolChoice === 'required'));
+  assert.ok(records.every(req => req.productiveState === 'action_required'));
+  assert.ok(records.filter(req => req.executableToolCount > 0 && req.toolChoiceSource !== 'named_tool')
+    .every(req => req.toolChoice === 'required'), 'every ordinary tool-bearing action request is forced');
+  assert.ok(records.some(req => req.toolChoiceSource === 'named_tool' && req.toolChoice.function.name === 'write'),
+    'stronger named-tool request is retained');
   assert.ok(records.every(req => req.executableToolCount === req.executableTools.length));
   assert.ok(records.some(req => req.executableToolCount === 0 && req.toolChoice === null));
   assert.ok(records.some(req => req.deferredTools.includes('write') && req.executableTools.join() === 'read'),
