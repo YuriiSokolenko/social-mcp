@@ -238,8 +238,8 @@ export function implementerToolChoiceDecision(payload, {
     const next = { ...payload, tool_choice: 'auto' };
     return { payload: next, toolChoice: 'auto', source: null, exemption };
   }
-  const source = productiveState === 'action_required' ? 'productive_action'
-    : correctionSource;
+  const source = correctionSource ??
+    (productiveState === 'action_required' ? 'productive_action' : null);
   if (source) {
     const next = requireToolChoiceInPayload(payload);
     return { payload: next, toolChoice: next.tool_choice, source, exemption: null };
@@ -2390,6 +2390,15 @@ export default function (pi) {
           providerCapabilitySnapshot.executableTools = wireTools;
         }
         forcedProviderRequestInFlight = decision.toolChoice === 'required';
+        if (forcedProviderRequestInFlight) {
+          console.warn('PI_ACTION_REQUIRED_TOOL_CHOICE ' + JSON.stringify({
+            stage,
+            mode: 'required',
+            request: providerCapabilitySnapshot?.request ?? null,
+            activeTools: wireTools,
+            source: decision.source,
+          }));
+        }
         console.log('PI_IMPLEMENTER_PROVIDER_WIRE ' + JSON.stringify({
           stage,
           request: providerCapabilitySnapshot?.request ?? null,
@@ -3505,8 +3514,8 @@ export default function (pi) {
 
     // Explicit correction forcing is transport-level and can be consumed by a tool call;
     // ordinary action_required forcing is NOT consumed here and is re-derived on every request.
-    const satisfiedProviderForcing = requireToolOnNextProviderRequest;
-    if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
+    const satisfiedProviderForcing = providerCapabilitySnapshot?.toolChoice === 'required';
+    if (requireToolOnNextProviderRequest) requireToolOnNextProviderRequest = false;
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
     // run_check for controller policy after visibility has been checked.
