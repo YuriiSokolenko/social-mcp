@@ -408,29 +408,47 @@ export default function (pi) {
         console.log(`PI_IMPLEMENTER_SUBMISSION_ACCEPTED ${JSON.stringify({ budget: submission.budget, providerBudgetVerified: submission.providerEvidence?.verified })}`);
         return;
       }
-      submission.control = null;
       if (!submission.providerEvidence?.verified) {
         await submissionFailure('result_submission_budget_unverified', 'Actual provider output budget does not match submission phase', ctx);
         return;
       }
+      if (!submission.providerSurfaceVerified) {
+        await submissionFailure('result_submission_surface_unverified', 'Unknown provider tool or tool-choice format', ctx);
+        return;
+      }
       const truncated = last?.reason === 'length' || submission.truncatedToolArguments;
-      submission.truncatedToolArguments = false;
-      if (!truncated) {
-        await submissionFailure('result_submission_incomplete', 'No complete and valid submit_result tool call', ctx);
-        return;
+      if (truncated) {
+        if (submission.retryUsed) {
+          await submissionFailure('result_submission_retry_exhausted', 'Truncation retry was incomplete', ctx);
+          return;
+        }
+        submission.retryUsed = true;
+        if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_RETRY_TOKENS))) {
+          await submissionFailure('result_submission_context_exhausted', '8192 token retry unsupported or cannot fit', ctx);
+          return;
+        }
+      } else {
+        if (submission.correctionUsed) {
+          await submissionFailure('result_submission_correction_exhausted', 'No complete and valid submit_result tool call after correction', ctx);
+          return;
+        }
+        submission.correctionUsed = true;
+        if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_TOKENS))) {
+          await submissionFailure('result_submission_budget_unavailable', '4096 token correction request unavailable', ctx);
+          return;
+        }
       }
-      if (submission.retryUsed) {
-        await submissionFailure('result_submission_retry_exhausted', 'Submission-only retry was incomplete', ctx);
-        return;
-      }
-      submission.retryUsed = true;
-      if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_RETRY_TOKENS))) {
-        await submissionFailure('result_submission_context_exhausted', '8192 token retry unsupported or cannot fit', ctx);
-        return;
-      }
+      resetSubmissionAttempt();
       pi.setActiveTools?.(['submit_result']);
-      console.log(`PI_IMPLEMENTER_SUBMISSION_RETRY ${JSON.stringify({ budget: submission.budget, reason: last?.reason ?? 'truncated_arguments' })}`);
-      await pi.sendUserMessage?.('SUBMISSION RETRY ONLY: previous tool arguments were truncated. Using existing work only, call submit_result({resultText}) with the FULL Markdown result. Do not inspect or mutate.', { deliverAs: 'steer' });
+      console.log(`PI_IMPLEMENTER_SUBMISSION_RETRY ${JSON.stringify({
+        mode: truncated ? 'truncation' : 'correction', budget: submission.budget,
+        correctionUsed: submission.correctionUsed, truncationUsed: submission.retryUsed,
+        requestLimit: RESULT_SUBMISSION_MAX_REQUESTS,
+      })}`);
+      const steer = truncated
+        ? 'TRUNCATED SUBMISSION: Call ONLY submit_result({resultText:"FULL Markdown result"}) once, with complete arguments. No prose response, repository inspection, or mutation.'
+        : 'FORMAT CORRECTION ONLY: Your last submission was not a complete valid tool call. You MUST call ONLY submit_result({resultText:"COMPLETE Markdown implementation description"}) with one nonblank string argument. Do not reply in prose or inspect/mutate the repository.';
+      await pi.sendUserMessage?.(steer, { deliverAs: 'steer' });
     });
   }
 
@@ -449,6 +467,10 @@ export default function (pi) {
         const last = submission.lastAssistant;
         const admitted = submission.phase === 'submission_pending' &&
           submission.providerEvidence?.verified === true &&
+          submission.providerSurfaceVerified === true &&
+          submission.providerRequest <= RESULT_SUBMISSION_MAX_REQUESTS &&
+          params && typeof params === 'object' && !Array.isArray(params) &&
+          Object.keys(params).length === 1 && Object.hasOwn(params, 'resultText') &&
           submission.control?.kind === 'submit' && submission.control.id === toolCallId &&
           last?.reason === 'tooluse' && last.calls.length === 1 &&
           last.calls[0].name === 'submit_result' && last.calls[0].id === toolCallId &&
