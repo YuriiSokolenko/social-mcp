@@ -1,0 +1,933 @@
+{
+  "createdAt": "2026-10-09T11:24:45.430Z",
+  "suite": "full",
+  "repeat": 5,
+  "requestCount": 100,
+  "seed": null,
+  "timeout": {
+    "cliMs": 600000,
+    "defaultMs": 600000,
+    "origin": "explicit_cli",
+    "effectiveRequestTimeoutMs": 600000,
+    "outerDeadlineMs": null,
+    "abortSource": "AbortSignal.timeout in probe"
+  },
+  "endpoints": [
+    {
+      "name": "direct",
+      "url": "http://192.168.8.210:3009/v1"
+    },
+    {
+      "name": "proxy",
+      "url": "http://192.168.8.184:4001/v1"
+    }
+  ],
+  "cases": [
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": true,
+      "payload": "small",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": false,
+      "payload": "small",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": true,
+      "payload": "large",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": false,
+      "payload": "large",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": true,
+      "payload": "large",
+      "budget": 16384,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": false,
+      "payload": "large",
+      "budget": 16384,
+      "reasoning": "default"
+    },
+    {
+      "tool": "submit_result",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": true,
+      "payload": "result",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "submit_result",
+      "toolChoice": "required",
+      "strict": false,
+      "stream": false,
+      "payload": "result",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "named",
+      "strict": false,
+      "stream": false,
+      "payload": "small",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": true,
+      "stream": false,
+      "payload": "small",
+      "budget": 2048,
+      "reasoning": "default"
+    }
+  ],
+  "requests": [
+    {
+      "id": "direct-case1-r1",
+      "endpoint": "direct",
+      "caseIndex": 1,
+      "repeat": 1,
+      "pairKey": "case1-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case1-r1",
+      "endpoint": "proxy",
+      "caseIndex": 1,
+      "repeat": 1,
+      "pairKey": "case1-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case1-r2",
+      "endpoint": "proxy",
+      "caseIndex": 1,
+      "repeat": 2,
+      "pairKey": "case1-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case1-r2",
+      "endpoint": "direct",
+      "caseIndex": 1,
+      "repeat": 2,
+      "pairKey": "case1-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case1-r3",
+      "endpoint": "direct",
+      "caseIndex": 1,
+      "repeat": 3,
+      "pairKey": "case1-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case1-r3",
+      "endpoint": "proxy",
+      "caseIndex": 1,
+      "repeat": 3,
+      "pairKey": "case1-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case1-r4",
+      "endpoint": "proxy",
+      "caseIndex": 1,
+      "repeat": 4,
+      "pairKey": "case1-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case1-r4",
+      "endpoint": "direct",
+      "caseIndex": 1,
+      "repeat": 4,
+      "pairKey": "case1-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case1-r5",
+      "endpoint": "proxy",
+      "caseIndex": 1,
+      "repeat": 5,
+      "pairKey": "case1-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case1-r5",
+      "endpoint": "direct",
+      "caseIndex": 1,
+      "repeat": 5,
+      "pairKey": "case1-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case2-r1",
+      "endpoint": "proxy",
+      "caseIndex": 2,
+      "repeat": 1,
+      "pairKey": "case2-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case2-r1",
+      "endpoint": "direct",
+      "caseIndex": 2,
+      "repeat": 1,
+      "pairKey": "case2-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case2-r2",
+      "endpoint": "direct",
+      "caseIndex": 2,
+      "repeat": 2,
+      "pairKey": "case2-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case2-r2",
+      "endpoint": "proxy",
+      "caseIndex": 2,
+      "repeat": 2,
+      "pairKey": "case2-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case2-r3",
+      "endpoint": "proxy",
+      "caseIndex": 2,
+      "repeat": 3,
+      "pairKey": "case2-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case2-r3",
+      "endpoint": "direct",
+      "caseIndex": 2,
+      "repeat": 3,
+      "pairKey": "case2-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case2-r4",
+      "endpoint": "direct",
+      "caseIndex": 2,
+      "repeat": 4,
+      "pairKey": "case2-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case2-r4",
+      "endpoint": "proxy",
+      "caseIndex": 2,
+      "repeat": 4,
+      "pairKey": "case2-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case2-r5",
+      "endpoint": "direct",
+      "caseIndex": 2,
+      "repeat": 5,
+      "pairKey": "case2-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case2-r5",
+      "endpoint": "proxy",
+      "caseIndex": 2,
+      "repeat": 5,
+      "pairKey": "case2-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case3-r1",
+      "endpoint": "direct",
+      "caseIndex": 3,
+      "repeat": 1,
+      "pairKey": "case3-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case3-r1",
+      "endpoint": "proxy",
+      "caseIndex": 3,
+      "repeat": 1,
+      "pairKey": "case3-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case3-r2",
+      "endpoint": "direct",
+      "caseIndex": 3,
+      "repeat": 2,
+      "pairKey": "case3-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case3-r2",
+      "endpoint": "proxy",
+      "caseIndex": 3,
+      "repeat": 2,
+      "pairKey": "case3-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case3-r3",
+      "endpoint": "direct",
+      "caseIndex": 3,
+      "repeat": 3,
+      "pairKey": "case3-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case3-r3",
+      "endpoint": "proxy",
+      "caseIndex": 3,
+      "repeat": 3,
+      "pairKey": "case3-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case3-r4",
+      "endpoint": "direct",
+      "caseIndex": 3,
+      "repeat": 4,
+      "pairKey": "case3-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case3-r4",
+      "endpoint": "proxy",
+      "caseIndex": 3,
+      "repeat": 4,
+      "pairKey": "case3-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case3-r5",
+      "endpoint": "direct",
+      "caseIndex": 3,
+      "repeat": 5,
+      "pairKey": "case3-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case3-r5",
+      "endpoint": "proxy",
+      "caseIndex": 3,
+      "repeat": 5,
+      "pairKey": "case3-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case4-r1",
+      "endpoint": "proxy",
+      "caseIndex": 4,
+      "repeat": 1,
+      "pairKey": "case4-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case4-r1",
+      "endpoint": "direct",
+      "caseIndex": 4,
+      "repeat": 1,
+      "pairKey": "case4-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case4-r2",
+      "endpoint": "proxy",
+      "caseIndex": 4,
+      "repeat": 2,
+      "pairKey": "case4-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case4-r2",
+      "endpoint": "direct",
+      "caseIndex": 4,
+      "repeat": 2,
+      "pairKey": "case4-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case4-r3",
+      "endpoint": "direct",
+      "caseIndex": 4,
+      "repeat": 3,
+      "pairKey": "case4-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case4-r3",
+      "endpoint": "proxy",
+      "caseIndex": 4,
+      "repeat": 3,
+      "pairKey": "case4-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case4-r4",
+      "endpoint": "proxy",
+      "caseIndex": 4,
+      "repeat": 4,
+      "pairKey": "case4-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case4-r4",
+      "endpoint": "direct",
+      "caseIndex": 4,
+      "repeat": 4,
+      "pairKey": "case4-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case4-r5",
+      "endpoint": "proxy",
+      "caseIndex": 4,
+      "repeat": 5,
+      "pairKey": "case4-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case4-r5",
+      "endpoint": "direct",
+      "caseIndex": 4,
+      "repeat": 5,
+      "pairKey": "case4-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case5-r1",
+      "endpoint": "direct",
+      "caseIndex": 5,
+      "repeat": 1,
+      "pairKey": "case5-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case5-r1",
+      "endpoint": "proxy",
+      "caseIndex": 5,
+      "repeat": 1,
+      "pairKey": "case5-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case5-r2",
+      "endpoint": "proxy",
+      "caseIndex": 5,
+      "repeat": 2,
+      "pairKey": "case5-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case5-r2",
+      "endpoint": "direct",
+      "caseIndex": 5,
+      "repeat": 2,
+      "pairKey": "case5-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case5-r3",
+      "endpoint": "proxy",
+      "caseIndex": 5,
+      "repeat": 3,
+      "pairKey": "case5-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case5-r3",
+      "endpoint": "direct",
+      "caseIndex": 5,
+      "repeat": 3,
+      "pairKey": "case5-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case5-r4",
+      "endpoint": "direct",
+      "caseIndex": 5,
+      "repeat": 4,
+      "pairKey": "case5-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case5-r4",
+      "endpoint": "proxy",
+      "caseIndex": 5,
+      "repeat": 4,
+      "pairKey": "case5-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case5-r5",
+      "endpoint": "proxy",
+      "caseIndex": 5,
+      "repeat": 5,
+      "pairKey": "case5-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case5-r5",
+      "endpoint": "direct",
+      "caseIndex": 5,
+      "repeat": 5,
+      "pairKey": "case5-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case6-r1",
+      "endpoint": "direct",
+      "caseIndex": 6,
+      "repeat": 1,
+      "pairKey": "case6-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case6-r1",
+      "endpoint": "proxy",
+      "caseIndex": 6,
+      "repeat": 1,
+      "pairKey": "case6-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case6-r2",
+      "endpoint": "direct",
+      "caseIndex": 6,
+      "repeat": 2,
+      "pairKey": "case6-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case6-r2",
+      "endpoint": "proxy",
+      "caseIndex": 6,
+      "repeat": 2,
+      "pairKey": "case6-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case6-r3",
+      "endpoint": "direct",
+      "caseIndex": 6,
+      "repeat": 3,
+      "pairKey": "case6-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case6-r3",
+      "endpoint": "proxy",
+      "caseIndex": 6,
+      "repeat": 3,
+      "pairKey": "case6-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case6-r4",
+      "endpoint": "proxy",
+      "caseIndex": 6,
+      "repeat": 4,
+      "pairKey": "case6-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case6-r4",
+      "endpoint": "direct",
+      "caseIndex": 6,
+      "repeat": 4,
+      "pairKey": "case6-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case6-r5",
+      "endpoint": "proxy",
+      "caseIndex": 6,
+      "repeat": 5,
+      "pairKey": "case6-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case6-r5",
+      "endpoint": "direct",
+      "caseIndex": 6,
+      "repeat": 5,
+      "pairKey": "case6-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case7-r1",
+      "endpoint": "proxy",
+      "caseIndex": 7,
+      "repeat": 1,
+      "pairKey": "case7-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case7-r1",
+      "endpoint": "direct",
+      "caseIndex": 7,
+      "repeat": 1,
+      "pairKey": "case7-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case7-r2",
+      "endpoint": "direct",
+      "caseIndex": 7,
+      "repeat": 2,
+      "pairKey": "case7-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case7-r2",
+      "endpoint": "proxy",
+      "caseIndex": 7,
+      "repeat": 2,
+      "pairKey": "case7-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case7-r3",
+      "endpoint": "proxy",
+      "caseIndex": 7,
+      "repeat": 3,
+      "pairKey": "case7-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case7-r3",
+      "endpoint": "direct",
+      "caseIndex": 7,
+      "repeat": 3,
+      "pairKey": "case7-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case7-r4",
+      "endpoint": "proxy",
+      "caseIndex": 7,
+      "repeat": 4,
+      "pairKey": "case7-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case7-r4",
+      "endpoint": "direct",
+      "caseIndex": 7,
+      "repeat": 4,
+      "pairKey": "case7-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case7-r5",
+      "endpoint": "proxy",
+      "caseIndex": 7,
+      "repeat": 5,
+      "pairKey": "case7-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case7-r5",
+      "endpoint": "direct",
+      "caseIndex": 7,
+      "repeat": 5,
+      "pairKey": "case7-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case8-r1",
+      "endpoint": "proxy",
+      "caseIndex": 8,
+      "repeat": 1,
+      "pairKey": "case8-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case8-r1",
+      "endpoint": "direct",
+      "caseIndex": 8,
+      "repeat": 1,
+      "pairKey": "case8-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case8-r2",
+      "endpoint": "direct",
+      "caseIndex": 8,
+      "repeat": 2,
+      "pairKey": "case8-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case8-r2",
+      "endpoint": "proxy",
+      "caseIndex": 8,
+      "repeat": 2,
+      "pairKey": "case8-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case8-r3",
+      "endpoint": "direct",
+      "caseIndex": 8,
+      "repeat": 3,
+      "pairKey": "case8-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case8-r3",
+      "endpoint": "proxy",
+      "caseIndex": 8,
+      "repeat": 3,
+      "pairKey": "case8-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case8-r4",
+      "endpoint": "proxy",
+      "caseIndex": 8,
+      "repeat": 4,
+      "pairKey": "case8-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case8-r4",
+      "endpoint": "direct",
+      "caseIndex": 8,
+      "repeat": 4,
+      "pairKey": "case8-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case8-r5",
+      "endpoint": "direct",
+      "caseIndex": 8,
+      "repeat": 5,
+      "pairKey": "case8-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case8-r5",
+      "endpoint": "proxy",
+      "caseIndex": 8,
+      "repeat": 5,
+      "pairKey": "case8-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case9-r1",
+      "endpoint": "direct",
+      "caseIndex": 9,
+      "repeat": 1,
+      "pairKey": "case9-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case9-r1",
+      "endpoint": "proxy",
+      "caseIndex": 9,
+      "repeat": 1,
+      "pairKey": "case9-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case9-r2",
+      "endpoint": "proxy",
+      "caseIndex": 9,
+      "repeat": 2,
+      "pairKey": "case9-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case9-r2",
+      "endpoint": "direct",
+      "caseIndex": 9,
+      "repeat": 2,
+      "pairKey": "case9-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case9-r3",
+      "endpoint": "direct",
+      "caseIndex": 9,
+      "repeat": 3,
+      "pairKey": "case9-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case9-r3",
+      "endpoint": "proxy",
+      "caseIndex": 9,
+      "repeat": 3,
+      "pairKey": "case9-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case9-r4",
+      "endpoint": "direct",
+      "caseIndex": 9,
+      "repeat": 4,
+      "pairKey": "case9-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case9-r4",
+      "endpoint": "proxy",
+      "caseIndex": 9,
+      "repeat": 4,
+      "pairKey": "case9-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case9-r5",
+      "endpoint": "proxy",
+      "caseIndex": 9,
+      "repeat": 5,
+      "pairKey": "case9-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case9-r5",
+      "endpoint": "direct",
+      "caseIndex": 9,
+      "repeat": 5,
+      "pairKey": "case9-r5",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case10-r1",
+      "endpoint": "proxy",
+      "caseIndex": 10,
+      "repeat": 1,
+      "pairKey": "case10-r1",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case10-r1",
+      "endpoint": "direct",
+      "caseIndex": 10,
+      "repeat": 1,
+      "pairKey": "case10-r1",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case10-r2",
+      "endpoint": "direct",
+      "caseIndex": 10,
+      "repeat": 2,
+      "pairKey": "case10-r2",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case10-r2",
+      "endpoint": "proxy",
+      "caseIndex": 10,
+      "repeat": 2,
+      "pairKey": "case10-r2",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case10-r3",
+      "endpoint": "direct",
+      "caseIndex": 10,
+      "repeat": 3,
+      "pairKey": "case10-r3",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case10-r3",
+      "endpoint": "proxy",
+      "caseIndex": 10,
+      "repeat": 3,
+      "pairKey": "case10-r3",
+      "pairOrder": 2
+    },
+    {
+      "id": "direct-case10-r4",
+      "endpoint": "direct",
+      "caseIndex": 10,
+      "repeat": 4,
+      "pairKey": "case10-r4",
+      "pairOrder": 1
+    },
+    {
+      "id": "proxy-case10-r4",
+      "endpoint": "proxy",
+      "caseIndex": 10,
+      "repeat": 4,
+      "pairKey": "case10-r4",
+      "pairOrder": 2
+    },
+    {
+      "id": "proxy-case10-r5",
+      "endpoint": "proxy",
+      "caseIndex": 10,
+      "repeat": 5,
+      "pairKey": "case10-r5",
+      "pairOrder": 1
+    },
+    {
+      "id": "direct-case10-r5",
+      "endpoint": "direct",
+      "caseIndex": 10,
+      "repeat": 5,
+      "pairKey": "case10-r5",
+      "pairOrder": 2
+    }
+  ],
+  "constraint_activation": "unverified",
+  "safety": "synthetic tool calls only; calls are never executed",
+  "status": "PARTIAL_STOPPED",
+  "attempted": 96,
+  "completedHttpResponses": 90,
+  "unattempted": 4,
+  "stopReason": "Stopped the 16384 token non-streaming case after repeated 600000 ms inference deadlines and pre-header fetch failures. Read-only health/model checks remained HTTP 200. Four attempts were not made in the failing case. The last interrupted request JSON is retained; its in-flight SSE response was buffered in memory and lost on SIGINT.",
+  "interruption": "SIGINT after repeated 600000 ms large non-stream inference failures; last request JSON saved but in-flight response bytes were not persisted",
+  "rawResponseArtifacts": 95,
+  "combinedRuns": [
+    "full campaign stopped during case 6 after three failed matched attempts",
+    "followup suite completed cases 7-10, five repetitions each"
+  ],
+  "evidenceCompression": "raw-responses/*.bin.gz and parsed-responses/*.json.gz use gzip; checksums record both decompressed raw response SHA-256 and compressed artifact SHA-256"
+}

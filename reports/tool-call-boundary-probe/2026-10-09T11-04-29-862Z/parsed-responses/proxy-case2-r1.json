@@ -1,0 +1,41 @@
+{
+  "raw": "{\"id\":\"chatcmpl-9611341cae8ca421\",\"object\":\"chat.completion\",\"created\":1791543894,\"model\":\"Qwen3.8-Flash-Next-NVFP4\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"refusal\":null,\"annotations\":null,\"audio\":null,\"function_call\":null,\"tool_calls\":[{\"id\":\"chatcmpl-tool-881c49ecc8424d4f\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{\\\"path\\\": \\\"probe/synthetic_large.py\\\"}\"}}],\"reasoning\":\"The user wants me to call write exactly once with path \\\"probe/synthetic_large.py\\\", containing 180 functions, with the markers. I must generate the complete content. Let me carefully produce all 180 functions.\\n\\nI need to be careful to include all 180 functions, each with the correct number. The structure is given. I'll generate it.\\n\\nNote: the reference uses `f\\\"case-N:\\\" + str(value)` — an f-string with no placeholders, but that's fine (it's still a valid f-string). The requirement says \\\"returning a deterministic f-string prefixed case-N:\\\". I'll follow the reference structure exactly.\\n\\nLet me write out the content. I need to be meticulous. Each function block:\\n\\n```\\ndef transform_001(value):\\n    \\\"\\\"\\\"Return a stable transformed value for case 1.\\\"\\\"\\\"\\n    return f\\\"case-1:\\\" + str(value)\\n```\\n\\nwith blank lines between (2 blank lines between functions).\\n\\nThe file starts with `# BEGIN TOOL_CALL_BOUNDARY_PROBE`, then a docstring line, then functions, then ends with `# END TOOL_CALL_BOUNDARY_PROBE`.\\n\\nLet me construct the whole thing carefully. I'll write it out in full.\\n\\nFormat from reference:\\n```\\n# BEGIN TOOL_CALL_BOUNDARY_PROBE\\n\\\"\\\"\\\"Synthetic deterministic probe; do not execute.\\\"\\\"\\\"\\n\\ndef transform_001(value):\\n    \\\"\\\"\\\"Return a stable transformed value for case 1.\\\"\\\"\\\"\\n    return f\\\"case-1:\\\" + str(value)\\n\\ndef transform_002(value):\\n...\\n```\\n\\nAnd at the end, there's a blank line then `# END TOOL_CALL_BOUNDARY_PROBE`.\\n\\nNow I need to generate all 180. Let me be careful with the zero-padding: 001-009 (3 digits), 010-099 (3 digits with leading zero for 1-9? no — 010, 011, ..., 099), 100-180.\\n\\nSo: transform_001 ... transform_009, transform_010 ... transform_099, transform_100 ... transform_180.\\n\\nCase number in docstring and f-string: no padding, just the integer (1, 2, ..., 180).\\n\\nLet me write it all out now. This is a long output but I must do it.\\n\\nI'll write the content string carefully.\\n\\nLet me now produce the full text. I'll go in chunks mentally but output as one string.\\n\\nGroup 1-9:\\ntransform_001 → case 1\\n...\\ntransform_009 → case 9\\n\\nGroup 10-99:\\ntransform_010 → case 10\\n...\\ntransform_099 → case 99\\n\\nGroup 100-180:\\ntransform_100 → case 100\\n...\\ntransform_180 → case 180\\n\\nOK, writing now.\\n\"},\"logprobs\":null,\"finish_reason\":\"length\",\"stop_reason\":null,\"token_ids\":null,\"routed_experts\":null}],\"service_tier\":null,\"system_fingerprint\":\"vllm-0.1.dev20073+g8e685d198-7b3c9d11\",\"usage\":{\"prompt_tokens\":7306,\"total_tokens\":9354,\"completion_tokens\":2048,\"prompt_tokens_details\":null,\"completion_tokens_details\":{\"reasoning_tokens\":661}},\"prompt_logprobs\":null,\"prompt_token_ids\":null,\"prompt_text\":null,\"kv_transfer_params\":null,\"ec_transfer_params\":null,\"metrics\":null}",
+  "choices": [
+    {
+      "index": 0,
+      "content": "",
+      "reasoning": "The user wants me to call write exactly once with path \"probe/synthetic_large.py\", containing 180 functions, with the markers. I must generate the complete content. Let me carefully produce all 180 functions.\n\nI need to be careful to include all 180 functions, each with the correct number. The structure is given. I'll generate it.\n\nNote: the reference uses `f\"case-N:\" + str(value)` — an f-string with no placeholders, but that's fine (it's still a valid f-string). The requirement says \"returning a deterministic f-string prefixed case-N:\". I'll follow the reference structure exactly.\n\nLet me write out the content. I need to be meticulous. Each function block:\n\n```\ndef transform_001(value):\n    \"\"\"Return a stable transformed value for case 1.\"\"\"\n    return f\"case-1:\" + str(value)\n```\n\nwith blank lines between (2 blank lines between functions).\n\nThe file starts with `# BEGIN TOOL_CALL_BOUNDARY_PROBE`, then a docstring line, then functions, then ends with `# END TOOL_CALL_BOUNDARY_PROBE`.\n\nLet me construct the whole thing carefully. I'll write it out in full.\n\nFormat from reference:\n```\n# BEGIN TOOL_CALL_BOUNDARY_PROBE\n\"\"\"Synthetic deterministic probe; do not execute.\"\"\"\n\ndef transform_001(value):\n    \"\"\"Return a stable transformed value for case 1.\"\"\"\n    return f\"case-1:\" + str(value)\n\ndef transform_002(value):\n...\n```\n\nAnd at the end, there's a blank line then `# END TOOL_CALL_BOUNDARY_PROBE`.\n\nNow I need to generate all 180. Let me be careful with the zero-padding: 001-009 (3 digits), 010-099 (3 digits with leading zero for 1-9? no — 010, 011, ..., 099), 100-180.\n\nSo: transform_001 ... transform_009, transform_010 ... transform_099, transform_100 ... transform_180.\n\nCase number in docstring and f-string: no padding, just the integer (1, 2, ..., 180).\n\nLet me write it all out now. This is a long output but I must do it.\n\nI'll write the content string carefully.\n\nLet me now produce the full text. I'll go in chunks mentally but output as one string.\n\nGroup 1-9:\ntransform_001 → case 1\n...\ntransform_009 → case 9\n\nGroup 10-99:\ntransform_010 → case 10\n...\ntransform_099 → case 99\n\nGroup 100-180:\ntransform_100 → case 100\n...\ntransform_180 → case 180\n\nOK, writing now.\n",
+      "finishReasons": [
+        "length"
+      ],
+      "toolCalls": [
+        {
+          "index": 0,
+          "id": "chatcmpl-tool-881c49ecc8424d4f",
+          "type": "function",
+          "name": "write",
+          "arguments": "{\"path\": \"probe/synthetic_large.py\"}"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 7306,
+    "total_tokens": 9354,
+    "completion_tokens": 2048,
+    "prompt_tokens_details": null,
+    "completion_tokens_details": {
+      "reasoning_tokens": 661
+    }
+  },
+  "model": "Qwen3.8-Flash-Next-NVFP4",
+  "missingDone": false,
+  "firstTokenMs": null,
+  "status": 200,
+  "headers": {
+    "content-length": "3198",
+    "content-type": "application/json",
+    "date": "Fri, 09 Oct 2026 11:04:53 GMT, Fri, 09 Oct 2026 11:04:53 GMT",
+    "server": "uvicorn, uvicorn"
+  }
+}

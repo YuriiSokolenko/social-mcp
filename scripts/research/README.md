@@ -6,37 +6,39 @@ From the repository root:
 
 ```bash
 node scripts/research/tool-call-boundary-probe.mjs \
-  --direct-url http://127.0.0.1:3009/v1 \
-  --proxy-url http://127.0.0.1:4001/v1 \
+  --direct-url http://192.168.8.210:3009/v1 \
+  --proxy-url http://192.168.8.184:4001/v1 \
   --suite quick
 ```
 
-Run `--dry-run` first to print the manifest and request count without contacting either endpoint. The quick suite is 8 requests (4 cases x 2 endpoints). Full suite defaults to 3 repetitions and 10 cases (20 requests per repetition, 60 total); use `--repeat 5` for 100. It uses deliberate pairwise coverage rather than the full parameter product.
+Run `--dry-run` first to print the manifest and request count without contacting either endpoint. The quick suite is 8 requests (4 cases x 2 endpoints). The full suite defaults to five repetitions: 10 scenarios, 50 attempts per endpoint, 100 total. Every matched pair uses the same body and randomizes which endpoint goes first.
 
 ```bash
 node scripts/research/tool-call-boundary-probe.mjs \
-  --direct-url http://127.0.0.1:3009/v1 \
-  --proxy-url http://127.0.0.1:4001/v1 \
-  --suite full --repeat 5 --max-requests 100
+  --direct-url http://192.168.8.210:3009/v1 \
+  --proxy-url http://192.168.8.184:4001/v1 \
+  --suite full --repeat 5 --timeout-ms 600000 --max-requests 100
 ```
 
 Target one combination and repeat it as needed:
 
 ```bash
 node scripts/research/tool-call-boundary-probe.mjs \
-  --direct-url http://127.0.0.1:3009/v1 \
-  --proxy-url http://127.0.0.1:4001/v1 \
+  --direct-url http://192.168.8.210:3009/v1 \
+  --proxy-url http://192.168.8.184:4001/v1 \
   --suite targeted --tool write --tool-choice required --strict true \
   --stream true --payload large --budget 2048 --repeat 20
 ```
 
-Supported flags: `--direct-url`, `--proxy-url`, `--suite quick|full|targeted`, `--tool write|submit_result`, `--tool-choice auto|required|named`, `--strict true|false`, `--stream true|false`, `--payload small|large|result`, `--budget 2048|16384`, `--reasoning default|thinking-off`, `--probe-reasoning`, `--direct-model`, `--proxy-model`, `--seed`, `--repeat`, `--max-requests`, `--timeout-ms`, `--concurrency` (default 1), `--output-dir`, and `--dry-run`. A supplied `--seed` is sent to both endpoints; omit it if unsupported. `thinking-off` adds `chat_template_kwargs.enable_thinking=false`; this is a separate experiment and might be ignored by an endpoint. Model names are discovered from `/v1/models`; when the IDs differ, specify the verified matching ID with `--direct-model` / `--proxy-model`. The probe never silently treats differing IDs as a same-model comparison.
+Supported flags: `--direct-url`, `--proxy-url`, `--suite quick|full|followup|targeted`, `--tool write|submit_result`, `--tool-choice auto|required|named`, `--strict true|false`, `--stream true|false`, `--payload small|large|result`, `--budget 2048|16384`, `--reasoning default|thinking-off`, `--probe-reasoning`, `--direct-model`, `--proxy-model`, `--seed`, `--repeat`, `--max-requests`, `--timeout-ms` (default 600000), `--concurrency` (default 1), `--output-dir`, and `--dry-run`. The followup suite runs scenarios 7–10 as 40 requests when a full run stops during the long cases. A supplied `--seed` is sent to both endpoints; omit it if unsupported. `thinking-off` adds `chat_template_kwargs.enable_thinking=false`; this is a separate experiment and might be ignored by an endpoint. Model names are discovered from `/v1/models`; comparison ends with `NOT_COMPARABLE` unless the pinned model identity is verified on both routes.
 
 Endpoints must be explicit local/private HTTP URLs and cannot contain credentials. The script does not read credential environment variables or send Authorization headers. It makes read-only GETs to `/v1/models`, `/version`, and `/openapi.json`, then posts synthetic requests to `/v1/chat/completions`. It never calls a generated tool.
 
-Each run writes `manifest.json`, `environment.json`, one complete request JSON per request, exact response bytes under `raw-responses/*.bin`, decoded parse details under `parsed-responses/*.json`, `results.jsonl`, `summary.json`, and `report.md` beneath `reports/tool-call-boundary-probe/<timestamp>/` (or `--output-dir`). Raw bytes are authoritative if decoded output differs. For streaming, the parser carries arbitrary chunk boundaries and preserves the original concatenated function argument strings; malformed JSON is never repaired to `{}`. Schema errors are reported separately from JSON syntax errors. A budget is only classified as reached when the provider reports `finish_reason=length` or usage reaches the requested ceiling; malformed arguments below the ceiling are left as malformed/incomplete.
+Each run writes `manifest.json`, `environment.json`, one complete request JSON per request, losslessly compressed response bytes under `raw-responses/*.bin.gz`, decoded parse details under `parsed-responses/*.json.gz`, `results.jsonl`, paired comparison CSV/JSONL, `checksums.txt`, `summary.json`, and `report.md` beneath `reports/tool-call-boundary-probe/<timestamp>/` (or `--output-dir`). Checksums record both the uncompressed response bytes and gzip artifact. Raw bytes are authoritative if decoded output differs. For streaming, the parser carries arbitrary chunk boundaries and preserves the original concatenated function argument strings; malformed JSON is never repaired to `{}`. Schema errors are reported separately from JSON syntax errors. A budget is only classified as reached when the provider reports `finish_reason=length` or usage reaches the requested ceiling; a client interruption is never labeled output truncation.
 
 `constraint_activation` remains `unverified`: a successful `strict:true` call is not proof that grammar decoding was active. The probe records endpoint model IDs, version and OpenAPI responses when exposed. Parser/template/guided-decoding settings require server-side read-only configuration or logs; they are not guessed from successful output.
+
+The earlier Beelink quick report recorded 15,011 ms p95 and a fetch abort, but its manifest omitted the timeout option and the direct endpoint was unreachable. Its 15 second limit is therefore not attributable from the saved evidence: an explicit CLI timeout is consistent with the AbortSignal error, while an external deadline cannot be ruled out; there is no HTTP response showing an upstream timeout. The current probe records the selected timeout and abort source per attempt. Do not interpret those earlier partial streams as model output truncation.
 
 ## Pi boundary
 
