@@ -46,7 +46,7 @@ test('#634 effective instructions use only the provider request, and label defer
     deferredTools: ['read', 'run_check', 'retry_last_failed_check', 'bash'],
   };
   const history = [{ role: 'system', content: 'static contract says call run_check' },
-    { role: 'user', content: 'task handoff says call read' }];
+    { role: 'user', content: '<role_contract source="agents/implementer/AGENTS.md">task handoff says call read</role_contract>' }];
   const payload = { messages: history, tools: [tool('safe_edit'), tool('submit_result')] };
   const outgoing = withProviderCapabilityInstructions(payload, snapshot);
   assert.equal(outgoing.messages.length, 3);
@@ -56,9 +56,9 @@ test('#634 effective instructions use only the provider request, and label defer
   assert.match(instructions, /CURRENTLY EXPOSED TOOLS \(authoritative\): safe_edit, submit_result/);
   assert.match(instructions, /DEFERRED \/ NOT EXECUTABLE IN THIS REQUEST: read, run_check, retry_last_failed_check, bash/);
   assert.match(instructions, /only a subsequent provider request that actually lists a tool/);
-  assert.doesNotMatch(instructions, /CURRENTLY EXPOSED TOOLS \(authoritative\):.*\bread\b/);
+  assert.doesNotMatch(instructions.split('Call only a tool from this list.')[0], /\bread\b/);
   const responses = withProviderCapabilityInstructions({
-    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'coding child' }] }],
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '<coding_role_contract source="trusted">coding child</coding_role_contract>' }] }],
     tools: [tool('submit_result')],
   }, { executableTools: ['submit_result'], deferredTools: [] });
   assert.equal(responses.input.at(-1).type, 'message');
@@ -100,7 +100,10 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
       handlers.get('turn_start')({ turnIndex: 0 });
       const payload = {
         model: 'test',
-        messages: [{ role: 'user', content: 'Task with stale instructions: read, run_check, bash' }],
+        messages: [
+          { role: 'system', content: 'Main Pi system prompt' },
+          { role: 'user', content: '<shared_agent_contract source="agents/AGENTS.md">shared</shared_agent_contract>\\n<role_contract source="agents/implementer/AGENTS.md">Task with stale instructions: read, run_check, bash</role_contract>' },
+        ],
         tools: ['safe_edit', 'submit_result'].map(name => ({ type: 'function', function: { name } })),
       };
       const outbound = handlers.get('before_provider_request')({ payload });
