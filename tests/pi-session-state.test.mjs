@@ -378,6 +378,23 @@ test('validation-repair with submit_result alone submits immediately with no imp
   }
 });
 
+test('coding validation-repair submit-only request remains immediate terminal submission', () => {
+  const payload = {
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'validation repair' }] }],
+    tools: [flatTool('submit_result')],
+    tool_choice: 'required',
+  };
+  const phase = implementerRequestPhaseSnapshot({ codingSession: true, validationRepair: true });
+  assert.equal(phase.mode, 'coding');
+  assert.equal(phase.repairAuthorized, false);
+  const outgoing = guidanceFor(payload, phase);
+  assert.match(outboundGuidance(outgoing), /terminal-only state: call submit_result with no arguments immediately/);
+  assert.doesNotMatch(outboundGuidance(outgoing), /Trusted targeted repair|Isolated coding session|Mutation tools available/);
+  assert.deepEqual(outgoing.input, payload.input);
+  assert.equal(outgoing.tool_choice, 'required');
+  assert.strictEqual(guidanceFor(outgoing, phase), outgoing);
+});
+
 test('resumed Main cannot get generic repair permission without an exact runtime obligation', () => {
   const payload = {
     messages: [{ role: 'user', content: 'restored work' }],
