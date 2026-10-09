@@ -254,7 +254,7 @@ test('fresh submission uses a new submit-only provider request and one truncatio
   try {
     const program = `
       import assert from 'node:assert/strict';
-      const { default: register } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      const { default: registerResultTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
       const tools = new Map();
       const hooks = new Map();
       const caps = [];
