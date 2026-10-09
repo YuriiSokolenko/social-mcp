@@ -417,7 +417,7 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
           { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
         );
         assert.equal(blocked?.block, true, name);
-        assert.match(blocked.reason, /DEFERRED, not executable now/);
+        assert.match(blocked.reason, /provider tool-name contract violation/);
         assert.match(blocked.reason, /CURRENTLY EXPOSED TOOLS \\(authoritative\\): safe_edit, submit_result/);
       }
       // The runtime rechecks phase guards when constructing each NEW request:
@@ -438,14 +438,14 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
         { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
       );
       assert.equal(denied?.block, true, 'zero tools means zero dispatch privileges');
-      assert.match(denied.reason, /DEFERRED, not executable now|not executable in this provider request/);
+      assert.match(denied.reason, /provider tool-name contract violation/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
       env: { ...process.env, PI_STAGE: 'implementer', PI_ISSUE_CONTEXT: issue, PI_RESUME_ACTIVE: 'true', PI_VALIDATION_REPAIR: 'false' },
     });
     assert.equal(result.status, 0, result.stderr + result.stdout);
-    assert.match(result.stderr, /PI_CAPABILITY_LIFECYCLE_MISMATCH/);
+    assert.match(result.stderr, /PI_PROVIDER_TOOL_NAME_VIOLATION/);
     assert.match(result.stdout, /PI_PROVIDER_CAPABILITY_SNAPSHOT/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
