@@ -4569,7 +4569,8 @@ export default function (pi) {
         phase: mainToolProfileTelemetry.phase,
         toolSchemaBytes: mainToolProfileTelemetry.toolSchemaBytesAfter,
         inputTokens: usage?.input ?? null,
-        cacheReadTokens: usage?.cacheRead ?? null,
+        cacheReadTokens: usage?.cacheReadKnown === true ? (usage.cacheRead ?? null) : null,
+        cacheReadTelemetry: usage?.cacheReadKnown === true ? 'known' : 'unknown',
         cacheWriteTokens: usage?.cacheWrite ?? null,
         stopReason: event.message?.stopReason ?? null,
       }));
