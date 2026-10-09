@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from '../scripts/pi-common/session-state.mjs';
+import { capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, mergeNewlyActiveTools, providerToolNames, withProviderCapabilityInstructions } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 
 const LSP = { server_id: 'python', workspace_root: '/work/tree' };
@@ -173,4 +174,153 @@ test('classifyMissingExecutor separates contract failures, deferred tools and un
   assert.equal(classifyMissingExecutor('run_check', snapshot), 'deferred');
   assert.equal(classifyMissingExecutor('bash', snapshot), 'unavailable');
   assert.equal(classifyMissingExecutor('bash', null), 'contract_failure', 'without a snapshot nothing proves the tool was not advertised');
+});
+
+
+const nestedTool = name => ({ type: 'function', function: {
+  name, description: 'Registered schema for ' + name,
+  parameters: { type: 'object', properties: {} },
+} });
+const flatTool = name => ({ type: 'function', name, description: 'Registered schema for ' + name });
+const guidanceFor = (payload, snapshot) => withProviderCapabilityInstructions(payload, {
+  mode: 'main',
+  productiveState: 'action_required',
+  ...snapshot,
+  executableTools: providerToolNames(payload),
+}, { trustedRuntimeEnvelope: true });
+
+function outboundGuidance(payload) {
+  const description = payload.tools?.at(-1)?.function?.description ?? payload.tools?.at(-1)?.description;
+  return description ?? payload.messages?.at(-1)?.content ?? payload.input?.at(-1)?.content?.at(-1)?.text ?? '';
+}
+
+test('restored checkpoint remains terminal-only even if inspection and edit tools are serialized', () => {
+  const payload = {
+    messages: [{ role: 'system', content: 'unchanged' }, { role: 'user', content: 'checkpoint' }],
+    tools: [nestedTool('read'), flatTool('write'), nestedTool('submit_result')],
+    tool_choice: 'required',
+  };
+  const first = guidanceFor(payload, { resumed: true, repairAuthorized: false, preparationState: 'PREPARED' });
+  assert.match(outboundGuidance(first), /terminal-only state: call submit_result with no arguments immediately/);
+  assert.doesNotMatch(outboundGuidance(first), /Mutation tools available|Direct inspection|Prepared fresh Main|begin_result_submission/);
+  assert.equal(first.tool_choice, payload.tool_choice);
+  assert.deepEqual(first.messages, payload.messages, 'no system or user messages injected');
+  assert.deepEqual(providerToolNames(first), providerToolNames(payload));
+  assert.strictEqual(guidanceFor(first, { resumed: true, repairAuthorized: false }), first, 'idempotent repeated hook');
+});
+
+test('restored integration failure routes exclusively through its exact recovery tool', () => {
+  const tools = [nestedTool('read'), flatTool('safe_edit'), nestedTool('submit_result'), flatTool('recover_worktree')];
+  const selected = constrainTerminalRecoveryTools(tools, 'recover_worktree');
+  assert.deepEqual(providerToolNames({ tools: selected }), ['recover_worktree']);
+  const payload = { messages: [{ role: 'user', content: 'restored' }], tools: selected, tool_choice: 'required' };
+  const outgoing = guidanceFor(payload, {
+    resumed: true, terminalRecoveryRequiredTool: 'recover_worktree', repairAuthorized: true,
+  });
+  assert.match(outboundGuidance(outgoing), /use recover_worktree only for the current exact obligation/);
+  assert.doesNotMatch(outboundGuidance(outgoing), /call submit_result|Mutation tools available|Direct inspection|Use run_check/);
+  assert.equal(outgoing.tool_choice, 'required');
+  assert.strictEqual(guidanceFor(outgoing, {
+    resumed: true, terminalRecoveryRequiredTool: 'recover_worktree', repairAuthorized: true,
+  }), outgoing);
+});
+
+test('deferred terminal recovery fails closed without alternative edit, inspection or terminal tools', () => {
+  const available = [nestedTool('read'), flatTool('safe_edit'), nestedTool('submit_result')];
+  const selected = constrainTerminalRecoveryTools(available, 'retry_last_failed_check');
+  assert.deepEqual(selected, [], 'the wire request must hide other exposed tools');
+  let missingCarrier = null;
+  const payload = { messages: [{ role: 'user', content: 'recovery' }], tools: selected };
+  const snapshot = {
+    resumed: true, terminalRecoveryRequiredTool: 'retry_last_failed_check',
+    explainDeferred: true, deferredTools: ['retry_last_failed_check'],
+    executableTools: [],
+  };
+  const outgoing = withProviderCapabilityInstructions(payload, snapshot, {
+    trustedRuntimeEnvelope: true, onMissingCarrier: reason => { missingCarrier = reason; },
+  });
+  assert.equal(missingCarrier, null);
+  assert.deepEqual(providerToolNames(outgoing), []);
+  assert.equal(outgoing.messages.length, 1);
+  assert.match(outboundGuidance(outgoing), /exact tool is unavailable in this request/);
+  assert.match(outboundGuidance(outgoing), /DEFERRED \/ NOT EXECUTABLE IN THIS REQUEST: retry_last_failed_check/);
+  assert.doesNotMatch(outboundGuidance(outgoing), /use retry_last_failed_check only|call submit_result|Mutation tools available|Direct inspection/);
+  assert.strictEqual(withProviderCapabilityInstructions(outgoing, snapshot, {
+    trustedRuntimeEnvelope: true,
+  }), outgoing, 'no duplicated fallback-carrier instruction');
+});
+
+test('validation-repair uses only serialized targeted edits, diagnostics and permitted checks', () => {
+  const payload = {
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'validation diagnostics' }] }],
+    tools: [flatTool('read'), nestedTool('safe_edit'), flatTool('retry_last_failed_check'), nestedTool('run_check'), flatTool('submit_result')],
+    tool_choice: 'auto',
+  };
+  const snapshot = { validationRepair: true, repairAuthorized: true };
+  const outgoing = guidanceFor(payload, snapshot);
+  const contract = outboundGuidance(outgoing);
+  assert.match(contract, /Trusted targeted repair/);
+  assert.match(contract, /Targeted mutation tools available: safe_edit/);
+  assert.match(contract, /retry_last_failed_check only for the exact recorded unresolved failure/);
+  assert.match(contract, /run_check only for permitted focused verification/);
+  assert.match(contract, /After completing the authorized targeted repair, call submit_result/);
+  assert.doesNotMatch(contract, /bash for|repo_search for|begin_coding_session|begin_result_submission|Prepared fresh Main/);
+  assert.deepEqual(outgoing.input, payload.input);
+  assert.equal(outgoing.tool_choice, 'auto');
+  assert.deepEqual(providerToolNames(outgoing), providerToolNames(payload));
+  assert.strictEqual(guidanceFor(outgoing, snapshot), outgoing);
+});
+
+test('validation-repair without a serialized submit_result explains missing terminal action', () => {
+  const payload = {
+    messages: [{ role: 'user', content: 'targeted validation diagnostics' }],
+    tools: [nestedTool('write'), flatTool('run_check')],
+  };
+  const outgoing = guidanceFor(payload, { validationRepair: true, repairAuthorized: true });
+  assert.match(outboundGuidance(outgoing), /Targeted mutation tools available: write/);
+  assert.match(outboundGuidance(outgoing), /terminal action submit_result is unavailable in this request/);
+  assert.doesNotMatch(outboundGuidance(outgoing), /call submit_result with no arguments|Call submit_result|begin_result_submission|repo_search/);
+  assert.deepEqual(outgoing.messages, payload.messages);
+
+  const terminalOnly = guidanceFor(payload, { validationRepair: true, repairAuthorized: false });
+  assert.match(outboundGuidance(terminalOnly), /terminal-only state/);
+  assert.doesNotMatch(outboundGuidance(terminalOnly), /Targeted mutation tools available/);
+});
+
+test('resumed missing submit_result preserves phase status with existing carrier only', () => {
+  const payload = {
+    messages: [{ role: 'user', content: 'restored work' }],
+    tools: [flatTool('read')],
+  };
+  const outgoing = guidanceFor(payload, { resumed: true });
+  assert.equal(outgoing.messages, payload.messages);
+  assert.match(outboundGuidance(outgoing), /terminal action submit_result is unavailable in this request/);
+  assert.doesNotMatch(outboundGuidance(outgoing), /call submit_result with no arguments|Direct inspection/);
+});
+
+test('zero-tool text carrier is safe; zero-tool linked tail has no new carrier', () => {
+  const snapshot = { resumed: true, executableTools: [] };
+  const safe = { messages: [{ role: 'user', content: 'restored' }], tools: [] };
+  const updated = withProviderCapabilityInstructions(safe, snapshot, { trustedRuntimeEnvelope: true });
+  assert.equal(updated.messages.length, 1);
+  assert.match(updated.messages[0].content, /terminal action submit_result is unavailable in this request/);
+  assert.deepEqual(updated.tools, []);
+  const linked = {
+    messages: [{ role: 'user', content: 'restored' }, { role: 'tool', tool_call_id: 'tc1', content: 'result' }],
+    tools: [],
+  };
+  const failures = [];
+  const absent = withProviderCapabilityInstructions(linked, snapshot, {
+    trustedRuntimeEnvelope: true, onMissingCarrier: reason => failures.push(reason),
+  });
+  assert.strictEqual(absent, linked, 'no safe suffix on tool output or new role');
+  assert.deepEqual(failures, ['no_safe_text_or_tool_carrier']);
+});
+
+test('Main static command boundary prohibits grep/find/ls bypass without prescribing invocations', () => {
+  const policy = readFileSync(new URL('../agents/implementer/AGENTS.md', import.meta.url), 'utf8');
+  assert.match(policy, /In \*\*Main\*\*, .grep., .find., and .ls. are runtime-blocked commands/);
+  assert.match(policy, /Never route around those blocks using shell, another tool, or a child handoff/);
+  assert.match(policy, /not a claim about Planner or an isolated coding child/);
+  assert.doesNotMatch(policy, /Call .grep.|Call .find.|Call .ls./);
 });
