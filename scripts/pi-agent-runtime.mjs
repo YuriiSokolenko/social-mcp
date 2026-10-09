@@ -2020,6 +2020,11 @@ export default function (pi) {
         });
       }
 
+      // Metadata-only hook invocations without a tools array do not establish a
+      // new tool-call-capable response: retain the last tool-bearing snapshot.
+      // In particular, do not consume unavailableCapabilityCorrectionPending
+      // until a new serialized tool-bearing request can actually be inspected.
+      // A real zero-tool request uses tools: [] and is always fail-closed.
       if (Array.isArray(patched?.tools)) {
         // Pi built the serialized definitions from its executor registry already.
         // Narrow by the current phase, but never use getAllTools() as a second
@@ -2284,8 +2289,9 @@ export default function (pi) {
       }
       patched = steerCompaction.payload;
       if (!steerCompaction.blocked) {
-        // Last-message runtime instructions are request-local and derived only from
-        // serialized executable definitions, in Main and in the coding child.
+        // Request-local instructions are suffixed to the final existing text
+        // carrier, never introduced as an extra role=user turn after tool output
+        // or a steer (some chat templates reject consecutive/nonalternating roles).
         patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
           trustedRuntimeEnvelope: stage === 'implementer',
         });
@@ -3438,6 +3444,9 @@ export default function (pi) {
     // is authoritative. Synthetic tests must supply realistic provider turns;
     // no production exemption can promote an empty tool surface to unrestricted.
     const requestTools = providerCapabilitySnapshot?.executableTools ?? null;
+    // Request membership precedes alreadySatisfiedTransition and recoveryPolicyTool:
+    // even a single-shot transition or retry_last_failed_check cannot execute
+    // unless Pi serialized that exact provider-facing name on this request.
     const missingAtRequestBoundary = requestTools != null && !requestTools.includes(event.toolName);
     const removedSinceRequest = requestTools?.includes(event.toolName) === true &&
       !activeToolNames.includes(event.toolName);
