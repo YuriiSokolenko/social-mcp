@@ -92,9 +92,22 @@ function cleanGitWorktree(root) {
   return work;
 }
 
-function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Object.keys(files), expectedError = null }) {
+function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Object.keys(files), expectedError = null, upstreamFiles = {}, checkpointCommit = false }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-success-'));
   const work = cleanGitWorktree(root);
+  if (Object.keys(upstreamFiles).length) {
+    const upstream = path.join(root, 'upstream');
+    execFileSync('git', ['clone', '--branch', 'dev', path.join(root, 'remote.git'), upstream]);
+    const upstreamGit = (...args) => execFileSync('git', args, { cwd: upstream, encoding: 'utf8' });
+    configureTestGit(upstreamGit);
+    for (const [file, content] of Object.entries(upstreamFiles)) {
+      fs.mkdirSync(path.dirname(path.join(upstream, file)), { recursive: true });
+      fs.writeFileSync(path.join(upstream, file), content);
+    }
+    upstreamGit('add', '-A');
+    upstreamGit('commit', '-m', 'Update dev upstream');
+    upstreamGit('push', 'origin', 'dev');
+  }
   const context = path.join(root, 'issue.json');
   const resultFile = path.join(root, 'result.json');
   fs.writeFileSync(context, JSON.stringify({
@@ -126,6 +139,11 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
       for (const [file, content] of Object.entries(${JSON.stringify(files)})) {
         fs.mkdirSync(path.dirname(path.join(process.cwd(), file)), { recursive: true });
         fs.writeFileSync(path.join(process.cwd(), file), content);
+      }
+      if (${JSON.stringify(checkpointCommit)}) {
+        const { execFileSync } = await import('node:child_process');
+        execFileSync('git', ['add', '-A']);
+        execFileSync('git', ['commit', '-m', 'checkpoint']);
       }
       try {
         const result = await tool.execute('submit', ${JSON.stringify(params)});
@@ -563,6 +581,36 @@ test('#630 model-supplied files (including a JSON string) never control runtime 
     modeEnv: {},
     params,
     expectedError: /at least one concrete change is required/,
+  });
+});
+
+test('#630 latest dev changes do not leak into publication and committed checkpoints resume', () => {
+  const result = runSuccessfulSubmit({
+    modeEnv: { PI_RESUME_ACTIVE: 'true' },
+    params: {},
+    files: { 'src/from-checkpoint.txt': 'checkpoint output\\n' },
+    checkpointCommit: true,
+    upstreamFiles: { 'src/upstream-only.txt': 'from newer dev\\n' },
+  });
+  assert.equal(result.metadata.outcome, 'changed');
+  assert.deepEqual(result.metadata.files, ['src/from-checkpoint.txt']);
+  assert.deepEqual(result.metadata.changes, ['src/from-checkpoint.txt']);
+});
+
+test('#630 conflicting latest dev cannot write a partial publication file list', () => {
+  runSuccessfulSubmit({
+    modeEnv: {},
+    params: {
+      title: 'Conflicting implementation',
+      summary: 'Test deterministic conflict recovery.',
+      changes: ['Modify base'],
+      files: '["base.txt"]',
+      security_notes: 'No new risk.',
+      limitations: 'None.',
+    },
+    files: { 'base.txt': 'local conflicting change\\n' },
+    upstreamFiles: { 'base.txt': 'upstream conflicting change\\n' },
+    expectedError: /Failed to merge latest dev|Your local changes|conflict/i,
   });
 });
 
