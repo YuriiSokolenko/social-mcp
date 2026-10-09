@@ -296,23 +296,33 @@ export default function (pi) {
         return { content: [{ type: 'text', text: 'Coding closed. Next request: submit_result({resultText}) with complete Markdown; no other tools.' }] };
       },
     });
-    pi.on('before_provider_request', event => {
+    pi.on('before_provider_request', (event, ctx) => {
       if (submission.phase !== 'submission_pending' && submission.phase !== 'failed') return undefined;
       const payload = event?.payload;
       if (!payload) return undefined;
-      const tools = submission.phase === 'submission_pending'
-        ? (payload.tools ?? []).filter(tool => (tool.function?.name ?? tool.name) === 'submit_result')
-        : [];
-      submission.providerEvidence = resultProviderBudgetEvidence(payload, submission.budget);
       submission.providerRequest += 1;
+      if (submission.providerRequest > RESULT_SUBMISSION_MAX_REQUESTS) {
+        submission.phase = 'failed';
+        submission.providerEvidence = null;
+        submission.providerSurfaceVerified = false;
+        console.error('PI_IMPLEMENTER_SUBMISSION_FAILED ' + JSON.stringify({
+          code: 'result_submission_request_limit', checkpoint: { worktree_preserved: true },
+        }));
+        ctx?.abort?.();
+        return { ...payload, tools: [], tool_choice: 'none' };
+      }
+      const restricted = submission.phase === 'submission_pending'
+        ? restrictResultSubmissionPayload(payload)
+        : { ...payload, tools: [], tool_choice: 'none' };
+      submission.providerEvidence = resultProviderBudgetEvidence(payload, submission.budget);
+      submission.providerSurfaceVerified = restricted.tools.length === 1;
       console.log(`PI_IMPLEMENTER_SUBMISSION_REQUEST ${JSON.stringify({
         request: submission.providerRequest, phase: submission.phase,
         budget: submission.budget, actualBudget: submission.providerEvidence.effective,
         verified: submission.providerEvidence.verified, reason: submission.providerEvidence.reason,
-        tools: tools.map(tool => tool.function?.name ?? tool.name),
+        tools: restricted.tools.map(tool => tool.function?.name ?? tool.name),
       })}`);
-      if (tools.length !== 1) return { ...payload, tools: [], tool_choice: 'none' };
-      return { ...payload, tools, tool_choice: 'auto' };
+      return restricted;
     });
     pi.on('tool_call', event => {
       if (event.toolName === 'begin_result_submission') {
@@ -327,9 +337,15 @@ export default function (pi) {
         if (event.toolName !== 'submit_result') {
           return { block: true, reason: 'Implementer submission phase forbids repository evidence and mutations.' };
         }
-        if (submission.control) return { block: true, reason: 'Only one submit_result tool call is allowed per submission request.' };
+        if (submission.control) {
+          submission.control.kind = 'invalid';
+          return { block: true, reason: 'Only one submit_result tool call is allowed per submission request.' };
+        }
         const text = event.input?.resultText;
-        submission.control = typeof text === 'string' && text.trim() && !event.input?.already_satisfied && !event.input?.blocked_reason
+        const onlyResultText = event.input && typeof event.input === 'object' &&
+          !Array.isArray(event.input) && Object.keys(event.input).length === 1 &&
+          Object.hasOwn(event.input, 'resultText');
+        submission.control = onlyResultText && typeof text === 'string' && text.trim()
           ? { kind: 'submit', id: event.toolCallId, executed: false }
           : { kind: 'invalid', id: event.toolCallId, executed: false };
       } else if (submission.phase === 'failed' || submission.phase === 'submitted') {
@@ -369,7 +385,8 @@ export default function (pi) {
       const last = submission.lastAssistant;
       const control = submission.control;
       const complete = last?.reason === 'tooluse' && last.calls.length === 1 &&
-        last.calls[0].id === control?.id;
+        last.calls[0].id === control?.id &&
+        last.calls[0].name === (control?.kind === 'begin' ? 'begin_result_submission' : 'submit_result');
       if (submission.phase === 'coding') {
         if (control?.kind !== 'begin') return;
         submission.control = null;
@@ -379,6 +396,7 @@ export default function (pi) {
           return;
         }
         submission.phase = 'submission_pending';
+        resetSubmissionAttempt();
         pi.setActiveTools?.(['submit_result']);
         console.log(`PI_IMPLEMENTER_SUBMISSION_PHASE ${JSON.stringify({ phase: 'submission_pending', budget: submission.budget })}`);
         await pi.sendUserMessage?.('CODING CLOSED. On this NEW request call only submit_result({resultText}) with your complete Markdown description. No repository tools or structured metadata.', { deliverAs: 'steer' });
