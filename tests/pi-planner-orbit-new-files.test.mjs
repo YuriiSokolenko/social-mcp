@@ -177,10 +177,48 @@ test('context invocation failure differs from missing context; empty output is n
   }
 });
 
-test('fallback scans remain bounded in large directories', t => {
-  const paths = Array.from({ length: 60 }, (_, index) => `src/pkg/existing_${index}.py`);
+test('fallback finds conventions in directories larger than the old 48-entry limit', t => {
+  const paths = Array.from({ length: 93 }, (_, index) => `tests/pi-other-${index}.test.mjs`);
+  paths.push('tests/new-example.test.mjs');
   const root = fixture(t, paths);
-  assert.deepEqual(plannerOrbitSeedTargets({ title: 'Create `src/pkg/new.py`' }, { cwd: root }), []);
+  assert.deepEqual(plannerOrbitSeedTargets({
+    title: 'Create `tests/new-widget.test.mjs`',
+  }, { cwd: root }), ['tests/new-example.test.mjs']);
+});
+
+test('large-directory fallback scans remain bounded and select only existing files', t => {
+  const paths = Array.from({ length: 340 }, (_, index) => `src/pkg/existing_${index}.py`);
+  const root = fixture(t, paths);
+  const issue = { title: 'Create `src/pkg/new.py`' };
+  const targets = plannerOrbitSeedTargets(issue, { cwd: root });
+  assert.equal(targets.length, 1);
+  assert.ok(paths.includes(targets[0]));
+  assert.deepEqual(plannerOrbitSeedTargets(issue, { cwd: root }), targets);
+});
+
+test('missing layoutHint source and test targets use existing local conventions', t => {
+  const root = fixture(t, ['src/pkg/known.py', 'tests/pkg/test_known.py']);
+  const targets = plannerOrbitSeedTargets({ title: 'Add new module', body: '' }, {
+    cwd: root,
+    layoutHint: {
+      sourceTarget: 'src/pkg/new.py',
+      testTarget: 'tests/pkg/test_new.py',
+    },
+  });
+  assert.deepEqual(targets, ['src/pkg/known.py', 'tests/pkg/test_known.py']);
+});
+
+test('missing target with an Orbit line suffix uses the existing file convention', async t => {
+  const root = fixture(t, ['src/pkg/known.py']);
+  const issue = { title: 'Add `src/pkg/new.py:12`', body: '' };
+  assert.deepEqual(plannerOrbitSeedTargets(issue, { cwd: root }), ['src/pkg/known.py']);
+  const attempts = [];
+  const seed = await buildPlannerOrbitSeed(root, issue, {
+    execFile: orbitExec(root, { onContext: target => attempts.push(target) }),
+  });
+  assert.equal(seed.present, true);
+  assert.deepEqual(seed.requestedTargets, ['src/pkg/known.py']);
+  assert.deepEqual(attempts, ['src/pkg/known.py']);
 });
 
 test('fallback is still subject to the existing seed output and time limits', async t => {
