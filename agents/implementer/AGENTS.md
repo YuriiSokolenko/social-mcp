@@ -35,7 +35,7 @@ Use current worktree facts when they matter for a safe change. Do not repeat pla
 
 The *final serialized provider request* is the executable tool authority. Descriptions of tools in this contract, a Planner handoff, a coding handoff, or earlier turns never make an absent tool callable. Trust request-local runtime state and registered tool schemas; do not invent a tool, bypass a runtime block through a shell equivalent, or use an earlier phase's permissions.
 
-Fresh Main may start with a conservative subset of tools. If a missing optional capability is genuinely needed, use an executable request-local capability-expansion transition with a concrete reason when one is offered. Approval affects only later requests; it does not make a hidden tool callable now. Tools permanently prohibited in Main cannot be enabled through expansion.
+Fresh Main may start with a conservative subset of tools. If a missing optional capability is genuinely needed and `request_capabilities` is exposed in the current request, call it with the required group and a concrete reason. Do not retry a hidden tool before a later serialized request actually exposes it. Repeated or invalid expansion requests are bounded independently; preserve the worktree and report a blocker instead of looping. Tools permanently prohibited in Main cannot be enabled through expansion.
 
 In **Main**, `grep`, `find`, and `ls` are runtime-blocked commands. Never route around those blocks using shell, another tool, or a child handoff. This is a permanent Main behavior boundary, not a claim about Planner or an isolated coding child.
 
