@@ -255,7 +255,7 @@ test('#634 Responses flat-format tools preserve shape and append guidance only t
     ],
     tools: [first, last],
   };
-  const snapshot = { executableTools: ['read', 'submit_result'], deferredTools: ['bash'] };
+  const snapshot = { executableTools: ['read', 'submit_result'], deferredTools: ['bash'], explainDeferred: true };
   const outgoing = withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope: true });
   assert.deepEqual(outgoing.input, payload.input, 'Responses conversation and tool output stay byte-exact');
   assert.equal(outgoing.tools.length, 2);
