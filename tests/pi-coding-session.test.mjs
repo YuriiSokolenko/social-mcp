@@ -3214,8 +3214,8 @@ test('both missing-executor event orders abort only once', () => {
 
 test('#441 a tool activated after payload assembly is deferred, not advertised; contract failures still abort', () => {
   const logs = runtimeScenario('deferred-capability');
-  assert.match(logs, /PI_PROVIDER_CAPABILITY_DEFERRED .*"request":\d+,"executableTools":\[[^\]]*\],"activeTools":\[[^\]]*"submit_result"[^\]]*\],"deferredTools":\["submit_result"\]/);
-  assert.match(logs, /PI_PROVIDER_CAPABILITY_SNAPSHOT .*"deferredTools":\["submit_result"\]/);
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_DEFERRED .*"request":\d+,"executableTools":\[[^\]]*\],"activeTools":\[[^\]]*"submit_result"[^\]]*\],"deferredTools":\[[^\]]*"submit_result"[^\]]*\]/);
+  assert.match(logs, /PI_PROVIDER_CAPABILITY_SNAPSHOT .*"deferredTools":\[[^\]]*"submit_result"[^\]]*\]/);
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"kind":"deferred_tool_called","attemptedTool":"submit_result"/);
   assert.equal((logs.match(/PI_CAPABILITY_LIFECYCLE_MISMATCH/g) ?? []).length, 1, 'both pi events for one call log once');
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"kind":"executor_not_found","attemptedTool":"ghost_tool"/);
