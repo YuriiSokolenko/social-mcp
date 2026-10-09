@@ -93,7 +93,7 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
       hints.push(`Mutation tools available: ${edits.join(', ')}. Prefer an exact structural or bounded edit when appropriate; a successful returned preview is enough to continue.`);
     }
     append('accept_mutation_scope', 'Before a new publishable path is mutated, accept_mutation_scope must record that task-specific path and rationale.');
-    append('retry_last_failed_check', 'After fixing the exact unresolved check failure, use retry_last_failed_check for the same recorded verification scope rather than inventing a broader check.');
+    append('retry_last_failed_check', 'Use retry_last_failed_check after fixing the exact unresolved check failure, for the same recorded verification scope rather than inventing a broader check.');
     append('run_check', 'Use focused run_check only for the currently permitted changed state; an infrastructure error does not authorize a shell workaround.');
     const recovery = names.filter(name => ['rollback_last_mutation', 'undo_mutation', 'recover_worktree'].includes(name));
     if (recovery.length) hints.push(`Recovery tools available: ${recovery.join(', ')}; select one only for its documented exact state, not speculative cleanup.`);

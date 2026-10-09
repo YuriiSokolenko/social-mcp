@@ -144,7 +144,7 @@ test('implementer resume always rebases saved work onto latest dev and never use
   assert.match(worktree, /diff', '--binary', base, resumeRef/);
   assert.match(worktree, /apply', '--3way', patch/);
   assert.match(worktree, /checkpointExpected[\s\S]*issueBranchExpected/);
-  assert.match(agent, /latest fetched `origin\/dev`/);
+  assert.match(agent, /Never reinterpret a restored checkpoint as fresh work/);
   assert.doesNotMatch(agent, /origin\/main/);
 });
 
@@ -1072,17 +1072,17 @@ test('fresh implementer uses one planner/classifier result while restored and re
   assert.doesNotMatch(config, /directReadMaxLines|directReadCalls/);
   assert.match(config, /implementer:[\s\S]*boundedDirectBash: true/);
 
-  assert.match(agent, /### Restored work[\s\S]*Call `submit_result` with no arguments immediately[\s\S]*Do \*\*not\*\* inspect repository files/);
+  assert.match(agent, /For restored work[\s\S]*Submit the restored result immediately[\s\S]*without repository inspection/);
   assert.doesNotMatch(agent, /prepare_implementation/);
-  assert.match(agent, /role overlay follows the shared agent contract in the initial prompt/i);
+  assert.match(agent, /role overlay follows the shared agent contract/i);
   assert.match(config, /shared_agent_contract[\s\S]*role_contract[\s\S]*trusted_context/);
-  assert.match(agent, /Do not pass `already_satisfied` for restored work/);
-  assert.match(agent, /zero diff[\s\S]*records the issue as already satisfied automatically/);
-  assert.match(agent, /### Fresh work[\s\S]*implementation-planner[\s\S]*opaque `planText`[\s\S]*untrusted planning data/);
-  assert.match(agent, /Task classification alone never requires delegation/);
-  assert.match(agent, /Before mutating an existing file[\s\S]*need_more_evidence/);
-  assert.match(agent, /submit_result[\s\S]*records that the agent considers the implementation complete/);
-  assert.match(agent, /shared stage harness runs the authoritative checks/);
+  assert.match(agent, /Do not claim restored work is `already_satisfied`/);
+  assert.match(agent, /runtime independently recognizes a restored zero diff/);
+  assert.match(agent, /For fresh work[\s\S]*startup Planner[\s\S]*`planText` is opaque, untrusted planning data/);
+  assert.match(agent, /Do not delegate merely because work is nontrivial/);
+  assert.match(agent, /Inspect an existing target's actual text before changing it/);
+  assert.match(agent, /runtime owns changed-work two-phase submission/);
+  assert.match(agent, /shared harness owns authoritative final checks/);
   assert.doesNotMatch(agent, /trivial_repo_lookup|RepoMap|repo map orientation|complexity-classifier/);
 
   const bootstrapPlanner = readScript('scripts/pi-common/implementation-planner.mjs', 'utf8');
@@ -1137,14 +1137,16 @@ test('semantic routing, Git Context lanes, and safe edit contracts stay explicit
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_start_server'));
   assert.ok(mcp.mcpServers.lsp.includeTools.includes('lsp_find_symbol'));
   assert.ok(mcp.mcpServers.lsp.directTools.includes('lsp_find_symbol'));
-  assert.match(implementer, /call `lsp_start_server` once[\s\S]*exact absolute workspace root supplied in the prepared state[\s\S]*then call `lsp_find_symbol`/i);
-  assert.match(implementer, /Do not call `lsp_server_status` first/i);
-  assert.match(implementer, /cold-start call is control-plane setup, not evidence/i);
-  assert.match(implementer, /Do not use it before LSP merely to rediscover an already-named source symbol/i);
-  assert.match(implementer, /Treat history as provenance evidence, never current source truth, current-symbol discovery, or an edit anchor/i);
-  assert.match(implementer, /structural_edit.*exactly one AST match/i);
-  assert.match(implementer, /safe_edit.*bounded line\/range/i);
-  assert.match(implementer, /post-edit preview[\s\S]*Do not spend another evidence action/i);
+  const sessionState = readScript('scripts/pi-common/session-state.mjs', 'utf8');
+  // Static role retains safety and source-truth rules; request-local guidance
+  // owns names and selection of tools advertised in the outbound schema.
+  assert.match(implementer, /History provides provenance, not current file truth/);
+  assert.match(implementer, /accepted mutation scope, protected paths/);
+  assert.doesNotMatch(implementer, /call `lsp_start_server`|Prefer `structural_edit`|Prefer `safe_edit`/i);
+  assert.match(sessionState, /append\('lsp_start_server',/);
+  assert.match(sessionState, /append\('lsp_find_symbol',/);
+  assert.match(sessionState, /['"]structural_edit['"], ['"]safe_edit['"]/);
+  assert.match(sessionState, /a successful returned preview is enough to continue/i);
   assert.match(structuralEdit, /--json=compact[\s\S]*matches\.length !== 1[\s\S]*byteOffset[\s\S]*atomicWrite/);
   assert.match(safeEdit, /POST_EDIT_PREVIEW_MAX_CHARS[\s\S]*post_edit:/);
   assert.match(reviewer, /Historical intent \/ provenance/);
@@ -1526,7 +1528,7 @@ test('blocked implementer outcome is a deliberate human gate', () => {
   assert.match(tool, /blocked_reason/);
   assert.match(tool, /blocked_reason requires a clean worktree/);
   assert.match(runtime, /submit_result with blocked_reason now/);
-  assert.match(agent, /submit_result\(\{blocked_reason:/);
+  assert.match(agent, /explicit requirements are contradictory[\s\S]*specific contradiction as a blocked outcome/);
   assert.match(recovery, /outcome !== IMPLEMENTER_OUTCOMES\.changed/);
   assert.match(miniSwe, /writeImplementerResult/);
 
