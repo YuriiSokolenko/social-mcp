@@ -15,13 +15,9 @@ if (!TYPEBOX_PACKAGE_ROOT) {
 }
 
 const EXPECTED_PROPERTIES = {
-  title: 'Required for fresh changed work: PR title.',
-  summary: 'Required for fresh changed work: PR summary.',
-  changes: 'Required for fresh changed work: concrete repository changes.',
-  already_satisfied: 'Set true only when latest dev already contains the requested end state.',
-  blocked_reason: 'Fresh work only: concrete contradiction that makes a compliant mutation impossible.',
-  security_notes: 'Required for fresh changed work, including an explicit no-impact statement.',
-  limitations: 'Required for fresh changed work, including an explicit none-known statement.',
+  resultText: 'Fresh changed work only: complete Markdown/free-text implementation description on the dedicated submission request.',
+  already_satisfied: 'Fresh work only: explicit, evidence-proven already-satisfied outcome.',
+  blocked_reason: 'Fresh work only: concrete contradictory requirement, verified against the current repository.',
 };
 
 function writeTypeboxLoader(dir) {
@@ -62,7 +58,7 @@ test('registered submit_result schema matches the real Pi TypeBox transport cont
       assert.equal(schema.oneOf, undefined, 'transport schema must not use a union');
       assert.equal(schema.allOf, undefined, 'transport schema must stay flat');
       assert.deepEqual(Object.keys(schema.properties), Object.keys(expectedProperties));
-      assert.deepEqual(schema.required ?? [], [], 'outcome-specific fields remain optional in TypeBox');
+      assert.deepEqual(schema.required ?? [], [], 'explicit terminal outcomes and restored compatibility remain optional in TypeBox');
       for (const [field, description] of Object.entries(expectedProperties)) {
         assert.equal(schema.properties[field].description, description, field + ' description');
         assert.equal(schema.properties[field].anyOf, undefined, field + ' must not be union-shaped');
@@ -74,8 +70,9 @@ test('registered submit_result schema matches the real Pi TypeBox transport cont
         tool.execute('missing-fresh-publication-metadata', {}),
         error => {
           assert.deepEqual(JSON.parse(error.message), {
-            code: 'missing_publication_fields',
-            missing_fields: ['title', 'summary', 'changes', 'security_notes', 'limitations'],
+            code: 'result_submission_not_complete',
+            phase: 'coding',
+            provider_budget_verified: false,
           });
           return true;
         },

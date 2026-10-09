@@ -76,7 +76,7 @@ Use `scout` for narrow repository reconnaissance only when direct deterministic 
 - Prefer `structural_edit` when the intended change should have exactly one AST match; prefer `safe_edit` for a bounded line/range or non-code change, and `edit`/`write` when simpler. A successful mutation's post-edit preview is enough to continue; do not spend another evidence action merely to re-read the same change.
 - Prefer `rollback_last_mutation` when the latest mutation is demonstrably the wrong approach. Use `undo_mutation`/`recover_worktree` only for the exact recovery state they describe.
 - After a successful mutation, use focused `run_check` when exposed. A check infrastructure error is not a product failure and is not a reason to invent a shell workaround.
-- If authoritative current code proves the exact requested end state already exists, fresh work may call `submit_result({already_satisfied:true, changes:[]})`.
+- If authoritative current code proves the exact requested end state already exists, fresh work may call `submit_result({already_satisfied:true})`.
 - If authoritative current code proves explicit issue requirements contradict each other so no compliant implementation exists, a clean worktree may call `submit_result({blocked_reason:"<specific contradiction>"})`.
 
 ### Coding phase
@@ -107,7 +107,7 @@ Do not run full pytest, full-repository Ruff, or CI/control-plane suites before 
 
 If those checks fail, the shared harness starts exactly one focused repair attempt on the same worktree with concrete diagnostics and reruns authoritative checks.
 
-For restored work and harness validation-repair work, call `submit_result({})`. For fresh work with real changes, provide truthful result metadata and the exact repository-relative publishable file set. Runtime rejects mismatches between declared files and the actual worktree/candidate diff and preserves its existing protected-path, mutation-journal, recovery, and terminal-receipt guarantees.
+For restored work and harness validation-repair work, call `submit_result({})` immediately. Fresh changed work uses TWO provider requests: first call nonterminal `begin_result_submission()` after completing coding and focused checks; on the next, dedicated-budget request call ONLY `submit_result({resultText:"..."})` with a single complete Markdown/plain-text description. Do not hand-format PR title, arrays, file paths or security/validation status as tool metadata. The runtime derives changed paths, safe PR title, security caveats and verified checks; model prose never proves a check passed. Once submission begins there are no evidence/mutation tools. If later authoritative checks fail, the harness starts a separate focused validation-repair attempt. The accepted mutation scope, mutation journal, terminal receipt and checkpoint invariants remain enforced.
 
 ## Coding-session contract
 
@@ -121,7 +121,7 @@ This is the canonical post-exploration overlay. Trusted runtime extracts this se
 - After a failing `run_check`, repair the reported diagnostic rather than reopening broad discovery. Bounded repair reads are only for the failing/changed paths. Prefer a localized structural/safe edit; broad replacement is exceptional and shares the runtime-owned broad-mutation limit.
 - Tests should exercise public behavior and public APIs. Do not mutate private/internal implementation state merely to manufacture fixture state unless the issue explicitly requires internal-state testing.
 - Use focused `run_check` when exposed. An infrastructure error is not a product failure; follow runtime guidance instead of inventing a shell workaround.
-- Finish through `submit_result` with the exact publishable file set and truthful metadata when arguments are required. A successful terminal tool ends the stage immediately.
+- For fresh changed work, finish coding with `begin_result_submission()` (nonterminal), then call `submit_result({resultText:"complete Markdown description"})` on the following request. Do not include structured PR metadata. Restored/validation-repair work still uses `submit_result({})`; explicit already-satisfied and blocked outcomes retain their small dedicated payloads. A successful terminal tool ends the stage immediately.
 
 ## Engineering constraints
 
