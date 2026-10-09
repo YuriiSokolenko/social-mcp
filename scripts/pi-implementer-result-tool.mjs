@@ -439,13 +439,15 @@ export default function (pi) {
         })}`);
         return;
       }
+      const providerFailed = last?.providerError ||
+        ['error', 'abort', 'aborted', 'timeout', 'cancelled'].includes(last?.reason);
       const failureKind = !submission.providerEvidence?.verified ? 'budget_unverified'
         : !submission.providerSurfaceVerified ? 'surface_unverified'
-        : last?.providerError ? 'provider_error'
-        : submission.toolExecutionError ? 'tool_execution_failed'
+        : providerFailed ? 'provider_error'
         : last?.reason === 'length' || submission.truncatedToolArguments ? 'truncated'
         : !last?.calls?.length ? 'missing_tool_call'
         : last?.reason !== 'tooluse' ? 'stop_reason_mismatch'
+        : submission.toolExecutionError ? 'tool_execution_failed'
         : control?.kind !== 'submit' ? 'invalid_arguments_or_extra_tools'
         : !control.executed ? 'tool_not_executed' : 'terminal_incomplete';
       console.warn(`PI_IMPLEMENTER_SUBMISSION_OUTCOME ${JSON.stringify({
@@ -465,7 +467,7 @@ export default function (pi) {
         await submissionFailure('result_submission_surface_unverified', 'Unknown provider tool or tool-choice format', ctx);
         return;
       }
-      if (last?.providerError) {
+      if (providerFailed) {
         await submissionFailure('result_submission_provider_error', 'Provider returned an error during terminal submission', ctx);
         return;
       }
