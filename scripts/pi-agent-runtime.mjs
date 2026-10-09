@@ -2289,9 +2289,10 @@ export default function (pi) {
       }
       patched = steerCompaction.payload;
       if (!steerCompaction.blocked) {
-        // Request-local instructions are suffixed to the final existing text
-        // carrier, never introduced as an extra role=user turn after tool output
-        // or a steer (some chat templates reject consecutive/nonalternating roles).
+        // Request-local instructions never introduce an extra role=user turn.
+        // Normal text tails receive a suffix; after tool results or opaque
+        // assistant calls, use an already serialized tool description instead.
+        // Tool output bytes, role ordering, and linked call IDs remain unchanged.
         patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
           trustedRuntimeEnvelope: stage === 'implementer',
         });
