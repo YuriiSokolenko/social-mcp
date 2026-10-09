@@ -2123,9 +2123,11 @@ export default function (pi) {
           const selected = tools.filter(tool =>
             controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
           );
+          // Exact recovery is the only permissible route. A missing/deferred
+          // definition must leave an empty wire surface, never restore the
+          // otherwise visible edit, inspection, or terminal tools.
+          tools = selected;
           if (selected.length) {
-            tools = selected;
-
             console.warn('PI_TERMINAL_RECOVERY_TOOL_SURFACE ' + JSON.stringify({
               stage,
               obligationKey: terminalRecoveryState?.obligationKey ?? null,
@@ -2171,6 +2173,11 @@ export default function (pi) {
           preparationState: controller.preparationState,
           resumed: resumedImplementer,
           validationRepair,
+          // External validation-repair is a runner-authorized diagnostic stage;
+          // a coding repair window is armed only by an actual failed check.
+          // Neither grants any tool outside the final serialized definitions.
+          codingRepair: Boolean(codingSession && codingRepairWindowActive()),
+          repairAuthorized: Boolean(validationRepair || (codingSession && codingRepairWindowActive())),
           verificationState: controller.verificationLifecycleState(),
           terminalRecoveryRequiredTool,
           explainDeferred: Boolean(
