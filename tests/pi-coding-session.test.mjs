@@ -280,7 +280,7 @@ function runtimeScenario(mode) {
       const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
       const codingValidationUrl = ${JSON.stringify(new URL('../scripts/pi-common/coding-session-validation.mjs', import.meta.url).href)};
       const { default: runtime, providerErrorStatus, codingSessionArgumentValidation } = await import(runtimeUrl);
-      const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile } = await import(terminalReceiptUrl);
+      const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile, assertSuccessfulTerminalReceipt } = await import(terminalReceiptUrl);
       const { writeImplementerResult } = await import(implementerResultUrl);
       const { assertCodingBehavioralValidation, recordCodingBehavioralValidation } = await import(codingValidationUrl);
       assert.equal(providerErrorStatus({ stopReason: 'error', errorMessage: '400: {"message":"validation error","type":"Bad Request","code":400}' }), 400);
@@ -311,6 +311,7 @@ function runtimeScenario(mode) {
       const childCaps = [];
       const steers = [];
       const sessionRequests = [];
+      const heldTerminalRequests = [];
       const registrations = [];
       const registered = new Map();
       let aborts = 0;
@@ -1199,6 +1200,7 @@ function runtimeScenario(mode) {
         else assert.equal(request.task.match(/Planner fact marker/g)?.length, 1, 'prepared repository facts are handed off exactly once');
         assert.doesNotMatch(request.task, /## Startup|Available delegated agents|Repository access routing|PARENT_TRANSCRIPT_ONLY_MARKER/);
         sessionRequests.push({ task: request.task, maxTokens: process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, spec: JSON.parse(process.env.PI_CODING_SESSION) });
+        if (mode.startsWith('terminal-binding-')) { heldTerminalRequests.push(request); return; }
         if (mode === 'cancel') { signal.abort(); return; }
         await runFork(request);
       });
@@ -2005,6 +2007,105 @@ function runtimeScenario(mode) {
 
       handlers.get('turn_start')({ turnIndex: turn });
       assert.ok(active.includes('begin_coding_session'));
+
+      if (mode.startsWith('terminal-binding-')) {
+        // Registered tool.execute, real runStructuredSubagent request/response event path,
+        // real receipt checker and module-global production lease. No test delegate().
+        const key = 'PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID';
+        const previous = process.env[key];
+        if (mode === 'terminal-binding-overlap') process.env[key] = 'outer-terminal-id';
+        else delete process.env[key];
+        const expectedPrevious = process.env[key];
+        const originalSetTimeout = globalThis.setTimeout;
+        const executions = [];
+        const executeCoding = (callId, controller) => {
+          const running = tools.get('begin_coding_session').execute(
+            callId, { reason: 'Verify terminal session lifetime' }, controller.signal, null, ctx,
+          );
+          executions.push(running);
+          return running;
+        };
+        function completeWithBoundReceipt(request) {
+          writeImplementerResult(resultFile, {
+            title: 'Already satisfied', summary: 'No repository change needed',
+            outcome: 'already_satisfied', changes: [], files: [],
+          });
+          const receipt = createSuccessfulTerminalReceipt({ cwd, resultFile, env: process.env });
+          assert.equal(receipt.session_id, request && JSON.parse(process.env.PI_CODING_SESSION).sessionId);
+          assert.equal(receipt.session_id, process.env[key], 'receipt belongs to active lease');
+          writeTerminalReceiptFile(terminal, receipt);
+          respond(request, { status: 'completed', result: { kind: 'text', value: 'submitted' }, usage: { output: 4 } });
+          return receipt;
+        }
+        try {
+          const controller = new AbortController();
+          // For the deadline case, shorten only the real delegation timer in this
+          // isolated child process. Its callback, cleanup and error are unmodified.
+          if (mode === 'terminal-binding-timeout') {
+            globalThis.setTimeout = (callback, ms, ...args) =>
+              originalSetTimeout(callback, ms > 5000 ? 5 : ms, ...args);
+          }
+          const first = executeCoding('first', controller);
+          assert.equal(heldTerminalRequests.length, 1, 'first registered execute launched one delegation');
+          const bound = sessionRequests[0].spec.sessionId;
+          assert.equal(process.env[key], bound, 'active ID bound before delegation');
+          if (mode === 'terminal-binding-overlap') {
+            await assert.rejects(
+              executeCoding('overlap', new AbortController()),
+              error => error.code === 'PI_IMPLEMENTER_TERMINAL_SESSION_OVERLAP',
+            );
+            assert.equal(heldTerminalRequests.length, 1, 'overlap cannot launch a fork');
+            assert.equal(process.env[key], bound, 'overlap did not clobber active binding');
+            // Rejected overlap must not consume maxSessions or write a receipt.
+            writeImplementerResult(resultFile, {
+              title: 'Already satisfied', summary: 'No repository change needed',
+              outcome: 'already_satisfied', changes: [], files: [],
+            });
+            const good = createSuccessfulTerminalReceipt({ cwd, resultFile, env: process.env });
+            writeTerminalReceiptFile(terminal, { ...good, session_id: 'foreign-session' });
+            assert.throws(
+              () => assertSuccessfulTerminalReceipt({
+                cwd, resultFile, env: process.env, expectedSessionId: bound,
+              }),
+              /terminal_receipt_foreign_session/,
+              'current session rejects a receipt for a different fork',
+            );
+            completeWithBoundReceipt(heldTerminalRequests[0]);
+            const finished = await first;
+            assert.equal(finished.terminate, true, 'valid receipt ends the real runtime path');
+            assert.equal(finished.details.successful_final_submission, true);
+          } else if (mode === 'terminal-binding-abort') {
+            controller.abort('cancellation test');
+            await assert.rejects(first, /delegation was aborted/, 'real AbortSignal rejects pending delegation');
+          } else {
+            await assert.rejects(first, /did not return within/, 'real delegation deadline rejects pending call');
+          }
+          assert.equal(process.env[key], expectedPrevious, 'completed/failed path restores exact prior binding');
+          assert.equal(Object.hasOwn(process.env, key), mode === 'terminal-binding-overlap');
+          globalThis.setTimeout = originalSetTimeout;
+          const second = executeCoding('independent', new AbortController());
+          assert.equal(heldTerminalRequests.length, 2, 'a later independent fork is permitted');
+          assert.equal(process.env[key], sessionRequests[1].spec.sessionId);
+          assert.notEqual(sessionRequests[1].spec.sessionId, bound);
+          completeWithBoundReceipt(heldTerminalRequests[1]);
+          const again = await second;
+          assert.equal(again.terminate, true, 'later fork validates its own receipt');
+          assert.equal(process.env[key], expectedPrevious, 'second lease restores initial binding');
+          await assert.rejects(executeCoding('over-limit', new AbortController()), error => error.code === 'max_sessions');
+          assert.equal(heldTerminalRequests.length, 2, 'rejected overlap did not use a session slot');
+          console.log('TERMINAL_BINDING_' + mode.toUpperCase().replaceAll('-', '_') + '_OK');
+        } finally {
+          globalThis.setTimeout = originalSetTimeout;
+          // Teardown unblocks all pending requests even when an assertion fails.
+          for (const request of heldTerminalRequests) {
+            respond(request, { status: 'completed', result: { kind: 'text', value: 'teardown' }, usage: { output: 1 } });
+          }
+          await Promise.allSettled(executions);
+          if (previous === undefined) delete process.env[key];
+          else process.env[key] = previous;
+        }
+        process.exit(0);
+      }
       if (mode === 'forbidden-capability') {
         await assert.rejects(
           () => tools.get('begin_coding_session').execute('forbidden-capability', {
@@ -2333,6 +2434,19 @@ function runtimeScenario(mode) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+
+test('#652 registered coding execute rejects overlap before env/session mutation, validates session-bound receipts and allows next call', () => {
+  assert.match(runtimeScenario('terminal-binding-overlap'), /TERMINAL_BINDING_TERMINAL_BINDING_OVERLAP_OK/);
+});
+
+test('#652 real AbortSignal cancellation releases coding terminal binding', () => {
+  assert.match(runtimeScenario('terminal-binding-abort'), /TERMINAL_BINDING_TERMINAL_BINDING_ABORT_OK/);
+});
+
+test('#652 real delegation timer expiry releases coding terminal binding', () => {
+  assert.match(runtimeScenario('terminal-binding-timeout'), /TERMINAL_BINDING_TERMINAL_BINDING_TIMEOUT_OK/);
+});
 
 test('2K parent -> begin_coding_session -> isolated 16K coding child writes code + tests, checks, submits; parent ends', () => {
   const logs = runtimeScenario('flow');
