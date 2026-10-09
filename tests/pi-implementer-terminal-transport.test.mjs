@@ -97,6 +97,17 @@ test('#665 Responses and legacy Pi tool envelopes use the same auto strategy', (
 test('#665 terminal provider envelope fails closed for unknown or conflicting tools and choices', () => {
   const invalid = [
     { ...payload(), tools: [] },
+    // A nullish legacy entry must never throw inside before_provider_request.
+    { ...payload(), tools: [null] },
+    { ...payload(), tools: [undefined] },
+    { ...payload(), tools: [false] },
+    { ...payload(), tools: [{ function: null }] },
+    // Do not silently filter an inconsistent provider tool surface: fail closed.
+    { ...payload(), tools: [
+      { type: 'function', function: { name: 'read' } },
+      { type: 'function', function: { name: 'write' } },
+      submitTool(),
+    ] },
     { ...payload(), tools: [submitTool(), { type: 'function', function: { name: 'read' } }] },
     { ...payload(), tools: [submitTool(), submitTool()] },
     { ...payload(), tools: [{ type: 'function', function: { name: 'read' } }] },
@@ -207,6 +218,23 @@ test('#665 #662 valid-JSON tool_calls + stop without trusted execution fail clos
     assert.equal(h.pi.aborted, true, 'bounded correction exhausted; never accept raw SSE');
     assert.equal(h.steers.length, 2, 'no third model correction');
   }
+});
+
+test('#665 active terminal provider hook rejects a mixed tool list instead of filtering', async () => {
+  const h = fakePi();
+  await enterSubmission(h);
+  const restricted = await h.emit('before_provider_request', { payload: {
+    ...payload(), tools: [
+      { type: 'function', function: { name: 'read' } },
+      { type: 'function', function: { name: 'write' } },
+      submitTool(),
+    ],
+  } });
+  assert.deepEqual(restricted.tools, []);
+  assert.equal(restricted.tool_choice, 'none');
+  await h.emit('message_end', { message: assistant('stop') });
+  await h.emit('turn_end');
+  assert.equal(h.pi.aborted, true, 'mixed provider surface fails closed without correction');
 });
 
 test('#665 truncated stream retries once with verified 8192 budget', async () => {
