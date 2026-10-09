@@ -26,7 +26,7 @@ import {
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -2120,12 +2120,14 @@ export default function (pi) {
           })}`);
         }
         if (terminalRecoveryRequiredTool) {
-          const selected = tools.filter(tool =>
-            controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
+          const selected = constrainTerminalRecoveryTools(
+            tools, terminalRecoveryRequiredTool, controllerToolName
           );
+          // Exact recovery is the only permissible route. A missing/deferred
+          // definition must leave an empty wire surface, never restore the
+          // otherwise visible edit, inspection, or terminal tools.
+          tools = selected;
           if (selected.length) {
-            tools = selected;
-
             console.warn('PI_TERMINAL_RECOVERY_TOOL_SURFACE ' + JSON.stringify({
               stage,
               obligationKey: terminalRecoveryState?.obligationKey ?? null,
@@ -2167,12 +2169,17 @@ export default function (pi) {
           // Phase and startup facts are trusted controller/runtime state, not Planner
           // prose or the child handoff. The guidance builder uses them only to
           // choose advice for definitions actually serialized above.
-          mode: codingSession ? 'coding' : 'main',
-          preparationState: controller.preparationState,
-          resumed: resumedImplementer,
-          validationRepair,
-          verificationState: controller.verificationLifecycleState(),
-          terminalRecoveryRequiredTool,
+          ...implementerRequestPhaseSnapshot({
+            codingSession: Boolean(codingSession),
+            preparationState: controller.preparationState,
+            resumed: resumedImplementer,
+            validationRepair,
+            // The child repair window derives only from actual validation
+            // failure; it must not become a Main repair authorization.
+            codingRepair: Boolean(codingSession && codingRepairWindowActive()),
+            verificationState: controller.verificationLifecycleState(),
+            terminalRecoveryRequiredTool,
+          }),
           explainDeferred: Boolean(
             unavailableCapabilityCorrectionPending ||
             (terminalRecoveryRequiredTool && !executableTools.includes(terminalRecoveryRequiredTool))

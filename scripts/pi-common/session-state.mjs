@@ -28,6 +28,37 @@ export function providerToolNames(payload) {
 }
 
 /**
+ * Produce phase facts for the outbound Implementer snapshot from trusted
+ * controller/runtime state. A resumed checkpoint never grants a general repair
+ * window: only a concrete, separately selected terminalRecoveryRequiredTool
+ * can override its terminal-only routing. The coding child owns its own repair
+ * gate and must retain its isolated-session instructions.
+ */
+export function implementerRequestPhaseSnapshot({
+  codingSession = false,
+  preparationState = null,
+  resumed = false,
+  validationRepair = false,
+  codingRepair = false,
+  verificationState = null,
+  terminalRecoveryRequiredTool = null,
+} = {}) {
+  const coding = codingSession === true;
+  const restored = resumed === true;
+  const validation = validationRepair === true;
+  return {
+    mode: coding ? 'coding' : 'main',
+    preparationState,
+    resumed: restored,
+    validationRepair: validation,
+    codingRepair: coding && codingRepair === true,
+    repairAuthorized: !coding && !restored && validation,
+    verificationState,
+    terminalRecoveryRequiredTool,
+  };
+}
+
+/**
  * Request-local routing, never a second capability registry. Keep instructions
  * small: the registered descriptions and JSON schemas remain the canonical
  * explanation of each tool's arguments. Every named callable tool below must
@@ -35,7 +66,7 @@ export function providerToolNames(payload) {
  * extension/MCP functions.
  */
 export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
-  const names = [...new Set(serializedToolNames)];
+  const names = [...new Set(Array.isArray(serializedToolNames) ? serializedToolNames : [])];
   const exposed = new Set(names);
   const has = name => exposed.has(name);
   const hints = [];
@@ -44,20 +75,65 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
   const preparation = snapshot?.preparationState;
   const resumed = snapshot?.resumed === true;
   const validationRepair = snapshot?.validationRepair === true;
+  // Runtime authorization alone is not a capability grant: every routing hint
+  // must also match a tool in this exact serialized provider request.
+  const authorizedRepair = mode === 'main' && !resumed && validationRepair &&
+    snapshot?.repairAuthorized === true;
   const terminalOnly = names.length === 1 && has('submit_result');
   const append = (name, guidance) => { if (has(name)) hints.push(guidance); };
 
-  if (resumed || validationRepair) {
-    append('submit_result', 'Restored/validation-repair work: submit_result with no arguments immediately, except when the runtime has supplied a specific targeted integration repair.');
-  } else if (snapshot?.terminalRecoveryRequiredTool && has(snapshot.terminalRecoveryRequiredTool)) {
-    hints.push(`Terminal recovery: use ${snapshot.terminalRecoveryRequiredTool} only for the current exact obligation; do not restart broad discovery.`);
-  } else if (has('begin_result_submission')) {
+  // Exact recovery wins over restored/validation-repair submission. Never
+  // advertise a fallback when the required tool is missing or deferred.
+  const requiredRecovery = snapshot?.terminalRecoveryRequiredTool;
+  if (typeof requiredRecovery === 'string' && requiredRecovery.length > 0) {
+    if (has(requiredRecovery)) {
+      hints.push('Terminal recovery: use ' + requiredRecovery + ' only for the current exact obligation; do not edit, inspect, or submit through another route.');
+    } else {
+      hints.push('Terminal recovery remains required, but its exact tool is unavailable in this request. Preserve the worktree; no other action or terminal tool is an alternative.');
+    }
+    return hints.join(' ');
+  }
+
+  // A dedicated submit_result-only request is terminal even in a validation
+  // repair attempt. Do not suggest an edit when no repair tool is serialized.
+  if ((resumed || validationRepair) && (terminalOnly || (mode === 'main' && !authorizedRepair))) {
+    append('submit_result', 'Restored/validation-repair terminal-only state: call submit_result with no arguments immediately. Do not inspect, edit, or validate before submission.');
+    if (!has('submit_result')) {
+      hints.push('Restored/validation-repair terminal-only state: the terminal action submit_result is unavailable in this request. Preserve the worktree; do not invent a call or restart fresh work.');
+    }
+    return hints.join(' ');
+  }
+
+  if (authorizedRepair) {
+    hints.push('Trusted targeted repair: address only the current concrete integration or validation diagnostic. This is not fresh work or broad discovery.');
+    if (has('read')) {
+      hints.push('Targeted repair evidence: read only a runtime-authorized failing or changed path; do not browse the repository.');
+    }
+    const edits = names.filter(name => ['structural_edit', 'safe_edit', 'edit', 'write'].includes(name));
+    if (edits.length) {
+      hints.push('Targeted mutation tools available: ' + edits.join(', ') + '. Fix only the diagnosed issue within accepted mutation scope.');
+    }
+    append('accept_mutation_scope', 'accept_mutation_scope may record only the specifically authorized repair path; it does not widen the task.');
+    append('retry_last_failed_check', 'Use retry_last_failed_check only for the exact recorded unresolved failure after its targeted fix.');
+    append('run_check', 'Use run_check only for permitted focused verification of the targeted diagnostic, not broad tests.');
+    const recovery = names.filter(name => ['rollback_last_mutation', 'undo_mutation', 'recover_worktree'].includes(name));
+    if (recovery.length) {
+      hints.push('Targeted recovery tools available: ' + recovery.join(', ') + '; use only for the concrete failed mutation or worktree obligation.');
+    }
+    append('submit_result', 'After completing the authorized targeted repair, call submit_result with no arguments; do not restart planning or broad inspection.');
+    if (!has('submit_result') && (resumed || validationRepair)) {
+      hints.push('The terminal action submit_result is unavailable in this request; do not invent a terminal call.');
+    }
+    return hints.join(' ');
+  }
+
+  if (has('begin_result_submission')) {
     hints.push('Changed work: finish the necessary changes and focused checks, then call begin_result_submission. The next provider request carries the dedicated terminal submission; do not combine the two requests.');
   } else if (terminalOnly) {
     hints.push('Terminal-only request: call submit_result with the resultText required for completed changed work, or the exact small outcome required by trusted recovery state. Do not inspect or mutate.');
   }
 
-  if (!(resumed || validationRepair || terminalOnly) && !snapshot?.terminalRecoveryRequiredTool) {
+  if (!terminalOnly) {
     if (mode === 'coding') {
       hints.push('Isolated coding session: the parent tool inventory and navigation policy are not executable here. Work from the compact handoff; make a permitted change or resolve one concrete blocker.');
     } else if (preparation === 'PREPARED') {
@@ -99,6 +175,21 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
     if (recovery.length) hints.push(`Recovery tools available: ${recovery.join(', ')}; select one only for its documented exact state, not speculative cleanup.`);
   }
   return hints.join(' ');
+}
+
+/**
+ * Terminal recovery is a strict single-tool obligation, not a preference.
+ * If the exact executor is missing/deferred, the outbound tool surface is
+ * empty rather than offering otherwise-active edit/inspection/terminal tools.
+ * The caller supplies the same canonicalizer used by the controller gate.
+ */
+export function constrainTerminalRecoveryTools(tools, requiredTool, canonicalize = name => name) {
+  if (!requiredTool) return tools;
+  if (!Array.isArray(tools)) return [];
+  return tools.filter(tool => {
+    const name = tool?.function?.name ?? tool?.name;
+    return typeof name === 'string' && canonicalize(name) === requiredTool;
+  });
 }
 
 /**
@@ -216,7 +307,9 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
     ...(deferred.length
       ? [`DEFERRED / NOT EXECUTABLE IN THIS REQUEST: ${deferred.join(', ')}. Do not call these now; only a subsequent provider request that actually lists a tool can enable its use.`]
       : []),
-    'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
+    snapshot.terminalRecoveryRequiredTool
+      ? 'Exact terminal-recovery obligations forbid alternative actions, including when the required tool is deferred. Preserve the worktree if it is unavailable.'
+      : 'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
   ].filter(Boolean).join(' ');
   if (Array.isArray(payload.tools) && payload.tools.length > 0) {
     // Always prefer the same tool-description carrier on every tool-bearing

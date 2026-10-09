@@ -1059,6 +1059,8 @@ test('stage configuration owns every model prompt and injects the shared contrac
     });
     assert.match(resumedPrompt, /restored checkpoint work is already in this worktree/);
     assert.match(resumedPrompt, /Call submit_result with no arguments immediately/);
+    assert.match(resumedPrompt, /Only if the trusted runtime selects an exact terminal recovery tool/);
+    assert.doesNotMatch(resumedPrompt, /If submit_result reports a concrete problem, fix only that problem/);
     assert.doesNotMatch(resumedPrompt, /prepare_implementation|runtime_prepared_implementation_state/);
     assert.match(resumedPrompt, /Do not pass already_satisfied for restored work/);
     assert.match(resumedPrompt, /zero-diff restored work is completed by runtime automatically/);

@@ -169,7 +169,7 @@ The worktree was preflight-synced with current ${baseBranch()}.
     const runtimeState = resumed
       ? `Runtime resume state: restored ${resumeSource} work is already in this worktree.
 Call submit_result with no arguments immediately. Do not inspect, summarize, validate, or plan the restored files first.
-If submit_result reports a concrete problem, fix only that problem and retry. Do not pass already_satisfied for restored work; zero-diff restored work is completed by runtime automatically.`
+Only if the trusted runtime selects an exact terminal recovery tool after a concrete failure may you leave the terminal-only path; use that tool only when this request exposes it. Otherwise preserve the restored worktree. Do not pass already_satisfied for restored work; zero-diff restored work is completed by runtime automatically.`
       : PREPARED_IMPLEMENTATION_PLACEHOLDER;
 
     return `${agentContractPrompt('implementer', env)}
