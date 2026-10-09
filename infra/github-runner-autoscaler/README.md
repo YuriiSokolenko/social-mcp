@@ -183,6 +183,40 @@ upgrade or restart Docker Engine or stop containers. Run it on Beelink N150
 with `sudo bash <absolute-script-path>` after deployment smoke jobs have
 drained.
 
+### Implementer resume terminal lifecycle
+
+The Implementer result tool snapshots restored-work status **when registering**
+`submit_result`. The version-pinned `pi-subagents@0.76.1` foreground
+adapter independently checks the current environment and terminal receipt when
+deciding whether its coding child may end on a tool-use turn without final
+assistant prose. Both call the same `restoredWork(env)` predicate defined in
+`patch-pi-subagents-planner-terminal.mjs`; its function source is injected
+into the pinned adapter during image build. This exemption is **Implementer
+only**; Planner's `submit_plan` receipt checks remain separate.
+
+- `PI_RESUME_ACTIVE=true` means restored work and permits the runtime-owned
+  `submit_result({})` contract even without `PI_RESUME_PATCH`. The comparison
+  is case-sensitive.
+- When `PI_RESUME_ACTIVE` is **unset**, `PI_RESUME_PATCH` is a fallback:
+  the named path must exist and have a nonzero filesystem size. An empty,
+  missing, inaccessible or unset path does **not** count as restored work.
+- An explicitly set `PI_RESUME_ACTIVE=false`, empty string, or any value
+  other than `true` disables patch fallback, even if `PI_RESUME_PATCH`
+  points at a nonempty file. Thus `unset` and `false` are not equivalent.
+- `PI_VALIDATION_REPAIR=true` is a **separate** runtime-owned mode: it permits
+  empty arguments and binds the receipt to the exact
+  `validation-repair:<attempt>` rather than `primary` attempt.
+
+For changed, fresh work the terminal call still requires
+`submit_result({resultText:"..."})`. For restored or validation-repair work
+the runtime supplies the metadata and the call must be `submit_result({})`.
+The `already_satisfied` and `blocked_reason` outcomes retain their own
+strict argument checks. **No empty call is sufficient by itself:** the coding
+child must have one successful, complete `submit_result` transport and a
+current run/issue/attempt/session-bound receipt matching the exact metadata
+SHA-256. Earlier recoverable tool errors may coexist with that receipt;
+provider, timeout, cancellation or transport failures do not qualify.
+
 Pi MCP Adapter `5.1.0` declares support through `pi-ai@^1.0.0`, although its
 Pi host dependency is imported as types only. The image applies the tracked,
 version-guarded peer range patch in `patch-pi-mcp-adapter.mjs` after installing
