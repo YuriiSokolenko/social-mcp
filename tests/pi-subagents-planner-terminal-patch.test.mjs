@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
   acceptedTerminalPlannerReceipt,
+  acceptedTerminalImplementerReceipt,
   patchPiSubagentsSource,
 } from '../infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs';
 
@@ -100,16 +102,24 @@ function upstreamDecisionFixture() {
 
 function runPatchedDecision({ agentName = 'implementation-planner', messages = validMessages(),
   state = validState(), errInfo = { hasError: true, exitCode: 4, errorType: 'read', details: 'ENOENT' },
-  readError = null } = {}) {
+  readError = null, receipt = null, metadata = null, sessionId = 'coding-632' } = {}) {
   const patched = patchPiSubagentsSource(upstreamDecisionFixture());
-  const executable = patched.replace(/^import \{[^\n]+\} from "node:fs";\n/, '');
+  const executable = patched.replace(/^import \{[^\n]+\} from "node:fs";\nimport \{ createHash \} from "node:crypto";\n/, '');
   const warnings = [];
   const ctx = {
-    Buffer,
-    process: { env: { PI_PLANNER_EVIDENCE_STATE_FILE: '/private/planner-sidecar.json',
-      PI_PLANNER_LIFECYCLE_ID: receiptId } },
-    readFileSync: () => {
+    Buffer, createHash,
+    process: { env: {
+      PI_PLANNER_EVIDENCE_STATE_FILE: '/private/planner-sidecar.json',
+      PI_PLANNER_LIFECYCLE_ID: receiptId,
+      PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID: sessionId,
+      PI_TERMINAL_RESULT_FILE: '/private/terminal-receipt.json',
+      PI_IMPLEMENTER_RESULT_FILE: '/private/implementer-result.json',
+      PI_VALIDATION_RUN_ID: 'run-632', PI_ISSUE: '632',
+    } },
+    readFileSync: (name) => {
       if (readError) throw readError;
+      if (name === '/private/terminal-receipt.json') return JSON.stringify(receipt);
+      if (name === '/private/implementer-result.json') return Buffer.from(JSON.stringify(metadata));
       return JSON.stringify(state);
     },
     hasEmptyTerminalAssistantResponse: () => false,
@@ -183,4 +193,97 @@ test('runner build applies pinned patch before saving Pi package seed', () => {
   const seed = dockerfile.indexOf('cp -a \/home\/runner\/\.pi\/agent\/npm \/opt\/pi-package-seed/');
   assert.ok(install >= 0 && install < patch && patch < seed);
   assert.match(dockerfile, /node --check \/home\/runner\/\.pi\/agent\/npm\/node_modules\/pi-subagents\/src\/runs\/foreground\/execution\.js/);
+});
+
+function validImplementerEnvelope() {
+  const resultText = 'Implemented feature and focused checks.';
+  const metadata = {
+    outcome: 'changed', result_text: resultText, summary: resultText,
+    files: ['src/a.py'], accepted_scope: { accepted: [{ path: 'src/a.py' }] },
+  };
+  const bytes = Buffer.from(JSON.stringify(metadata));
+  const receipt = {
+    kind: 'pi_terminal_receipt', schema_version: 2, status: 'success',
+    outcome: 'changed', run_id: 'run-632', issue: '632', attempt_id: 'primary',
+    session_id: 'coding-632', candidate_revision: {
+      base_commit: 'a'.repeat(40), digest: 'b'.repeat(64),
+    },
+    result_metadata_sha256: createHash('sha256').update(bytes).digest('hex'),
+  };
+  const messages = [
+    { role: 'assistant', stopReason: 'toolUse', content: [
+      { type: 'toolCall', id: 'done-632', name: 'submit_result', arguments: { resultText } },
+    ] },
+    { role: 'toolResult', toolCallId: 'done-632', toolName: 'submit_result',
+      isError: false, content: [{ type: 'text', text: 'Result recorded' }] },
+  ];
+  const env = {
+    PI_VALIDATION_RUN_ID: 'run-632', PI_ISSUE: '632',
+  };
+  return { messages, metadata, receipt, env };
+}
+
+test('#632 completed coding child terminal toolUse needs no final assistant prose or provider retry', () => {
+  const { messages, metadata, receipt, env } = validImplementerEnvelope();
+  const earlierFailure = { role: 'toolResult', toolCallId: 'read-1', toolName: 'read',
+    isError: true, content: [{ type: 'text', text: 'ENOENT' }] };
+  assert.equal(acceptedTerminalImplementerReceipt(
+    [earlierFailure, ...messages], receipt, Buffer.from(JSON.stringify(metadata)),
+    env, 'coding-632', { hasError: true, errorType: 'read' }), true);
+  const { result, warnings } = runPatchedDecision({
+    agentName: 'implementer-coding-session', messages: [earlierFailure, ...messages],
+    receipt, metadata,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(warnings, []);
+});
+
+test('#632 adapter rejects stale/foreign/tampered receipt and incomplete terminal transport', () => {
+  const cases = [
+    ['foreign run', ({receipt}) => { receipt.run_id = 'other'; }],
+    ['foreign issue', ({receipt}) => { receipt.issue = '633'; }],
+    ['foreign session', ({receipt}) => { receipt.session_id = 'old'; }],
+    ['foreign attempt', ({receipt}) => { receipt.attempt_id = 'validation-repair:1'; }],
+    ['candidate digest absent', ({receipt}) => { receipt.candidate_revision.digest = ''; }],
+    ['metadata tampered', ({metadata}) => { metadata.result_text = 'changed after receipt'; }],
+    ['wrong model text', ({messages}) => { messages[0].content[0].arguments.resultText = 'untrusted mismatch'; }],
+    ['duplicate tool', ({messages}) => { messages[0].content.push({...messages[0].content[0]}); }],
+    ['wrong call', ({messages}) => { messages[1].toolCallId = 'unknown'; }],
+    ['failed tool', ({messages}) => { messages[1].isError = true; }],
+    ['missing tool result', ({messages}) => { messages.pop(); }],
+    ['truncated tool transport', ({messages}) => { messages[0].stopReason = 'length'; }],
+    ['provider error', ({messages}) => { messages[0].errorMessage = 'provider failed'; }],
+    ['unauthorized file', ({metadata}) => { metadata.files = ['src/evil.py']; }],
+  ];
+  for (const [name, edit] of cases) {
+    const sample = validImplementerEnvelope();
+    edit(sample);
+    const result = runPatchedDecision({
+      agentName: 'implementer-coding-session',
+      messages: sample.messages, metadata: sample.metadata, receipt: sample.receipt,
+      errInfo: { hasError: false },
+    }).result;
+    assert.equal(result.exitCode, 1, name);
+    assert.equal(result.error, 'Missing final text', name);
+  }
+  const sample = validImplementerEnvelope();
+  const notCoding = runPatchedDecision({
+    agentName: 'other-agent', ...sample, errInfo: { hasError: false },
+  });
+  assert.equal(notCoding.result.exitCode, 1);
+});
+
+test('#632 fatal provider/abort errors never become accepted terminal toolUse', () => {
+  const sample = validImplementerEnvelope();
+  const earlierFailure = { role: 'toolResult', toolCallId: 'read-1',
+    toolName: 'read', isError: true };
+  for (const errorType of ['provider', 'timeout', 'cancelled', 'transport']) {
+    const result = runPatchedDecision({
+      agentName: 'implementer-coding-session', ...sample,
+      messages: [earlierFailure, ...sample.messages],
+      errInfo: { hasError: true, errorType, exitCode: 4, details: 'failed' },
+    }).result;
+    assert.equal(result.exitCode, 4, errorType);
+  }
 });
