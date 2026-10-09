@@ -114,7 +114,7 @@ export function plannerSyntheticMessages(contextVariant = 'research') {
     { role: 'user', content: 'Issue: Fix retry behavior in src/social_mcp/sender.py, preserve public signatures and add tests in tests/test_sender.py. Inspect how async sends handle 429/503, cancellations and Retry-After. Prepare a narrowly scoped change, do not execute any code.' },
   ];
   if (contextVariant === 'research') {
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 16; i++) {
       const id = 'synthetic_read_' + String(i).padStart(2, '0');
       const file = i % 3 === 0 ? 'src/social_mcp/sender.py'
         : i % 3 === 1 ? 'src/social_mcp/retry_policy.py' : 'tests/test_sender.py';
@@ -122,7 +122,7 @@ export function plannerSyntheticMessages(contextVariant = 'research') {
         role: 'assistant', content: null,
         tool_calls: [{ id, type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: file, offset: i * 20, limit: 40 }) } }],
       });
-      const lines = Array.from({ length: 12 }, (_, n) =>
+      const lines = Array.from({ length: 10 }, (_, n) =>
         (i * 20 + n + 1) + ': observed ' + file + ': coroutine ' +
         (n % 3 ? 'send_with_retry' : 'classify_error') + ' handles status ' +
         (n % 2 ? 429 : 503) + '; preserve cancellation, deduplicate retry scheduling, respect total deadline and avoid double sends.');
