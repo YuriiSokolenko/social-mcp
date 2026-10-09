@@ -104,8 +104,8 @@ export function restrictResultSubmissionPayload(payload) {
     }], tool_choice: 'auto' };
   }
   // Legacy Pi adapters omit the type discriminator.
-  if (tool?.type == null && tool.function?.name === 'submit_result' &&
-      tool.name == null) {
+  if (tool?.type == null && tool?.function?.name === 'submit_result' &&
+      tool?.name == null) {
     return { ...payload, tools: [{ ...tool, function: {
       ...tool.function, description: CHANGED_WORK_SUBMISSION_DESCRIPTION,
       parameters: CHANGED_WORK_SUBMISSION_SCHEMA,
