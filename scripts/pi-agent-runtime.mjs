@@ -1622,9 +1622,9 @@ export default function (pi) {
   // replacement guidance for the other (recoverable) classes.
   const missingExecutorCalls = new Map();
   async function handleMissingExecutor(event, ctx) {
-    if (recordProviderToolNameViolation(event, 'missing_executor')) {
-      return `BLOCKED: provider returned an unadvertised tool name. ${capabilitySnapshotGuidance(providerCapabilitySnapshot.executableTools)}`;
-    }
+    // Record the provider violation, but keep Pi's original lifecycle-specific
+    // guidance and capability accounting for a call not in this request.
+    recordProviderToolNameViolation(event, 'missing_executor');
     const kind = classifyMissingExecutor(event.toolName, providerCapabilitySnapshot);
     if (kind === 'contract_failure') {
       await abortToolContract(event.toolName, ctx);
@@ -3599,10 +3599,10 @@ export default function (pi) {
   });
 
   pi.on('tool_call', async (event, ctx) => {
-    if (recordProviderToolNameViolation(event, 'tool_call')) {
-      return { block: true, reason: `BLOCKED: provider tool-name contract violation. ${capabilitySnapshotGuidance(providerCapabilitySnapshot.executableTools)}` };
-    }
-    if (providerNameViolationCalls.size) {
+    const providerNameViolation = recordProviderToolNameViolation(event, 'tool_call');
+    // An absent name still traverses the existing request-local safety gate so
+    // lifecycle hints, coding capability provenance and attempt counts survive.
+    if (providerNameViolationCalls.size && !providerNameViolation) {
       return { block: true, reason: 'BLOCKED: no additional tool calls may execute after a provider tool-name contract violation in this response.' };
     }
     if (codingSession && !codingFirstToolLogged) {
@@ -3676,6 +3676,9 @@ export default function (pi) {
               ? `BLOCKED: that tool is not currently exposed by the runtime. ${capabilitySnapshotGuidance(activeToolNames)}`
               : `BLOCKED: that tool is not currently exposed in this provider request and is not executable. ${capabilitySnapshotGuidance(requestTools)}`,
       };
+      if (providerNameViolation) {
+        unavailable.reason = `BLOCKED: provider tool-name contract violation. ${unavailable.reason}`;
+      }
       console.warn(`${removedSinceRequest || newlyActiveButDeferred ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
         count: unavailableToolAttempts,
@@ -4832,7 +4835,7 @@ export default function (pi) {
         outcome: 'one_correction_queued',
       }));
       await pi.sendUserMessage(
-        `RUNTIME PROVIDER TOOL CONTRACT CORRECTION: The prior response named a tool absent from its serialized request; it was not executed. On the NEXT request, use ONLY the tools actually present in its RUNTIME EXECUTABLE TOOL CONTRACT and obey its current phase. No retired/deferred tool may be activated from history. Choose a permitted action, not prose. If none is available, preserve the worktree and report the blocker.`,
+        `RUNTIME PROVIDER TOOL CONTRACT CORRECTION: RUNTIME UNAVAILABLE CAPABILITY CORRECTION: The prior response named a tool absent from its serialized request; it was not executed. On the NEXT request, use ONLY the tools actually present in its RUNTIME EXECUTABLE TOOL CONTRACT and obey its current phase. No retired/deferred tool may be activated from history. Choose a permitted action, not prose. If none is available, preserve the worktree and report the blocker.`,
         { deliverAs: 'steer' },
       );
       return undefined;
