@@ -78,6 +78,50 @@ test('terminal plan exemption fails closed on invalid state, transport, tool and
   }
 });
 
+// Copied from pinned pi-subagents@0.76.1 src/shared/utils.ts with type
+// annotations removed. This models upstream getFinalOutput(messages) rather
+// than assuming every assistant terminal turn has an empty output.
+const PI_TURN_TIMING_FOOTER = /(?:\r?\n)*\x1b\[38;2;136;136;136m✻ Turn took [^()\r\n]+ \(Total time [^·\r\n]+ · \d+ turns?\)\x1b\[0m[ \t]*$/u;
+
+function stripPiTurnTimingFooter(text) {
+	return text.replace(PI_TURN_TIMING_FOOTER, "");
+}
+
+function pinnedForegroundFinalOutput(messages) {
+	const validTextParts = [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (!msg || msg.role !== "assistant") continue;
+		const hasAssistantError = ("errorMessage" in msg && typeof msg.errorMessage === "string" && msg.errorMessage.length > 0)
+			|| ("stopReason" in msg && msg.stopReason === "error");
+		if (hasAssistantError) continue;
+		const messageText = msg.content
+			.flatMap((part) => {
+				if (part.type !== "text") return [];
+				const text = stripPiTurnTimingFooter(part.text);
+				return text.trim().length > 0 ? [text] : [];
+			})
+			.join("\n");
+		for (let j = msg.content.length - 1; j >= 0; j--) {
+			const part = msg.content[j];
+			if (!part || part.type !== "text") continue;
+			const text = stripPiTurnTimingFooter(part.text);
+			if (text.trim().length === 0) continue;
+			validTextParts.push(text);
+			if (/```acceptance[-_]report\s*\n[\s\S]*?```/i.test(text)) return messageText;
+			for (const match of text.matchAll(/```(?:json|jsonc|json5)\s*\n([\s\S]*?)```/gi)) {
+				const body = match[1] ?? "";
+				if (/"(?:criteriaSatisfied|criteria_satisfied)"/.test(body) && /"(?:changedFiles|changed_files|testsAddedOrUpdated|tests_added_or_updated|commandsRun|commands_run|validationOutput|validation_output|residualRisks|residual_risks|noStagedFiles|no_staged_files|diffSummary|diff_summary|reviewFindings|review_findings|manualNotes|manual_notes)"/.test(body)) {
+					return messageText;
+				}
+			}
+			if (/ACCEPTANCE_REPORT\s*:/i.test(text)) return messageText;
+		}
+	}
+	return validTextParts[0] ?? "";
+}
+
+
 // This mirrors the actual pi-subagents@0.76.1 foreground final-text and
 // hidden-error branches (rather than a fake source containing only branch 1).
 function upstreamDecisionFixture() {
@@ -86,7 +130,7 @@ function upstreamDecisionFixture() {
     'const artifactOutputByResult = new WeakMap();',
     'function runSingleAttempt(agent, messages, errInfo) {',
     '  const result = { exitCode: 0, error: undefined };',
-    '  const finalText = "";',
+    '  const finalText = getFinalOutput(messages);',
     '  const validatedStructuredOutput = false;',
     '  const terminalEmptyAfterUsefulWork = false;',
     '  const missingOutput = !finalText?.trim() && !validatedStructuredOutput;',
@@ -149,7 +193,8 @@ function runPatchedDecision({ agentName = 'implementation-planner', messages = v
         resumePatchPresent: Object.hasOwn(current, 'PI_RESUME_PATCH'),
         resumePatchSet: Boolean(current.PI_RESUME_PATCH),
       }),
-      Buffer, createHash, existsSync: fs.existsSync, statSync: fs.statSync,
+      Buffer, createHash, getFinalOutput: pinnedForegroundFinalOutput,
+      existsSync: fs.existsSync, statSync: fs.statSync,
       process: { env: {
         PI_PLANNER_EVIDENCE_STATE_FILE: plannerSidecar,
         PI_PLANNER_LIFECYCLE_ID: receiptId,
@@ -847,6 +892,13 @@ function assertPairedAdapterRefusal(label, corrupt, {
   assert.equal(refused.adapterDecisions.length, 2, label + ': rejection triggers retry seam');
   assert.equal(refused.result.exitCode, invalid.errInfo.hasError ? (invalid.errInfo.exitCode ?? 1) : 1,
     label + ': upstream fallback, not adapter acceptance');
+  const expectedError = invalid.errInfo.hasError
+    ? (invalid.errInfo.details
+      ? invalid.errInfo.errorType + ' failed (exit ' + invalid.errInfo.exitCode + '): ' + invalid.errInfo.details
+      : invalid.errInfo.errorType + ' failed with exit code ' + invalid.errInfo.exitCode)
+    : 'Missing final text';
+  assert.equal(refused.result.error, expectedError,
+    label + ': failure must come from expected upstream branch');
   assert.equal(refused.providerCalls.length, 2, label + ': retry would be required');
   assert.deepEqual(refused.warnings, [], label + ': not a sidecar read exception');
   assert.equal(fs.existsSync(allowed.fixtureDir), false, label + ': control fixture removed');
@@ -885,7 +937,7 @@ test('#654 generated adapter negative guards have valid one-property controls', 
       s.messages[0].content[0].arguments = { resultText: 'not runtime-bound' };
     }],
     ['nonterminal assistant message', s => { s.messages.push({
-      role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'done' }] }); }],
+      role: 'assistant', stopReason: 'stop', content: [] }); }],
     ['wrong agent', s => { s.agentName = 'unrelated-coding-agent'; }],
     ['missing terminal session env', s => {
       s.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID = '';
@@ -1086,23 +1138,53 @@ test('#654 mutation check: disabled receipt guards turn paired negative assertio
   }
 });
 
-test('#654 mutation check: result-prose assertion fails on synthetic adapter output', () => {
-  const sample = validImplementerEnvelope();
-  const normal = runPatchedDecision({
-    agentName: 'implementer-coding-session', ...sample, errInfo: { hasError: false },
-  });
-  assertTerminalResultHasNoProse(normal.result, 'baseline');
 
-  const mutant = runPatchedDecision({
-    agentName: 'implementer-coding-session', ...sample, errInfo: { hasError: false },
-    mutatePatchedSource: source => replaceUniqueAdapterFragment(source,
-      '  result.finalOutput = finalText;',
-      '  result.finalOutput = "synthetic assistant prose";'),
+test('#654 foreground output uses assistant messages, including earlier prose', () => {
+  const cleanSample = validImplementerEnvelope();
+  const clean = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...cleanSample, errInfo: { hasError: false },
   });
-  assert.equal(mutant.result.exitCode, 0, 'mutation changes output, not terminal acceptance');
-  assert.deepEqual(mutant.adapterDecisions.map(item => item.accepted), [true]);
-  assert.throws(() => assertTerminalResultHasNoProse(mutant.result, 'mutant'),
-    error => error.code === 'ERR_ASSERTION' &&
-      error.message.includes('adapter did not synthesize final prose'),
-    'a successful exit status with fabricated prose must fail the result assertion');
+  assert.deepEqual(clean.adapterDecisions.map(item => item.accepted), [true]);
+  assertTerminalResultHasNoProse(clean.result, 'clean terminal toolUse');
+
+  for (const [label, addProse] of [
+    ['terminal text', s => s.messages[0].content.push({
+      type: 'text', text: 'unexpected terminal prose',
+    })],
+    ['earlier assistant text', s => s.messages.unshift({
+      role: 'assistant', stopReason: 'stop',
+      content: [{ type: 'text', text: 'earlier assistant prose' }],
+    })],
+  ]) {
+    const withProse = validImplementerEnvelope();
+    addProse(withProse);
+    const output = runPatchedDecision({
+      agentName: 'implementer-coding-session', ...withProse,
+      errInfo: { hasError: false },
+    });
+    assert.deepEqual(output.adapterDecisions.map(item => item.accepted), [true],
+      label + ': receipt remains acceptable');
+    assert.equal(output.result.exitCode, 0, label);
+    assert.equal(output.result.outputState, 'present', label);
+    assert.match(output.result.finalOutput, /prose$/, label);
+    assert.throws(() => assertTerminalResultHasNoProse(output.result, label),
+      error => error.code === 'ERR_ASSERTION' &&
+        error.message.includes('adapter did not synthesize final prose'),
+      label + ': output assertion detects message-derived prose');
+  }
+
+  const ordinaryProse = runtimeOwnedImplementerEnvelope();
+  ordinaryProse.messages.push({
+    role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'normal reply' }],
+  });
+  const upstream = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...ordinaryProse,
+    env: { PI_RESUME_ACTIVE: 'true' }, errInfo: { hasError: false },
+  });
+  assert.deepEqual(upstream.adapterDecisions.map(item => item.accepted), [false],
+    'not accepted terminal toolUse');
+  assert.equal(upstream.result.exitCode, 0,
+    'upstream allows an ordinary assistant text response');
+  assert.equal(upstream.result.finalOutput, 'normal reply');
+  assert.equal(upstream.result.outputState, 'present');
 });
