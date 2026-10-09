@@ -3052,6 +3052,11 @@ export default function (pi) {
             );
           }
           const startedAt = Date.now();
+          // The foreground pi-subagents adapter runs in THIS parent process, whereas
+          // PI_CODING_SESSION is supplied only to the fork. Bind its terminal gate to
+          // the exact current child session; never trust a receipt from another fork.
+          const priorTerminalSessionId = process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID;
+          process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID = sessionId;
           codingSessionLog('started', { ...base, context: 'fresh', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens, handoffBytes: Buffer.byteLength(codingTask, 'utf8'), parentHandoffBytes: Buffer.byteLength(parentHandoff, 'utf8') });
           let response = null;
           let sessionError = null;
@@ -3078,6 +3083,8 @@ export default function (pi) {
           } catch (error) {
             sessionError = error;
           } finally {
+            if (priorTerminalSessionId === undefined) delete process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID;
+            else process.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID = priorTerminalSessionId;
             if (fallbackMutationJournalFile) {
               try {
                 if (!fs.existsSync(fallbackMutationJournalFile)) {
@@ -3151,9 +3158,13 @@ export default function (pi) {
               receiptError = error;
             }
           }
-          if (receiptError) invalidateTerminalReceipt(process.env);
+          // A nonzero/error delegation is not a successful terminal toolUse:
+          // the patched adapter must recognize the verified terminal envelope itself.
+          // Never turn provider cancellation, timeout or adapter failure into success
+          // merely because a receipt was left by an earlier tool execution.
+          if (receiptError || sessionError) invalidateTerminalReceipt(process.env);
           const outcome = normalizeCodingSessionOutcome({
-            submitted: Boolean(receiptResult),
+            submitted: Boolean(receiptResult) && !sessionError,
             outcome: receiptResult?.receipt?.outcome ?? null,
             sessionError,
             receiptError,
