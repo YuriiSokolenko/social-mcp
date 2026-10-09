@@ -2110,6 +2110,12 @@ export default function (pi) {
           executableTools,
           liveActiveTools,
           deferredTools,
+          // Synthetic empty-history probes in local harness tests do not represent
+          // a provider response capable of emitting tool calls. Real zero-tool
+          // requests MUST still deny every attempted tool at dispatch.
+          syntheticEmptyProbe: executableTools.length === 0 &&
+            ((Array.isArray(patched.messages) && patched.messages.length === 0) ||
+             (Array.isArray(patched.input) && patched.input.length === 0)),
         };
         if (repairThinkingRequest || repairFallbackRequest) {
           codingRepairProviderRequestInFlight = {
@@ -3432,13 +3438,12 @@ export default function (pi) {
     // reason (corrupt ledger / no pending failure / not available in this action state) rather
     // than being misclassified as an ordinary unavailable-tool attempt.
     const recoveryPolicyTool = event.toolName === RETRY_FAILED_CHECK_TOOL;
-    // A zero-tool provider payload cannot produce executable tool calls. Host
-    // harnesses may make a synthetic empty-surface probe and then invoke
-    // tool_call to test controller policy without a model turn; preserve that
-    // deterministic controller diagnostic. Nonempty requests remain authoritative.
-    const requestTools = providerCapabilitySnapshot?.executableTools?.length
-      ? providerCapabilitySnapshot.executableTools
-      : null;
+    // Preserve controller diagnostics only for synthetic empty-history
+    // zero-tool probes. Real serialized requests with zero definitions MUST
+    // deny tool execution, just like any other request snapshot.
+    const requestTools = providerCapabilitySnapshot?.syntheticEmptyProbe
+      ? null
+      : (providerCapabilitySnapshot?.executableTools ?? null);
     const missingAtRequestBoundary = requestTools != null && !requestTools.includes(event.toolName);
     const removedSinceRequest = requestTools?.includes(event.toolName) === true &&
       !activeToolNames.includes(event.toolName);
