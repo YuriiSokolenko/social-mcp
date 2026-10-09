@@ -85,8 +85,20 @@ export function writeTerminalReceiptFile(target, receipt) {
   if (!target) throw receiptError('terminal_receipt_path_missing');
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(receipt)}\n`, { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(temporary, target);
+  try {
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      fs.writeFileSync(fd, `${JSON.stringify(receipt)}\n`, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    // This rename is the commit point; the parent never publishes metadata
+    // without independently revalidating this receipt and the current Git tree.
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
   return receipt;
 }
 

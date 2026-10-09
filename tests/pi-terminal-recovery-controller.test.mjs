@@ -54,7 +54,7 @@ test('#426 selects journaled cleanup before resubmitting a polluted file set', (
   assert.match(terminalRecoveryGuidance(plan), /Call undo_mutation/);
 });
 
-test('#426 accepted file-set delta becomes metadata repair instead of cleanup', () => {
+test('#632 accepted file-set delta cannot replay removed model files metadata', () => {
   const obligation = submissionObligation(
     'Implementer file-set mismatch: unexpected files: src/new.py; missing files: src/old.py',
   );
@@ -72,15 +72,14 @@ test('#426 accepted file-set delta becomes metadata repair instead of cleanup', 
     }],
   });
 
-  assert.equal(plan.status, 'repair');
-  assert.equal(plan.kind, 'file_set_metadata_retry');
-  assert.equal(plan.tool, 'submit_result');
-  assert.deepEqual(plan.files, ['src/new.py']);
+  assert.equal(plan.status, 'blocked');
+  assert.equal(plan.requiredTool, 'runtime_file_set_verification');
   assert.deepEqual(plan.acceptedUnexpected, ['src/new.py']);
   assert.deepEqual(plan.missing, ['src/old.py']);
+  assert.match(terminalRecoveryGuidance(plan), /Preserve the current worktree\/checkpoint/);
 });
 
-test('#426 structured missing publication fields select immediate submit metadata retry', () => {
+test('#632 missing runtime publication metadata fails closed without model field replay', () => {
   const obligation = submissionObligation(JSON.stringify({
     code: 'missing_publication_fields',
     missing_fields: ['limitations', 'security_notes', 'limitations'],
@@ -91,10 +90,10 @@ test('#426 structured missing publication fields select immediate submit metadat
     activeToolNames: ['submit_result', 'write'],
   });
 
-  assert.equal(plan.status, 'repair');
-  assert.equal(plan.tool, 'submit_result');
+  assert.equal(plan.status, 'blocked');
+  assert.equal(plan.requiredTool, 'runtime_publication_metadata');
   assert.deepEqual(plan.missingFields, ['limitations', 'security_notes']);
-  assert.match(terminalRecoveryGuidance(plan), /fill exactly these missing publication fields/);
+  assert.doesNotMatch(terminalRecoveryGuidance(plan), /Retry submit_result/);
 });
 
 test('#426 exact validation obligation selects the authoritative run_check action', () => {
@@ -542,7 +541,7 @@ test('#426 metadata retries fail closed when the prior terminal payload is unava
     activeToolNames: ['submit_result'],
   });
   assert.equal(metadataPlan.status, 'blocked');
-  assert.match(metadataPlan.reason, /previous terminal submission payload is unavailable/);
+  assert.match(metadataPlan.reason, /runtime-generated publication metadata is incomplete/);
 
   const fileSet = submissionObligation(
     'Implementer file-set mismatch: missing files: src/old.py; unexpected files: src/new.py',
@@ -556,7 +555,7 @@ test('#426 metadata retries fail closed when the prior terminal payload is unava
     drift: [{ path: 'src/new.py', class: 'journaled', action: 'undo_mutation', mutation_id: 'm-task' }],
   });
   assert.equal(fileSetPlan.status, 'blocked');
-  assert.match(fileSetPlan.reason, /previous terminal submission payload is unavailable/);
+  assert.match(fileSetPlan.reason, /runtime Git-derived file set disagrees/);
 });
 
 
@@ -602,26 +601,12 @@ test('#426 selected recovery calls must match the deterministic repair arguments
   }));
   const metadataPlan = selectTerminalRecovery({
     obligation: metadata,
-    terminalInput: { title: 'Fix', summary: 'Summary' },
+    terminalInput: { resultText: 'Done' },
     activeToolNames: ['submit_result'],
   });
-  assert.equal(
-    recoveryCallMatchesPlan(metadataPlan, 'submit_result', {
-      title: 'Fix',
-      summary: 'Summary',
-      limitations: 'Known limitation',
-    }),
-    true,
-  );
-  assert.equal(
-    recoveryCallMatchesPlan(metadataPlan, 'submit_result', {
-      title: 'Different title',
-      summary: 'Summary',
-      limitations: 'Known limitation',
-    }),
-    false,
-    'metadata recovery cannot silently discard or rewrite prior terminal fields',
-  );
+  assert.equal(metadataPlan.status, 'blocked');
+  assert.equal(recoveryCallMatchesPlan(metadataPlan, 'submit_result', { resultText: 'Done' }), false,
+    'even an exact replay cannot create runtime-owned missing metadata');
 });
 
 
