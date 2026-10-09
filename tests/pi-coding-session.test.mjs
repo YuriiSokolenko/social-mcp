@@ -450,6 +450,18 @@ function runtimeScenario(mode) {
           await childHandlers.get('tool_execution_end')({ ...call, result: { content: call.content } }, childCtx);
           const rewritten = await childHandlers.get('tool_result')(call, childCtx);
           assert.match(rewritten.content[0].text, /not executable in this response/);
+          // The tool_call gate and Pi's later executor-not-found hooks may
+          // observe the same unavailable call. The child sidecar must contain
+          // exactly one logical entry for it, regardless of hook duplication.
+          const ghostCall = { toolName: 'ghost_tool', toolCallId: 'fork-ghost-1', input: {} };
+          const ghostBlocked = await childHandlers.get('tool_call')(ghostCall, childCtx);
+          assert.equal(ghostBlocked?.block, true);
+          const ghostResult = { ...ghostCall, isError: true, content: [{ type: 'text', text: 'Tool ghost_tool not found' }] };
+          await childHandlers.get('tool_execution_end')({ ...ghostResult, result: { content: ghostResult.content } }, childCtx);
+          await childHandlers.get('tool_result')(ghostResult, childCtx);
+          const sidecar = JSON.parse(fs.readFileSync(JSON.parse(process.env.PI_CODING_SESSION).capabilityFile, 'utf8'));
+          assert.deepEqual(sidecar.unavailable_tools, ['ghost_tool'], 'both missing-executor callbacks create only one unavailable-tool sidecar entry');
+          console.log('FORK_UNAVAILABLE_SIDECAR_ONCE_OK');
           console.log('FORK_DEFERRED_CAPABILITY_OK');
         }
         if (mode === 'tool-contract') {
@@ -2871,6 +2883,7 @@ test('#441 a tool activated after payload assembly is deferred, not advertised; 
 test('#441 a coding-session fork defers a late-active tool and recovers from calling it', () => {
   const logs = runtimeScenario('fork-deferred-capability');
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"submit_result"/);
+  assert.match(logs, /FORK_UNAVAILABLE_SIDECAR_ONCE_OK/);
   assert.match(logs, /FORK_DEFERRED_CAPABILITY_OK/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
 });
