@@ -283,7 +283,9 @@ function appendToolDescriptionGuidance(payload, instructions) {
 
 // Pi assembles its system <tools> catalog before the final provider-request
 // filters run. Keeping that catalog can advertise read (or another hidden tool)
-// after the wire schema has removed it. Neutralize ONLY the generated catalog,
+// after the wire schema has removed it. Both system and developer roles
+// can carry this generated catalog, depending on the Pi/provider adapter.
+// Neutralize ONLY the generated catalog,
 // leaving the rest of the stable system prompt, trusted role contracts and
 // tool-call/result transcript unchanged. Request-local routing lives in the
 // final provider tool description (or the zero-tool safe-text carrier).
@@ -313,7 +315,7 @@ export function neutralizeStaleProviderToolCatalog(payload, { candidateNames = [
     });
   };
   const sanitizeMessage = message => {
-    if (message?.role !== 'system') return message;
+    if (message?.role !== 'system' && message?.role !== 'developer') return message;
     if (typeof message.content === 'string') {
       const content = sanitize(message.content);
       return content === message.content ? message : { ...message, content };
