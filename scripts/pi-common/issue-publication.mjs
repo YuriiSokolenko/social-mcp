@@ -337,7 +337,7 @@ export async function upsertPullRequest({
   // Opaque model Markdown is data, never authoritative validation/security headings.
   // Quote it as untrusted prose so model-supplied headings cannot impersonate runtime sections.
   const summary = typeof metadata.result_text === 'string'
-    ? 'Model-reported description (unverified):\\n' + metadata.result_text.split('\\n').map(line => '> ' + line).join('\\n')
+    ? 'Model-reported description (unverified):\n' + metadata.result_text.split('\n').map(line => '> ' + line).join('\n')
     : metadata.summary;
   const body = `## Summary\n${summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   const expectedCommit = git(['rev-parse','HEAD'], { cwd }).out.trim();
