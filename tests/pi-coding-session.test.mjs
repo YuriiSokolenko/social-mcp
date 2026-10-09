@@ -251,7 +251,7 @@ function runtimeScenario(mode) {
     };
     fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
       ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
-      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], repositoryFacts: ['Planner fact marker'], complexity: 'nontrivial', evidenceBudget: mode === 'action-required-serial' ? 0 : 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-recovery', 'large-mutation-coding-argument-retry-abort'].includes(mode), reason: 'One lookup' }));
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], repositoryFacts: ['Planner fact marker', ...(['no-handoff', 'empty-handoff'].includes(mode) ? ['REQUIRED_CONSTANT = "abc123"'] : [])], complexity: 'nontrivial', evidenceBudget: mode === 'action-required-serial' ? 0 : 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-recovery', 'large-mutation-coding-argument-retry-abort'].includes(mode), reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
@@ -1203,8 +1203,31 @@ function runtimeScenario(mode) {
         assert.equal(request.thinking, 'off', 'coding session requested with thinking off');
         assert.match(request.task, /<untrusted_task_input>/);
         assert.match(request.task, /<prepared_implementation>/);
-        assert.match(request.task, /<parent_execution_handoff>/);
         assert.match(request.task, /<runtime_state>/);
+        const deltaStart = request.task.indexOf('<parent_execution_handoff>');
+        const deltaEnd = request.task.indexOf('</parent_execution_handoff>');
+        if (['no-handoff', 'empty-handoff'].includes(mode)) {
+          assert.equal(deltaStart, -1, 'normal prepared launch must not create even an empty model-written handoff section');
+          assert.equal(deltaEnd, -1);
+        } else {
+          assert.ok(deltaStart >= 0 && deltaEnd > deltaStart, 'a real execution delta appears once');
+          assert.equal(request.task.match(/<parent_execution_handoff>/g)?.length, 1);
+        }
+        const extract = (tag) => {
+          const start = request.task.indexOf('<' + tag + '>');
+          const end = request.task.indexOf('</' + tag + '>');
+          assert.ok(start >= 0 && end > start, 'expected ' + tag + ' section');
+          assert.equal(request.task.match(new RegExp('<' + tag + '>', 'g'))?.length, 1, 'context section occurs exactly once');
+          return JSON.parse(request.task.slice(start + tag.length + 2, end).trim());
+        };
+        if (['no-handoff', 'empty-handoff'].includes(mode)) {
+          assert.deepEqual(extract('untrusted_task_input'), { issue: '7', title: 'Coding session smoke', body: 'Create generated.py and its test' });
+          const preparedTask = extract('prepared_implementation');
+          assert.equal(preparedTask.status, 'prepared');
+          assert.match(preparedTask.planText, /Create generated.py/);
+          assert.match(preparedTask.planText, /REQUIRED_CONSTANT = "abc123"/);
+          assert.equal(request.task.match(/REQUIRED_CONSTANT = "abc123"/g)?.length, 1, 'planned repo fact occurs once');
+        }
         // #700: the registered Coding allowlist is trusted host inventory, not
         // a promise of tools executable in the current or any later provider turn.
         const stateStart = request.task.indexOf('<runtime_state>') + '<runtime_state>'.length;
@@ -1212,6 +1235,15 @@ function runtimeScenario(mode) {
         const handoffState = JSON.parse(request.task.slice(stateStart, stateEnd).trim());
         assert.deepEqual(Object.keys(handoffState).sort(), ['acceptedMutationScope', 'changedFiles'],
           'Coding handoff carries worktree facts, never the registered tool catalog');
+        if (['no-handoff', 'empty-handoff'].includes(mode)) {
+          assert.ok(handoffState.changedFiles.includes('unchanged_helper.py'), 'fresh tracked-file mutation is captured at launch');
+          assert.deepEqual(handoffState.acceptedMutationScope.map(entry => entry.path).sort(),
+            ['generated.py', 'test_generated.py'], 'pre-accepted publishable mutation scope survives the fork');
+          // The simulated parent changed this tracked file after planning; the runtime
+          // snapshot was taken at launch. Restore fixture bytes before the child writes.
+          fs.writeFileSync(cwd + '/unchanged_helper.py', 'HELPER = 1\\n');
+          console.log('CODING_NO_HANDOFF_CONTEXT_ONCE_OK');
+        }
         if (mode === 'flow') {
           const registeredTools = registered.get(request.agent).tools;
           for (const name of ['read', 'run_check', 'write']) {
@@ -2377,14 +2409,31 @@ function runtimeScenario(mode) {
         process.exit(0);
       }
       const expectError = { cancel: /aborted/, 'shadow-agent': /collides with configured agent/, 'tool-contract': /PI_TOOL_CONTRACT_FAILURE/, 'malformed-contract': /original delegation failure/ }[mode] ?? null;
-      const result = await call('begin_coding_session', {
+      if (['no-handoff', 'empty-handoff'].includes(mode)) {
+        assert.equal(codingSessionArgumentValidation({}), null, 'empty launch args are valid');
+        assert.equal(codingSessionArgumentValidation({ handoff: '' }), null, 'explicit empty handoff is valid');
+        assert.match(tools.get('begin_coding_session').description, /Default: call begin_coding_session.*WITHOUT handoff/,
+          'the actual Main tool description must make no-handoff the recommended path');
+        await call('accept_mutation_scope', {
+          paths: ['generated.py', 'test_generated.py'],
+          disposition: 'publishable',
+          rationale: 'Prepared implementation names these publishable files.',
+        });
+        fs.writeFileSync(cwd + '/unchanged_helper.py', 'HELPER = 2\\n');
+      }
+      const launchArgs = mode === 'no-handoff'
+        ? { reason: 'Start prepared implementation' }
+        : mode === 'empty-handoff'
+          ? { handoff: '' }
+          : {
         reason: 'Implement generated.py and its test',
         handoff: mode === 'handoff-truncation'
           ? 'Current evidence established REQUIRED_CONSTANT = "abc123". ' + 'a'.repeat(1140) + '🚀tail'
           : mode === 'handoff-trailing-space-truncation'
             ? 'Current evidence established REQUIRED_CONSTANT = "abc123". ' + 'a'.repeat(1140) + ' tail'
             : '  Current evidence established REQUIRED_CONSTANT = "abc123". café 🚀  ',
-      }, { expectError });
+      };
+      const result = await call('begin_coding_session', launchArgs, { expectError });
       if (mode === 'malformed-contract') {
         assert.equal(aborts, 0);
         assert.equal(sessionRequests.length, 1);
@@ -2421,7 +2470,12 @@ function runtimeScenario(mode) {
       assert.equal(sessionRequests.length, 1);
       assert.equal(sessionRequests[0].maxTokens, '16384');
       assert.equal(sessionRequests[0].spec.maxTokens, 16384);
-      assert.match(sessionRequests[0].task, /abc123/, 'new execution evidence is carried by the compact handoff');
+      assert.match(sessionRequests[0].task, /abc123/, 'child receives the constant through either prepared state or a genuinely new parent delta');
+      if (['no-handoff', 'empty-handoff'].includes(mode)) {
+        assert.equal(sessionRequests.length, 1, 'no extra Planner or Coding round trip');
+        assert.equal(aborts, 0);
+        console.log('CODING_NO_HANDOFF_FORK_COMPLETED_OK');
+      }
       if (['flow', 'fallback', 'restored', 'tampered', 'containment', 'no-session', 'no-submit', 'no-submit-parent-submit'].includes(mode)) {
         assert.ok(childCaps.length > 0 && childCaps.every(cap => cap === 16384), 'every coding-session response is 16384: ' + childCaps);
         assert.match(fs.readFileSync(cwd + '/generated.py', 'utf8'), /REQUIRED_CONSTANT = "abc123"/, 'the coding child used the compact handoff without parent transcript inheritance');
@@ -2699,6 +2753,22 @@ test('2K parent -> begin_coding_session -> isolated 16K coding child writes code
   assert.equal(logs.match(/PI_MUTATION \{"stage":"implementer","tool":"write","mode":"coding_session"[^\n]*"shape":"creation"[^\n]*"changed":true/g)?.length, 2, 'initial large creation stays direct and is classified separately from repair rewrites');
   assert.match(logs, /PI_RUN_CHECK|check passed|"phase":"completed"/);
   assert.doesNotMatch(logs, /PI_LARGE_MUTATION_BUDGET|mutation-writer|PI_MUTATION_TURN/);
+});
+
+test('#705 prepared Main launches isolated coding child without handoff and preserves canonical runtime context', () => {
+  const logs = runtimeScenario('no-handoff');
+  assert.match(logs, /CODING_NO_HANDOFF_CONTEXT_ONCE_OK/);
+  assert.match(logs, /CODING_NO_HANDOFF_FORK_COMPLETED_OK/);
+  assert.match(logs, /"phase":"started"[^\n]*"parentHandoffBytes":0/);
+  assert.match(logs, /"phase":"completed".*"submitted":true/);
+  assert.doesNotMatch(logs, /PI_PREPARATION_FALLBACK|PARENT_TRANSCRIPT_ONLY_MARKER/);
+});
+
+test('#705 explicit empty handoff is equivalent to omission', () => {
+  const logs = runtimeScenario('empty-handoff');
+  assert.match(logs, /CODING_NO_HANDOFF_CONTEXT_ONCE_OK/);
+  assert.match(logs, /CODING_NO_HANDOFF_FORK_COMPLETED_OK/);
+  assert.match(logs, /"phase":"started"[^\n]*"parentHandoffBytes":0/);
 });
 
 test('parent handoff truncation is code-point safe, bounded and re-trimmed', () => {
