@@ -26,7 +26,7 @@ import {
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -509,6 +509,7 @@ export default function (pi) {
   let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
+  let unavailableCapabilityCorrectionPending = false;
   let providerWireOutputBudget = null;
   let codingToolTransportErrors = [];
   let codingToolTransportRecovery = null;
@@ -1536,7 +1537,15 @@ export default function (pi) {
           { deliverAs: 'steer' },
         );
       }
-      if (kind === 'unavailable') unavailableToolAttempts += 1;
+      if (kind === 'unavailable') {
+        unavailableToolAttempts += 1;
+        if (codingSession?.capabilityFile) {
+          try { recordUnavailableCapabilityAttempt(codingSession.capabilityFile, event.toolName); }
+          catch (error) {
+            console.warn(`PI_CODING_CAPABILITY_RECORD_FAILED ${JSON.stringify({ sessionId: codingSession.sessionId, error: String(error?.message ?? error) })}`);
+          }
+        }
+      }
       unavailableCapabilityAttemptedThisTurn = true;
       unavailableCapabilityToolThisTurn = event.toolName;
       unavailableCapabilityKindThisTurn = kind === 'deferred'
@@ -1834,9 +1843,12 @@ export default function (pi) {
       : 'Authoritative final validation still runs automatically after submit_result and before publication.';
   }
 
-  function verificationLifecycleGuidance() {
+  function verificationLifecycleGuidance(executableTools = null) {
     const verificationTool = config.productiveProgress?.verificationTool;
     if (!verificationTool) return finalValidationGuidance();
+    if (Array.isArray(executableTools) && !executableTools.includes(verificationTool)) {
+      return `${verificationTool} is NOT EXECUTABLE in this provider request even if a permit becomes available. Wait for a subsequent request that actually exposes it; never call a missing tool. ${finalValidationGuidance()}`;
+    }
     if (deterministicVerificationInfrastructure) {
       return `run_check is disabled for the rest of this process after deterministic infrastructure failure ${deterministicVerificationInfrastructure.code}. Do not mutate merely to re-arm verification and do not retry or seek a shell workaround. Preserve the current worktree for trusted recovery. ${finalValidationGuidance()}`;
     }
@@ -1902,7 +1914,7 @@ export default function (pi) {
   // Single source of truth for the replaceable Implementer action steer. The provider
   // boundary refreshes it from the actual executable tool list, not stale Pi history.
   function currentImplementerActionSteer(activeToolNames) {
-    return `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)} Verification status: ${verificationLifecycleGuidance()}`;
+    return `RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)} Verification status: ${verificationLifecycleGuidance(activeToolNames)}`;
   }
 
   syncProductiveState();
@@ -2011,8 +2023,22 @@ export default function (pi) {
       }
 
       if (Array.isArray(patched?.tools)) {
-        const active = new Set(pi.getActiveTools());
-        let tools = patched.tools.filter(tool => active.has(tool.function?.name ?? tool.name));
+        // The host's registered executors and the already-built provider definitions
+        // are separate constraints. A phase change never injects a definition in-flight.
+        const inventory = pi.getAllTools?.();
+        const registeredTools = Array.isArray(inventory)
+          ? inventory.map(tool => typeof tool === 'string' ? tool : tool?.name).filter(Boolean)
+          : null;
+        const reconciled = reconcileProviderToolSurface(patched, {
+          activeTools: pi.getActiveTools(),
+          registeredTools,
+        });
+        if (reconciled.unregistered.length) {
+          console.error(`PI_PROVIDER_EXECUTOR_MISMATCH ${JSON.stringify({
+            stage, unregistered: reconciled.unregistered, request: providerRequestSequence + 1,
+          })}`);
+        }
+        let tools = reconciled.payload.tools;
         const codingSessionToolName = config.productiveProgress?.codingSessionTool;
         const codingSessionArgumentCorrectionRequest = Boolean(
           !codingSession &&
@@ -2084,7 +2110,10 @@ export default function (pi) {
         // instead of advertising it.
         const executableTools = providerToolNames(patched);
         const liveActiveTools = pi.getActiveTools();
-        const deferredTools = liveActiveTools.filter(name => !executableTools.includes(name));
+        const registeredSet = registeredTools == null ? null : new Set(registeredTools);
+        const deferredTools = liveActiveTools.filter(name =>
+          !executableTools.includes(name) && (!registeredSet || registeredSet.has(name))
+        );
         providerCapabilitySnapshot = {
           request: ++providerRequestSequence,
           productiveState,
@@ -2129,6 +2158,24 @@ export default function (pi) {
           })}`);
         }
         console.log(`PI_PROVIDER_CAPABILITY_SNAPSHOT ${JSON.stringify({ stage, ...providerCapabilitySnapshot })}`);
+        // A missing capability is corrected on the NEXT request, not by promising
+        // that getActiveTools() can inject it into the already serialized payload.
+        if (unavailableCapabilityCorrectionPending) {
+          unavailableCapabilityCorrectionPending = false;
+          if (!executableTools.length) {
+            const reason = 'bounded capability correction reached a provider request with no executable tools';
+            recordRuntimeAbort('PI_UNAVAILABLE_CAPABILITY_ABORT', reason, {
+              attemptedTool: unavailableCapabilityToolThisTurn,
+              request: providerCapabilitySnapshot.request,
+              executableTools,
+              deferredTools,
+              checkpoint: { worktree_preserved: true },
+            });
+            console.error(`PI_UNAVAILABLE_CAPABILITY_ABORT ${JSON.stringify({ stage, reason, request: providerCapabilitySnapshot.request })}`);
+            ctx?.abort?.();
+            return { ...patched, tools: [], tool_choice: 'none' };
+          }
+        }
         if (deferredTools.length) {
           console.warn(`PI_PROVIDER_CAPABILITY_DEFERRED ${JSON.stringify({
             stage,
@@ -2247,6 +2294,11 @@ export default function (pi) {
         })}`);
       }
       patched = steerCompaction.payload;
+      if (!steerCompaction.blocked) {
+        // Last-message runtime instructions are request-local and derived only from
+        // serialized executable definitions, in Main and in the coding child.
+        patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot);
+      }
 
       // Inspect the outgoing, fully serialized request after all policies and
       // tool filtering. Neither ctx.model.maxTokens nor a successful setModel()
@@ -3391,32 +3443,39 @@ export default function (pi) {
     // reason (corrupt ledger / no pending failure / not available in this action state) rather
     // than being misclassified as an ordinary unavailable-tool attempt.
     const recoveryPolicyTool = event.toolName === RETRY_FAILED_CHECK_TOOL;
-    const enforceActiveSurface =
-      lastSurfaceSignature !== null &&
-      !alreadySatisfiedTransition &&
-      !recoveryPolicyTool &&
+    const requestTools = providerCapabilitySnapshot?.executableTools ?? null;
+    const missingAtRequestBoundary = requestTools != null && !requestTools.includes(event.toolName);
+    const removedSinceRequest = requestTools?.includes(event.toolName) === true &&
       !activeToolNames.includes(event.toolName);
+    const newlyActiveButDeferred = missingAtRequestBoundary && activeToolNames.includes(event.toolName);
+    const enforceActiveSurface =
+      missingAtRequestBoundary ||
+      (lastSurfaceSignature !== null &&
+        !alreadySatisfiedTransition &&
+        !recoveryPolicyTool &&
+        !activeToolNames.includes(event.toolName));
     if (enforceActiveSurface) {
       unavailableToolAttempts += 1;
       unavailableCapabilityAttemptedThisTurn = true;
       unavailableCapabilityToolThisTurn = event.toolName;
-      const presentAtRequestStart = providerCapabilitySnapshot?.executableTools?.includes(event.toolName) === true;
-      unavailableCapabilityKindThisTurn = presentAtRequestStart
+      unavailableCapabilityKindThisTurn = removedSinceRequest || newlyActiveButDeferred
         ? 'stale_after_capability_transition'
         : 'not_exposed_in_provider_request';
       const unavailable = {
         block: true,
-        reason: presentAtRequestStart
-          ? `BLOCKED: capability lifecycle changed after provider request ${providerCapabilitySnapshot.request}: ${event.toolName} was executable at request start but an earlier tool/state transition in this response removed it. Do not retry the stale call. ${capabilitySnapshotGuidance(activeToolNames)}`
-          : `BLOCKED: that tool is not currently exposed by the runtime. ${capabilitySnapshotGuidance(activeToolNames)}`,
+        reason: removedSinceRequest
+          ? `BLOCKED: capability lifecycle changed after provider request ${providerCapabilitySnapshot.request}: ${event.toolName} was executable at request start but a later state transition removed it. Do not retry the stale call. ${capabilitySnapshotGuidance(requestTools)}`
+          : newlyActiveButDeferred
+            ? `BLOCKED: ${event.toolName} became active only after provider request ${providerCapabilitySnapshot.request} was serialized. It is DEFERRED, not executable now. Try only on a later request that lists it. ${capabilitySnapshotGuidance(requestTools)}`
+            : `BLOCKED: that tool is not executable in this provider request. ${capabilitySnapshotGuidance(requestTools ?? activeToolNames)}`,
       };
-      console.warn(`${presentAtRequestStart ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
+      console.warn(`${removedSinceRequest || newlyActiveButDeferred ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
         count: unavailableToolAttempts,
         productiveState,
         attemptedTool: event.toolName,
         request: providerCapabilitySnapshot?.request ?? null,
-        requestTools: providerCapabilitySnapshot?.executableTools ?? null,
+        requestTools: requestTools,
         activeTools: activeToolNames,
       })}`);
       if (codingSession?.capabilityFile) {
@@ -4898,17 +4957,20 @@ export default function (pi) {
         return;
       }
       requireToolOnNextProviderRequest = true;
+      unavailableCapabilityCorrectionPending = true;
+      const lastExecutableTools = providerCapabilitySnapshot?.executableTools ?? [];
       console.warn(`PI_UNAVAILABLE_CAPABILITY_CORRECTION ${JSON.stringify({
         stage,
         attemptedTool: unavailableCapabilityToolThisTurn,
         unavailableCapabilityKind: unavailableCapabilityKindThisTurn,
         correction: consecutiveUnavailableCapabilityTurns,
         correctionLimit: UNAVAILABLE_CAPABILITY_CORRECTION_LIMIT,
-        executableTools: activeToolNames,
+        executableTools: lastExecutableTools,
+        nextRequestCandidates: activeToolNames,
         checkpoint: { worktree_preserved: true },
       })}`);
       await pi.sendUserMessage(
-        `RUNTIME UNAVAILABLE CAPABILITY CORRECTION: ${unavailableCapabilityToolThisTurn ?? 'the attempted tool'} did not execute because it is unavailable on the current request surface. Do not retry that unavailable tool and do not narrate. Call one currently executable tool now. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
+        `RUNTIME UNAVAILABLE CAPABILITY CORRECTION: ${unavailableCapabilityToolThisTurn ?? 'the attempted tool'} did not execute. The last request allowed only: ${activeToolGuidance(lastExecutableTools)} On the NEXT request, obey its new RUNTIME EXECUTABLE TOOL CONTRACT; capabilities active in the host are not promised until that request includes them. Choose an executable action or preserve the worktree and report a blocker. Do not narrate or invent missing tools.`.trim(),
         { deliverAs: 'steer' },
       );
     }
