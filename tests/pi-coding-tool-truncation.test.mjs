@@ -60,6 +60,24 @@ test('#633 ceiling correlation recovers #627/#628, not genuine schema errors or 
     outputTokens: 2048, stopReason: 'length' }), null, 'a reasoning-only ceiling is not tool transport evidence');
 });
 
+test('#633 explicit output-limit error needs no usage but never recovers cancellation', () => {
+  const candidate = incompleteCodingToolError({
+    toolName: 'write', isError: true,
+    text: 'Tool call "write" hit the output token limit; arguments may be truncated',
+  });
+  const requestBudget = serializedProviderOutputBudget({ max_completion_tokens: 2048 });
+  assert.deepEqual(verifiedCodingToolTruncation({
+    candidates: [candidate], requestBudget, outputTokens: null, stopReason: 'toolUse',
+  }), { ...candidate, ceiling: 2048, outputTokens: null });
+  assert.equal(verifiedCodingToolTruncation({
+    candidates: [candidate], requestBudget, outputTokens: null, stopReason: 'aborted',
+  }), null);
+  assert.equal(verifiedCodingToolTruncation({
+    candidates: [candidate], requestBudget: serializedProviderOutputBudget({}),
+    outputTokens: null, stopReason: 'toolUse',
+  }), null);
+});
+
 test('#633 correction never offers a deferred tool, and shares the one-shot large budget', () => {
   assert.deepEqual(codingTruncationCorrectionTool('write', ['write', 'begin_coding_session']),
     { tool: 'write', mode: 'direct' });
