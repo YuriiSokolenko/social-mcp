@@ -203,15 +203,21 @@ let lastMetrics = [];
 function registerScenarioHook(map, name, fn) {
   const prior = map.get(name);
   if (!prior) { map.set(name, fn); return; }
-  map.set(name, async (event, ctx) => {
-    const first = await prior(event, ctx);
-    if (name === 'tool_call' && first?.block) return first;
-    // before_provider_request is a transformer: the second extension receives
-    // the payload returned by the first, not the original unpatched request.
-    const nextEvent = name === 'before_provider_request' && first !== undefined
-      ? { ...event, payload: first } : event;
-    const second = await fn(nextEvent, ctx);
-    return second === undefined ? first : second;
+  // Keep synchronous provider-request hooks synchronous; only tool calls and
+  // terminal hooks that genuinely await a Promise should return a Promise.
+  map.set(name, (event, ctx) => {
+    const afterFirst = first => {
+      if (name === 'tool_call' && first?.block) return first;
+      // The next extension receives the payload transformed by the first.
+      const nextEvent = name === 'before_provider_request' && first !== undefined
+        ? { ...event, payload: first } : event;
+      const second = fn(nextEvent, ctx);
+      return second?.then
+        ? second.then(value => value === undefined ? first : value)
+        : second === undefined ? first : second;
+    };
+    const first = prior(event, ctx);
+    return first?.then ? first.then(afterFirst) : afterFirst(first);
   });
 }
 function runtimeScenario(mode) {
