@@ -118,11 +118,9 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       // A hidden tool remains separate from generic unavailable attempts, but
       // repeated attempts across provider requests have an independent ceiling.
       handlers.get('before_provider_request')({ payload: raw });
-      const hiddenThird = await handlers.get('tool_call')({
-        toolName: 'subagent', toolCallId: 'hidden-third', input: {},
-      }, context);
-      assert.equal(hiddenThird.block, true);
-      assert.equal(aborts, 0, 'up to three hidden calls permit correction');
+      // Two earlier hidden LSP calls and one exhausted capability call are
+      // already three corrections; the next hidden call must abort.
+      assert.equal(aborts, 0, 'three earlier hidden calls permit correction');
       const hiddenFourth = await handlers.get('tool_call')({
         toolName: 'subagent', toolCallId: 'hidden-fourth', input: {},
       }, context);
