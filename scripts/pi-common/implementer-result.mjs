@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const clean = value => typeof value === 'string' ? value.trim() : '';
 
@@ -116,7 +118,23 @@ export function normalizeImplementerResult(input) {
 export function writeImplementerResult(target, input) {
   if (!target) throw new Error('PI_IMPLEMENTER_RESULT_FILE is not configured');
   const data = normalizeImplementerResult(input);
-  fs.writeFileSync(target, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  // The terminal receipt is the atomic commit point for publication. Publish
+  // complete, flushed metadata first so a crash cannot expose torn JSON under
+  // the path whose exact bytes will subsequently be hashed into the receipt.
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(data, null, 2) + '\n', 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
   return data;
 }
 
