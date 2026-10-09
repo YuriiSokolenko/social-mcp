@@ -74,6 +74,7 @@ export function validateToolCall(call) {
     for (const [key, value] of Object.entries(parsed)) {
       if (!Object.hasOwn(schema.properties, key)) issues.push(`${key}: additional property is not allowed`);
       else if (key === 'files' ? (!Array.isArray(value) || value.some(item => typeof item !== 'string')) : typeof value !== 'string') issues.push(`${key}: must be ${key === 'files' ? 'string[]' : 'string'}`);
+      else if (key === 'planText' && !value.trim()) issues.push('planText: must be a nonempty string');
     }
   }
   return { status: issues.length ? 'schema_error' : 'valid', error: issues.join('; ') || null, parsed, missing };
