@@ -271,6 +271,7 @@ function runtimeScenario(mode) {
     fs.writeFileSync(context, JSON.stringify({ title: 'Coding session smoke', body: 'Create generated.py and its test' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
     fs.writeFileSync(scenario, `
+      ${registerScenarioHook.toString()}
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
       import { EventEmitter } from 'node:events';
