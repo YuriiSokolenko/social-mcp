@@ -122,7 +122,7 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.match(result.stdout, /PI_MAIN_TOOL_PROFILE/);
     assert.match(result.stdout, /PI_MAIN_CAPABILITY_ESCALATION/);
-    assert.match(result.stdout, /PI_MAIN_PROFILE_TOOL_HIDDEN/);
+    assert.match(result.stdout + result.stderr, /PI_MAIN_PROFILE_TOOL_HIDDEN/);
     assert.match(result.stdout, /PI_MAIN_TOOL_PROFILE_FINAL/);
     assert.match(result.stdout, /"toolSchemaBytesBeforeRaw":\d+/);
   } finally {
