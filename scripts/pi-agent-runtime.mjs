@@ -2107,6 +2107,7 @@ export default function (pi) {
         const reconciled = reconcileProviderToolSurface(patched, {
           activeTools: pi.getActiveTools(),
         });
+        const rawToolSchemaBytes = Buffer.byteLength(JSON.stringify(patched.tools), 'utf8');
         let tools = reconciled.payload.tools;
         const codingSessionToolName = config.productiveProgress?.codingSessionTool;
         const codingSessionArgumentCorrectionRequest = Boolean(
@@ -2171,14 +2172,17 @@ export default function (pi) {
         // exact recovery / resumed / validation-repair / coding gates win.
         // Intersect the final phase-approved definitions, never add new ones.
         const mainToolProfile = filterFreshMainToolProfile({ tools }, {
-          freshMain: !codingSession && !resumedImplementer && !validationRepair &&
-            !terminalRecoveryRequiredTool && !controller.preComplexityActionRequired(),
+          freshMain: isFreshMainToolProfilePhase({
+            stage, codingSession: Boolean(codingSession), resumed: resumedImplementer,
+            validationRepair, terminalRecoveryRequiredTool,
+            preComplexityActionRequired: controller.preComplexityActionRequired(),
+          }),
           grantedGroups: mainCapabilityGroups,
         });
         if (mainToolProfile.profile !== 'phase_owned') {
           const beforeBytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
           tools = mainToolProfile.payload.tools.filter(tool =>
-            mainCapabilityRequests < MAX_MAIN_CAPABILITY_ESCALATIONS ||
+            mainCapabilityGroups.length < MAX_MAIN_CAPABILITY_ESCALATIONS ||
             (tool.function?.name ?? tool.name) !== MAIN_CAPABILITY_REQUEST_TOOL
           );
           mainToolProfileTelemetry = {
@@ -2188,8 +2192,10 @@ export default function (pi) {
             denied: mainToolProfile.deferred,
             grantedGroups: [...mainCapabilityGroups],
             escalationAttempts: mainCapabilityRequests,
-            toolSchemaBytesBefore: beforeBytes,
-            toolSchemaBytesAfter: Buffer.byteLength(JSON.stringify(tools), 'utf8'),
+            toolSchemaBytesBeforeRaw: rawToolSchemaBytes,
+            toolSchemaBytesBeforePhase: beforeBytes,
+            toolSchemaBytesAfterProfile: Buffer.byteLength(JSON.stringify(tools), 'utf8'),
+            toolSchemaBytesAfter: null,
           };
           console.log('PI_MAIN_TOOL_PROFILE ' + JSON.stringify({
             stage, request: providerRequestSequence + 1, ...mainToolProfileTelemetry,
@@ -2211,7 +2217,10 @@ export default function (pi) {
         // instead of advertising it.
         const executableTools = providerToolNames(patched);
         const liveActiveTools = pi.getActiveTools();
-        const deferredTools = liveActiveTools.filter(name => !executableTools.includes(name));
+        const profileHiddenTools = mainToolProfile.profile === 'phase_owned' ? [] :
+          mainToolProfile.deferred;
+        const deferredTools = liveActiveTools.filter(name =>
+          !executableTools.includes(name) && !profileHiddenTools.includes(name));
         providerCapabilitySnapshot = {
           request: ++providerRequestSequence,
           productiveState,
@@ -2237,6 +2246,7 @@ export default function (pi) {
           executableTools,
           liveActiveTools,
           deferredTools,
+          profileHiddenTools,
         };
         if (repairThinkingRequest || repairFallbackRequest) {
           codingRepairProviderRequestInFlight = {
@@ -2508,6 +2518,17 @@ export default function (pi) {
           assertMainPromptComposition(metadata);
         }
         const request = ++mainPromptRequestSequence;
+        if (mainToolProfileTelemetry) {
+          // After all request-local tool guidance, tool-choice and transport policy.
+          // Matches PI_MAIN_PROMPT_METADATA and the actual outgoing schema bytes.
+          mainToolProfileTelemetry.toolSchemaBytesAfter = metadata.toolSchemaBytes;
+          console.log('PI_MAIN_TOOL_PROFILE_FINAL ' + JSON.stringify({
+            stage, request, ...mainToolProfileTelemetry,
+            systemPromptBytes: metadata.systemPromptBytes,
+            initialUserContextBytes: metadata.initialUserContextBytes,
+            requestBodyBytes: metadata.requestBodyBytes,
+          }));
+        }
         console.log(`PI_MAIN_PROMPT_METADATA ${JSON.stringify({ stage, request, ...metadata })}`);
         previousMainPromptMetadata = metadata;
       }
@@ -2638,7 +2659,7 @@ export default function (pi) {
       async execute(_toolCallId, params) {
         mainCapabilityRequests += 1;
         const grant = mainCapabilityGrant(mainCapabilityGroups, params.group);
-        if (!grant.ok || mainCapabilityRequests > MAX_MAIN_CAPABILITY_ESCALATIONS) {
+        if (!grant.ok) {
           const why = grant.reason ?? 'request_limit';
           console.warn('PI_MAIN_CAPABILITY_ESCALATION_DENIED ' + JSON.stringify({
             stage, group: params.group, reason: why, attempts: mainCapabilityRequests,
@@ -4577,14 +4598,8 @@ export default function (pi) {
       // A provider omitting cache or token counts means unknown, not zero.
       const usage = event.message?.usage ?? null;
       console.log('PI_MAIN_TOOL_PROFILE_RESULT ' + JSON.stringify({
-        stage, request: providerCapabilitySnapshot?.request ?? null,
-        profile: mainToolProfileTelemetry.profile,
-        phase: mainToolProfileTelemetry.phase,
-        toolSchemaBytes: mainToolProfileTelemetry.toolSchemaBytesAfter,
-        inputTokens: usage?.input ?? null,
-        cacheReadTokens: usage?.cacheReadKnown === true ? (usage.cacheRead ?? null) : null,
-        cacheReadTelemetry: usage?.cacheReadKnown === true ? 'known' : 'unknown',
-        cacheWriteTokens: usage?.cacheWrite ?? null,
+        stage,
+        ...mainToolProfileResultTelemetry(mainToolProfileTelemetry, usage, providerCapabilitySnapshot?.request ?? null),
         stopReason: event.message?.stopReason ?? null,
       }));
     }
