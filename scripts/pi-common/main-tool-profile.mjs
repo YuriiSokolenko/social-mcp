@@ -19,6 +19,8 @@ const MAIN_CORE_TOOLS = new Set([
   'set_response_budget', 'begin_result_submission', 'submit_result',
   'submit_repair', MAIN_CAPABILITY_REQUEST_TOOL,
 ]);
+// Main explicitly forbids these generic commands even if an optional family is granted.
+const MAIN_FORBIDDEN_TOOLS = new Set(['grep', 'find', 'ls']);
 
 export function optionalMainToolGroup(name) {
   if (typeof name !== 'string' || !name) return 'extended';
@@ -30,8 +32,7 @@ export function optionalMainToolGroup(name) {
 }
 
 export function isMainCoreTool(name) {
-  return MAIN_CORE_TOOLS.has(name) ||
-    /^(?:terminal_|recover_|rollback_|undo_|submit_|begin_result_submission$|accept_mutation_scope$)/.test(name);
+  return MAIN_CORE_TOOLS.has(name);
 }
 
 export function mainCapabilityGrant(granted, requested, { limit = MAX_MAIN_CAPABILITY_ESCALATIONS } = {}) {
@@ -69,7 +70,8 @@ export function filterFreshMainToolProfile(payload, {
     const name = nameOf(tool);
     // Malformed definitions must not be used to synthesize a callable tool.
     if (typeof name !== 'string' || !name) return false;
-    if (isMainCoreTool(name) || allOptional || grants.has(optionalMainToolGroup(name))) {
+    if (!MAIN_FORBIDDEN_TOOLS.has(name) &&
+      (isMainCoreTool(name) || allOptional || grants.has(optionalMainToolGroup(name)))) {
       admitted.push(name);
       return true;
     }
@@ -82,5 +84,29 @@ export function filterFreshMainToolProfile(payload, {
       : { ...payload, tools },
     profile: grants.size ? 'fresh_expanded' : 'fresh_core',
     admitted, deferred, originalCount: payload.tools.length,
+  };
+}
+
+/** Use trusted runtime state; never infer a phase from issue/Planner prose. */
+export function isFreshMainToolProfilePhase({
+  stage = 'implementer', codingSession = false, resumed = false,
+  validationRepair = false, terminalRecoveryRequiredTool = null,
+  preComplexityActionRequired = false,
+} = {}) {
+  return stage === 'implementer' && !codingSession && !resumed &&
+    !validationRepair && !terminalRecoveryRequiredTool && !preComplexityActionRequired;
+}
+
+/** Data-only event: provider omission remains unknown, including cache usage. */
+export function mainToolProfileResultTelemetry(profile, usage, request) {
+  return {
+    request,
+    profile: profile.profile,
+    phase: profile.phase,
+    toolSchemaBytes: profile.toolSchemaBytesAfter,
+    inputTokens: usage?.input ?? null,
+    cacheReadTokens: usage?.cacheReadKnown === true ? (usage.cacheRead ?? null) : null,
+    cacheReadTelemetry: usage?.cacheReadKnown === true ? 'known' : 'unknown',
+    cacheWriteTokens: usage?.cacheWrite ?? null,
   };
 }
