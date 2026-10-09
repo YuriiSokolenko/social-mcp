@@ -630,6 +630,123 @@ test('late verified target is accepted; generic blocked/cannot cannot bypass mis
   assert.equal(plannerPlanAdmission('Cannot access GitHub PR API for deployment orchestration.', [], { title: 'Audit deployment orchestration' }).ok, true);
 });
 
+test('serialized Planner submission requires submit_plan; production auto-text replay is corrected at most once', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  const provider = h.handlers.get('before_provider_request');
+  const tools = ['read', 'submit_plan'].map(name => ({ type: 'function', function: { name } }));
+  const first = provider({ payload: { max_completion_tokens: 4096, tool_choice: 'auto', tools } });
+  assert.deepEqual(first.tools.map(tool => tool.function.name), ['submit_plan']);
+  assert.equal(first.tool_choice, 'required', 'must be fixed on the actual serialized request, not just activeTools');
+  assert.deepEqual(h.activeTools(), ['submit_plan']);
+
+  // #677: HTTP 200, finish_reason stop, Markdown text, no executable tool call.
+  await h.handlers.get('message_end')({ message: {
+    role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: '# Valid-looking plan, not a receipt' }],
+  } });
+  const correction = await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+  assert.equal(correction.continue, true);
+  assert.equal(protocolState(h).phase, 'submission_pending');
+  assert.equal(protocolState(h).submissionReceipt, undefined);
+  const named = provider({ payload: { max_completion_tokens: 4096, tool_choice: 'auto', tools } });
+  assert.deepEqual(named.tool_choice, { type: 'function', function: { name: 'submit_plan' } });
+  assert.equal(named.tools.length, 1);
+  assert.equal(protocolState(h).budgetHistory.at(-1).serializedToolChoice, 'named:submit_plan');
+
+  await h.handlers.get('message_end')({ message: {
+    role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Second plain-text plan' }],
+  } });
+  const exhausted = await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+  assert.equal(exhausted, undefined);
+  assert.equal(h.aborted(), true);
+  assert.equal(protocolState(h).failureKind, 'planner_submission_tool_choice_ignored');
+  assert.equal(protocolState(h).submissionReceipt, undefined);
+  const wireLog = h.logs().filter(line => line.startsWith('PI_PLANNER_PROVIDER_REQUEST '));
+  assert.ok(wireLog.some(line => line.includes('"requestedToolChoice":"auto"') &&
+    line.includes('"serializedToolChoice":"required"')));
+  assert.ok(wireLog.some(line => line.includes('"serializedToolChoice":"named:submit_plan"')));
+  assert.ok(h.logs().some(line => line.includes('PI_PLANNER_PROVIDER_RESPONSE') && line.includes('"responseForm":"text_only"')));
+});
+
+test('named compatibility retry can accept only a real complete executed submit_plan', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  const handler = h.handlers.get('before_provider_request');
+  handler({ payload: { max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }] } });
+  await h.handlers.get('message_end')({ message: {
+    role: 'assistant', stopReason: 'error', errorMessage: 'BadRequestError: 400 tool_choice=required unsupported', content: [],
+  } });
+  const correction = await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+  assert.equal(correction.continue, true);
+  const wire = handler({ payload: {
+    max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }],
+  } });
+  assert.deepEqual(wire.tool_choice, { type: 'function', function: { name: 'submit_plan' } });
+  const exact = 'Modify src/net.py, then run the focused tests. \nKeep original bytes: Ω <plan>.';
+  const out = await plannerTurn(h, 'submit_plan', { planText: exact });
+  assert.equal(out.toolResult.terminate, true);
+  const state = protocolState(h);
+  assert.equal(acceptedPlannerSubmission(state, null), exact);
+  assert.equal(state.submissionReceipt.executed, true);
+  assert.ok(h.logs().some(line => line.startsWith('PI_PLANNER_SUBMITTED ') &&
+    line.includes('"compatibilityCorrection":true') && line.includes('"acceptedReceipt":true')));
+});
+
+test('400/422 compatibility retry is bounded; other transport errors and cancellation fail closed', async t => {
+  for (const status of [400, 422]) {
+    const h = extensionHarness(t);
+    await plannerTurn(h, 'begin_plan_submission');
+    const wire = () => h.handlers.get('before_provider_request')({
+      payload: { max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }] },
+    });
+    assert.equal(wire().tool_choice, 'required');
+    await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'error', status, content: [] } });
+    assert.equal((await h.handlers.get('turn_end')({ entries: [] }, h.abortContext)).continue, true);
+    assert.equal(wire().tool_choice.function.name, 'submit_plan');
+    await h.handlers.get('message_end')({ message: { role: 'assistant', stopReason: 'error', status, content: [] } });
+    await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+    assert.equal(protocolState(h).failureKind, 'planner_submission_tool_choice_unsupported');
+    assert.equal(h.aborted(), true);
+  }
+  for (const reason of ['error', 'aborted']) {
+    const h = extensionHarness(t);
+    await plannerTurn(h, 'begin_plan_submission');
+    const req = h.handlers.get('before_provider_request')({ payload: {
+      tools: [{ type: 'function', function: { name: 'submit_plan' } }], max_tokens: 4096,
+    } });
+    assert.equal(req.tool_choice, 'required');
+    await h.handlers.get('message_end')({ message: {
+      role: 'assistant', stopReason: reason, ...(reason === 'error' ? { status: 503 } : {}), content: [],
+    } });
+    await h.handlers.get('turn_end')({ entries: [] }, h.abortContext);
+    assert.equal(protocolState(h).failureKind, 'planner_submission_transport_failure');
+    assert.equal(h.aborted(), true);
+  }
+});
+
+test('missing serialized submit_plan and wrong tool name fail closed without a receipt', async t => {
+  const h = extensionHarness(t);
+  await plannerTurn(h, 'begin_plan_submission');
+  assert.throws(() => h.handlers.get('before_provider_request')({ payload: {
+    max_tokens: 4096, tools: [{ type: 'function', function: { name: 'read' } }],
+  } }), /planner_submission_tool_unavailable/);
+  assert.equal(protocolState(h).failureKind, 'planner_submission_tool_unavailable');
+
+  const other = extensionHarness(t);
+  await plannerTurn(other, 'begin_plan_submission');
+  other.handlers.get('before_provider_request')({ payload: {
+    max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }],
+  } });
+  await other.handlers.get('message_end')({ message: {
+    role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', name: 'read', id: 'unexpected', arguments: {} }],
+  } });
+  const blocked = await other.handlers.get('tool_call')({ toolName: 'read', toolCallId: 'unexpected', input: {} });
+  assert.equal(blocked.block, true);
+  await other.handlers.get('turn_end')({ entries: [] }, other.abortContext);
+  assert.equal(protocolState(other).failureKind, 'planner_submission_invalid_transition');
+  assert.equal(protocolState(other).submissionReceipt, undefined);
+});
+
 test('provider boundary recognizes real budget fields and never treats missing as verified', () => {
   for (const payload of [
     { max_completion_tokens: 4096 }, { max_output_tokens: 4096 }, { max_tokens: 4096 },
