@@ -2021,12 +2021,9 @@ export default function (pi) {
       }
 
       if (Array.isArray(patched?.tools)) {
-        // The host's registered executors and the already-built provider definitions
-        // are separate constraints. A phase change never injects a definition in-flight.
-        // Pi's outgoing tool definitions were already built from the executable
-        // registry. getAllTools() is a separate, possibly narrower host inventory
-        // (particularly in runtime-agent forks); it cannot veto an actual provider
-        // definition. The serialized request, narrowed by phase visibility, wins.
+        // Pi built the serialized definitions from its executor registry already.
+        // Narrow by the current phase, but never use getAllTools() as a second
+        // registry veto (it may be narrower in runtime-agent forks).
         const reconciled = reconcileProviderToolSurface(patched, {
           activeTools: pi.getActiveTools(),
         });
@@ -2110,12 +2107,6 @@ export default function (pi) {
           executableTools,
           liveActiveTools,
           deferredTools,
-          // Synthetic empty-history probes in local harness tests do not represent
-          // a provider response capable of emitting tool calls. Real zero-tool
-          // requests MUST still deny every attempted tool at dispatch.
-          syntheticEmptyProbe: executableTools.length === 0 &&
-            ((Array.isArray(patched.messages) && patched.messages.length === 0) ||
-             (Array.isArray(patched.input) && patched.input.length === 0)),
         };
         if (repairThinkingRequest || repairFallbackRequest) {
           codingRepairProviderRequestInFlight = {
@@ -2156,6 +2147,9 @@ export default function (pi) {
         // A missing capability is corrected on the NEXT request, not by promising
         // that getActiveTools() can inject it into the already serialized payload.
         if (unavailableCapabilityCorrectionPending) {
+          // This is a cross-turn obligation, cleared only once its next actual
+          // provider boundary has been inspected. Clearing it on turn_start/end
+          // would silently lose the bounded correction during retries.
           unavailableCapabilityCorrectionPending = false;
           if (!executableTools.length) {
             const reason = 'bounded capability correction reached a provider request with no executable tools';
@@ -2292,7 +2286,9 @@ export default function (pi) {
       if (!steerCompaction.blocked) {
         // Last-message runtime instructions are request-local and derived only from
         // serialized executable definitions, in Main and in the coding child.
-        patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot);
+        patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
+          trustedRuntimeEnvelope: stage === 'implementer',
+        });
       }
 
       // Inspect the outgoing, fully serialized request after all policies and
@@ -3438,12 +3434,10 @@ export default function (pi) {
     // reason (corrupt ledger / no pending failure / not available in this action state) rather
     // than being misclassified as an ordinary unavailable-tool attempt.
     const recoveryPolicyTool = event.toolName === RETRY_FAILED_CHECK_TOOL;
-    // Preserve controller diagnostics only for synthetic empty-history
-    // zero-tool probes. Real serialized requests with zero definitions MUST
-    // deny tool execution, just like any other request snapshot.
-    const requestTools = providerCapabilitySnapshot?.syntheticEmptyProbe
-      ? null
-      : (providerCapabilitySnapshot?.executableTools ?? null);
+    // Every serialized request snapshot, including one with ZERO definitions,
+    // is authoritative. Synthetic tests must supply realistic provider turns;
+    // no production exemption can promote an empty tool surface to unrestricted.
+    const requestTools = providerCapabilitySnapshot?.executableTools ?? null;
     const missingAtRequestBoundary = requestTools != null && !requestTools.includes(event.toolName);
     const removedSinceRequest = requestTools?.includes(event.toolName) === true &&
       !activeToolNames.includes(event.toolName);
