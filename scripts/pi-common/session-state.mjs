@@ -135,7 +135,7 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
 
   if (!terminalOnly) {
     if (mode === 'coding') {
-      hints.push('Isolated coding session: the parent tool inventory and navigation policy are not executable here. Work from the compact handoff; make a permitted change or resolve one concrete blocker.');
+      hints.push('Isolated coding session: the parent tool inventory and navigation policy are not executable here. Work from the runtime-provided issue, prepared implementation (if available), worktree state, and any explicit parent execution delta; make a permitted change or resolve one concrete blocker.');
     } else if (preparation === 'PREPARED') {
       hints.push('Prepared fresh Main: execute the supplied plan against current worktree facts; direct repository inspection does not require an evidence-unlock transition.');
     } else if (preparation === 'PREPARATION_FALLBACK') {
@@ -163,7 +163,9 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
     if (orbit.length) hints.push(`For structural/dependency questions that need indexing, use an appropriate exposed tool among: ${orbit.join(', ')}; confirm source text before mutation.`);
     append('need_more_evidence', 'If exactly one concrete fact blocks a safe action, need_more_evidence requests that fact; it is not required before already-exposed direct inspection.');
     append('subagents_enable', 'subagents_enable is a one-shot transition only if bounded delegated evidence is necessary; use the next request surface after it succeeds.');
-    append('begin_coding_session', 'Use begin_coding_session when the next code mutation exceeds the normal Main response; transfer only compact new execution facts, not the parent transcript.');
+    append('begin_coding_session', preparation === 'PREPARATION_FALLBACK'
+      ? 'Use begin_coding_session for larger mutations. No Planner planText is available: pass a short handoff with essential repository findings or decisions learned during Main exploration that are missing from the issue and runtime state. Do not copy raw evidence, code drafts, or the transcript.'
+      : 'Use begin_coding_session for larger mutations. For prepared work, omit handoff by default: runtime already supplies the issue, plan, and worktree state. Add only a brief new post-planning execution delta; never copy the parent transcript.');
     const edits = names.filter(name => ['structural_edit', 'safe_edit', 'edit', 'write'].includes(name));
     if (edits.length) {
       hints.push(`Mutation tools available: ${edits.join(', ')}. Prefer an exact structural or bounded edit when appropriate; a successful returned preview is enough to continue.`);

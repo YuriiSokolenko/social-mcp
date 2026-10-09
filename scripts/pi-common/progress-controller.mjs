@@ -198,12 +198,14 @@ export function codingTruncationCorrectionTool(failedTool, executableTools) {
   return alternative ? { tool: alternative, mode: 'split' } : null;
 }
 
-export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null, codingSessionTool = null } = {}) {
+export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null, codingSessionTool = null, preparationState = null } = {}) {
   if (codingSessionTool && DIRECT_PAYLOAD_TOOLS.has(toolName)) {
     return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
       + 'The change is too large for the normal Implementer response. Do not regenerate the payload in this response. '
-      + `Call ${codingSessionTool} now: the runtime continues this same session with a large output ceiling, `
-      + 'where you write the code and tests, run checks, fix and submit.';
+      + (preparationState === 'PREPARATION_FALLBACK'
+        ? `Call ${codingSessionTool} now: no Planner planText exists, so include a concise handoff of essential Main exploration findings missing from issue/runtime state (not raw evidence or draft code). `
+        : `Call ${codingSessionTool} now WITHOUT handoff for prepared work: runtime supplies issue, plan and worktree state. Include a handoff only for a new post-planning execution fact. `)
+      + 'The isolated coding child writes code/tests, checks, fixes and submits.';
   }
   const splitAdvice = 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
     + '(for a new file, write a minimal skeleton first, then add sections with separate edits).';
