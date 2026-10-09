@@ -368,8 +368,16 @@ function runtimeScenario(mode) {
           extension(childPi);
         }
         // Thinking off on the wire, from the trusted runtime, whatever the settings say.
-        const providerPatch = childHandlers.get('before_provider_request');
-        assert.ok(providerPatch, 'coding-session runtime patches provider requests');
+        const realProviderPatch = childHandlers.get('before_provider_request');
+        assert.ok(realProviderPatch, 'coding-session runtime patches provider requests');
+        let lastProviderToolNames = [];
+        const providerPatch = (event, ctx) => {
+          const next = realProviderPatch(event, ctx);
+          if (Array.isArray(next?.tools)) {
+            lastProviderToolNames = next.tools.map(tool => tool.function?.name ?? tool.name);
+          }
+          return next;
+        };
         const patched = providerPatch({ payload: { model: 'm', messages: [], max_completion_tokens: 16384, chat_template_kwargs: { keep: 1, enable_thinking: true } } }, childCtx);
         assert.deepEqual(patched.chat_template_kwargs, { keep: 1, enable_thinking: false });
         assert.equal(patched.max_completion_tokens, 16384, 'the 16K ceiling is untouched');
@@ -598,12 +606,15 @@ function runtimeScenario(mode) {
         const childCall = async (name, input) => {
           childHandlers.get('turn_start')({ turnIndex: turn });
           if (!definition.tools.includes(name)) { turn++; return { block: true, reason: name + ' is not in the agent tool allowlist' }; }
-          // Each simulated childCall is a NEW model response. Reflect its own
-          // serialized provider tool list so validation/retry transitions cannot
-          // appear as magically injected tools in a preceding provider request.
-          providerPatch({ payload: {
-            model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
-          } }, childCtx);
+          // A new simulated model turn rebuilds the provider request only when
+          // the desired active tool was NOT in the preceding serialized request.
+          // Redundant requests would consume the one-shot reasoning/fallback
+          // phase and change the very repair state these tests exercise.
+          if (childActive.includes(name) && !lastProviderToolNames.includes(name)) {
+            providerPatch({ payload: {
+              model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
+            } }, childCtx);
+          }
           const event = { toolName: name, toolCallId: 'c' + turn, input };
           const blocked = await childHandlers.get('tool_call')(event, childCtx);
           if (blocked) { await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 400 } } }, childCtx); return blocked; }
@@ -626,9 +637,11 @@ function runtimeScenario(mode) {
         };
         const settleRepairRetry = async variant => {
           childHandlers.get('turn_start')({ turnIndex: turn });
-          providerPatch({ payload: {
-            model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
-          } }, childCtx);
+          if (!lastProviderToolNames.includes('retry_last_failed_check')) {
+            providerPatch({ payload: {
+              model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
+            } }, childCtx);
+          }
           const event = { toolName: 'retry_last_failed_check', toolCallId: 'repair-retry-' + turn, input: {} };
           const blocked = await childHandlers.get('tool_call')(event, childCtx);
           assert.equal(blocked, undefined, 'exact retry passes the real runtime gate');
@@ -1004,6 +1017,7 @@ function runtimeScenario(mode) {
           ];
           for (let index = 0; index < flipFlop.length; index++) {
             await settleSyntheticDifferentScopePass();
+            if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
             await childCall('safe_edit', {
               path: 'test_generated.py',
               operation: 'insert_after',
@@ -1023,6 +1037,7 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-volatile-message') {
+          if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
             operation: 'insert_after',
@@ -1037,6 +1052,7 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-semantic-number') {
+          if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
             operation: 'insert_after',
@@ -1080,6 +1096,7 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-pass-reset') {
+          if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
             operation: 'insert_after',
@@ -2108,6 +2125,10 @@ function runtimeScenario(mode) {
         if (partialRecovery) {
           assert.ok(active.includes('retry_last_failed_check'), 'exact failed-check retry remains available after inspection');
           assert.ok(active.includes('write'), 'inspection reopens ordinary mutation tools under accepted-scope enforcement');
+          const mutationRequest = handlers.get('before_provider_request')({
+            payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+          }, ctx);
+          assert.ok(mutationRequest.tools.some(tool => tool.function?.name === 'write'), 'inspected recovery publishes mutation tools on a new request');
           handlers.get('turn_start')({ turnIndex: turn });
           const outsideWrite = await handlers.get('tool_call')({
             toolName: 'write',
@@ -2131,6 +2152,10 @@ function runtimeScenario(mode) {
           assert.equal(aborts, 0, 'local parent repair remains recoverable');
           assert.ok(active.includes('retry_last_failed_check'), 'successful local repair preserves the exact failed-check retry path');
 
+          const validationRequest = handlers.get('before_provider_request')({
+            payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+          }, ctx);
+          assert.ok(validationRequest.tools.some(tool => tool.function?.name === 'retry_last_failed_check'), 'exact retry is serialized after the new mutation');
           handlers.get('turn_start')({ turnIndex: turn });
           const retryCall = await handlers.get('tool_call')({
             toolName: 'retry_last_failed_check',
@@ -2603,8 +2628,9 @@ test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover on
 
 test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
   const logs = runtimeScenario('action-repeat-abort');
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"alreadySatisfied":true/);
-  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"subagents_enable"/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
 test('#470 missing evidence executor restores the permit through the real runtime hooks', () => {
