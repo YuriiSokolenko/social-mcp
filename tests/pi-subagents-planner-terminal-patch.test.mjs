@@ -287,3 +287,46 @@ test('#632 fatal provider/abort errors never become accepted terminal toolUse', 
     assert.equal(result.exitCode, 4, errorType);
   }
 });
+
+test('#632 restored/validation-repair uses empty terminal arguments and current attempt', () => {
+  const { messages, metadata, receipt, env } = validImplementerEnvelope();
+  delete metadata.result_text;
+  delete metadata.summary;
+  messages[0].content[0].arguments = {};
+  env.PI_VALIDATION_REPAIR = 'true';
+  receipt.attempt_id = 'validation-repair:1';
+  receipt.result_metadata_sha256 = createHash('sha256').update(JSON.stringify(metadata)).digest('hex');
+  const result = runPatchedDecision({
+    agentName: 'implementer-coding-session', messages, receipt, metadata,
+    errInfo: { hasError: false },
+  });
+  // The harness fixture supplies a primary-run env; unlike a self-attestation,
+  // a matching sidecar from a different repair attempt must remain rejected.
+  assert.equal(result.result.exitCode, 1);
+
+  const accepted = acceptedTerminalImplementerReceipt(
+    messages, receipt, Buffer.from(JSON.stringify(metadata)), env, 'coding-632');
+  assert.equal(accepted, true);
+  const wrongAttempt = { ...env, PI_VALIDATION_REPAIR_ATTEMPT: '2' };
+  assert.equal(acceptedTerminalImplementerReceipt(
+    messages, receipt, Buffer.from(JSON.stringify(metadata)), wrongAttempt, 'coding-632'), false);
+  messages[0].content[0].arguments = { resultText: 'model-generated file names' };
+  assert.equal(acceptedTerminalImplementerReceipt(
+    messages, receipt, Buffer.from(JSON.stringify(metadata)), env, 'coding-632'), false);
+});
+
+test('#632 blocked outcome needs exact runtime-bound reason, not generic success', () => {
+  const { messages, metadata, receipt, env } = validImplementerEnvelope();
+  metadata.outcome = 'blocked';
+  metadata.files = [];
+  metadata.blocked_reason = 'Task requirements contradict each other';
+  delete metadata.result_text;
+  receipt.outcome = 'blocked';
+  receipt.result_metadata_sha256 = createHash('sha256').update(JSON.stringify(metadata)).digest('hex');
+  messages[0].content[0].arguments = { blocked_reason: metadata.blocked_reason };
+  assert.equal(acceptedTerminalImplementerReceipt(
+    messages, receipt, Buffer.from(JSON.stringify(metadata)), env, 'coding-632'), true);
+  messages[0].content[0].arguments.blocked_reason = 'unrelated human claim';
+  assert.equal(acceptedTerminalImplementerReceipt(
+    messages, receipt, Buffer.from(JSON.stringify(metadata)), env, 'coding-632'), false);
+});
