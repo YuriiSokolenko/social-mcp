@@ -4835,7 +4835,7 @@ export default function (pi) {
         outcome: 'one_correction_queued',
       }));
       await pi.sendUserMessage(
-        `RUNTIME PROVIDER TOOL CONTRACT CORRECTION: RUNTIME UNAVAILABLE CAPABILITY CORRECTION: The prior response named a tool absent from its serialized request; it was not executed. On the NEXT request, use ONLY the tools actually present in its RUNTIME EXECUTABLE TOOL CONTRACT and obey its current phase. No retired/deferred tool may be activated from history. Choose a permitted action, not prose. If none is available, preserve the worktree and report the blocker.`,
+        `RUNTIME PROVIDER TOOL CONTRACT CORRECTION: RUNTIME UNAVAILABLE CAPABILITY CORRECTION: The prior response named an unadvertised tool (${[...providerNameViolationCalls.values()].join(', ')}) absent from its serialized request; it was not executed. On the NEXT request, use ONLY the tools actually present in its RUNTIME EXECUTABLE TOOL CONTRACT and obey its current phase. No retired/deferred tool may be activated from history. Choose a permitted action, not prose. If none is available, preserve the worktree and report the blocker.`,
         { deliverAs: 'steer' },
       );
       return undefined;
