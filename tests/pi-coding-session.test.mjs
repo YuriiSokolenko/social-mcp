@@ -2722,7 +2722,8 @@ test('#481/#526 an aborted coding session returns authoritative state and bounde
   assert.match(logs, /PI_CODING_RECOVERY_GUARD /);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence".*"inspectionComplete":true/);
   assert.doesNotMatch(logs, /PI_CODING_RECOVERY_GUARD_RELEASED .*"reason":"bounded_recovery_evidence"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"begin_coding_session".*"correction":1/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_VIOLATION .*"returnedToolName":"begin_coding_session"/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_RESOLVED .*"outcome":"executable_tool_observed"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
   assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
   assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
@@ -2733,7 +2734,8 @@ test('#526 partial child progress with failed validation survives abort and stay
   assert.match(logs, /PI_CODING_RECOVERY_GUARD .*"preparedOutputsPresent":\{"source":false,"test":false\}.*"status":"fail"/);
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"coding_recovery_evidence".*"read".*"retry_last_failed_check"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"bash"/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_VIOLATION .*"returnedToolName":"bash"/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_RESOLVED .*"outcome":"executable_tool_observed"/);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence"/);
   assert.match(logs, /CODING_RECOVERY_OUTSIDE_SCOPE_BLOCKED_OK/);
   assert.match(logs, /CODING_RECOVERY_RETRY_ACCEPTED_OK/);
