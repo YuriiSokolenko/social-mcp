@@ -2033,7 +2033,7 @@ function runtimeScenario(mode) {
           assert.equal(exhausted.block, true);
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
           assert.equal(aborts, 1, 'repeated unavailable one-shot tool exhausts the bounded correction');
-          assert.equal(JSON.parse(fs.readFileSync(runtimeFailure, 'utf8')).failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
+          assert.equal(JSON.parse(fs.readFileSync(runtimeFailure, 'utf8')).failure_code, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED');
           process.exit(0);
         }
 
@@ -2110,8 +2110,8 @@ function runtimeScenario(mode) {
 
           const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
           assert.equal(failure.failure_class, 'model_execution_abort');
-          assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
-          assert.ok(failure.reason.includes('unavailable capability'));
+          assert.equal(failure.failure_code, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED');
+          assert.ok(failure.reason.includes('unadvertised provider tool call'));
           console.log('UNAVAILABLE_CAPABILITY_FAILURE ' + JSON.stringify(failure));
           process.exit(0);
         }
@@ -2456,6 +2456,26 @@ function runtimeScenario(mode) {
         assert.ok(recoveryRequest.tools.some(tool => tool.function.name === 'read'));
         assert.ok(!recoveryRequest.tools.some(tool => ['bash', 'repo_search', 'begin_coding_session'].includes(tool.function.name)));
 
+        // Before inspecting preserved work, the ordinary recovery guard must
+        // reject unrelated paths independently of provider-name correction.
+        handlers.get('turn_start')({ turnIndex: turn });
+        handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+        }, ctx);
+        const unrelatedRead = await handlers.get('tool_call')({
+          toolName: 'read',
+          toolCallId: 'unrelated-recovery-read-' + turn,
+          input: { path: 'README.md' },
+        }, ctx);
+        assert.equal(unrelatedRead.block, true);
+        assert.match(unrelatedRead.reason, /recovery read is limited to preserved changed publishable paths/);
+        console.log('CODING_RECOVERY_WRONG_PATH_BLOCKED_OK');
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 0, 'wrong-path read is rejected without consuming the preserved recovery state');
+        // The next provider turn has a fresh, request-local wire inventory.
+        handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+        }, ctx);
         handlers.get('turn_start')({ turnIndex: turn });
         const unavailableRecoveryTool = partialRecovery ? 'bash' : 'begin_coding_session';
         const unavailableRecoveryAttempt = await handlers.get('tool_call')({
@@ -2475,20 +2495,26 @@ function runtimeScenario(mode) {
         }, ctx);
         assert.equal(correctedRequest.tool_choice, 'required', 'wrong-tool correction keeps provider action forcing');
 
+        // The single contract correction must execute an in-scope tool. A blocked
+        // recovery read is NOT successful correction and must not buy another attempt.
         handlers.get('turn_start')({ turnIndex: turn });
-        const unrelatedRead = await handlers.get('tool_call')({
+        const correctionRead = {
           toolName: 'read',
-          toolCallId: 'unrelated-recovery-read-' + turn,
-          input: { path: 'README.md' },
-        }, ctx);
-        assert.equal(unrelatedRead.block, true);
-        assert.match(unrelatedRead.reason, /recovery read is limited to preserved changed publishable paths/);
-        console.log('CODING_RECOVERY_WRONG_PATH_BLOCKED_OK');
-        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-        assert.equal(aborts, 0, 'wrong-path read is rejected without consuming the preserved recovery state');
-
-        const recovered = await call('read', { path: 'generated.py' });
+          toolCallId: 'corrected-recovery-read-' + turn,
+          input: { path: 'generated.py' },
+        };
+        assert.equal(await handlers.get('tool_call')(correctionRead, ctx), undefined);
+        const recovered = { content: [{ type: 'text', text: fs.readFileSync(cwd + '/generated.py', 'utf8') }] };
+        await handlers.get('tool_execution_end')({ ...correctionRead, isError: false, result: recovered }, ctx);
+        await handlers.get('turn_end')({ turnIndex: turn++, message: {
+          stopReason: 'toolUse',
+          toolCalls: [{ id: correctionRead.toolCallId, name: 'read' }],
+          usage: { output: 100 },
+        } }, ctx);
+        assert.equal(aborts, 0, 'an authorized recovery read resolves the one corrective provider request');
         assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
+
+
         assert.ok(active.includes('safe_edit') || active.includes('edit'), 'bounded inspection opens local accepted-scope repair');
         assert.ok(!active.includes('begin_coding_session'), 'inspection does not reopen a second coding fork');
         assert.ok(!active.includes('bash'), 'inspection does not reopen raw shell');
@@ -2701,7 +2727,8 @@ test('#481/#526 an aborted coding session returns authoritative state and bounde
   assert.match(logs, /PI_CODING_RECOVERY_GUARD /);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence".*"inspectionComplete":true/);
   assert.doesNotMatch(logs, /PI_CODING_RECOVERY_GUARD_RELEASED .*"reason":"bounded_recovery_evidence"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"begin_coding_session".*"correction":1/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_VIOLATION .*"returnedToolName":"begin_coding_session"/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_RESOLVED .*"outcome":"executable_tool_observed"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
   assert.match(logs, /CODING_RECOVERY_RECEIPT_OK/);
   assert.match(logs, /CODING_RECOVERY_BOUNDED_INSPECTION_OK/);
@@ -2712,7 +2739,8 @@ test('#526 partial child progress with failed validation survives abort and stay
   assert.match(logs, /PI_CODING_RECOVERY_GUARD .*"preparedOutputsPresent":\{"source":false,"test":false\}.*"status":"fail"/);
   assert.match(logs, /PI_TOOL_SURFACE_UPDATE .*"reason":"coding_recovery_evidence".*"read".*"retry_last_failed_check"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_CORRECTION .*"attemptedTool":"bash"/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_VIOLATION .*"returnedToolName":"bash"/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_RESOLVED .*"outcome":"executable_tool_observed"/);
   assert.match(logs, /PI_CODING_RECOVERY_GUARD_ADVANCED .*"reason":"bounded_recovery_evidence"/);
   assert.match(logs, /CODING_RECOVERY_OUTSIDE_SCOPE_BLOCKED_OK/);
   assert.match(logs, /CODING_RECOVERY_RETRY_ACCEPTED_OK/);
@@ -3050,7 +3078,7 @@ test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover on
 test('an already-completed repeated tool call cannot clear state forcing and still fails closed', () => {
   const logs = runtimeScenario('action-repeat-abort');
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"subagents_enable"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
@@ -3070,9 +3098,9 @@ test('#469 evidence unlock is single-use; stale lifecycle races reset strikes be
   assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"grep"/);
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
-  assert.ok((logs.match(/PI_UNAVAILABLE_CAPABILITY_CORRECTION /g) ?? []).length >= 1, 'an unavailable tool gets a bounded correction before abort');
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: unavailable capability repeated after 1 bounded correction turn/);
-  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
+  assert.ok((logs.match(/PI_PROVIDER_TOOL_NAME_CORRECTION /g) ?? []).length >= 1, 'a provider tool-name violation gets one bounded correction before abort');
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED /);
+  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED"/);
   assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"worktree_preserved":true/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });

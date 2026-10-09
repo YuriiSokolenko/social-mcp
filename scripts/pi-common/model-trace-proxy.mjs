@@ -101,6 +101,52 @@ function parsedProviderPayloads(value) {
     });
 }
 
+// Evidence-only, transport-level comparison. Reconstructs decoded Chat Completions
+// tool names from SSE deltas or non-streaming messages; never interprets model prose
+// as a call, never parses arguments into executable instructions.
+export function providerToolContractEvidence(request, rawResponse) {
+  const requestedToolNames = [...new Set((Array.isArray(request?.tools) ? request.tools : [])
+    .map(tool => tool?.function?.name ?? tool?.name)
+    .filter(name => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,95}$/.test(name)))];
+  const advertised = new Set(requestedToolNames);
+  const safeName = name => /^[A-Za-z_][A-Za-z0-9_]{0,95}$/.test(name ?? '')
+    ? name : '[invalid_tool_name]';
+  const choice = request?.tool_choice;
+  const tool_choice = typeof choice === 'string' ? choice
+    : choice && typeof choice === 'object' ? { name: safeName(choice.function?.name ?? choice.name) }
+      : null;
+  const reconstructed = new Map();
+  const appendName = (key, part, replace = false) => {
+    const existing = reconstructed.get(key) ?? '';
+    if (typeof part !== 'string' || !part) return;
+    // Most SSE parsers emit the name once, but some emit name fragments.
+    reconstructed.set(key, replace || part.startsWith(existing) ? part : existing + part);
+  };
+  for (const payload of parsedProviderPayloads(rawResponse)) {
+    for (const choice of Array.isArray(payload?.choices) ? payload.choices : []) {
+      const index = choice?.index ?? 0;
+      for (const call of Array.isArray(choice?.delta?.tool_calls) ? choice.delta.tool_calls : []) {
+        appendName(`chat:${index}:${call?.index ?? 0}`, call?.function?.name);
+      }
+      for (const [i, call] of (Array.isArray(choice?.message?.tool_calls) ? choice.message.tool_calls : []).entries()) {
+        appendName(`chat:${index}:${call?.index ?? i}`, call?.function?.name, true);
+      }
+    }
+    // Responses-compatible transports use function_call items instead of chat choices.
+    const item = payload?.item;
+    if (item?.type === 'function_call') {
+      appendName(`response:${payload?.output_index ?? item?.id ?? payload?.item_id ?? 0}`, item.name, true);
+    }
+    for (const [i, item] of (Array.isArray(payload?.output) ? payload.output : []).entries()) {
+      if (item?.type === 'function_call') appendName(`response:${item.id ?? i}`, item.name, true);
+    }
+  }
+  const returnedToolNames = [...reconstructed.values()].map(safeName).filter(Boolean);
+  const violations = returnedToolNames.filter(name => !advertised.has(name));
+  return { requestedToolNames, returnedToolNames, tool_choice, violations,
+    outcome: violations.length ? 'absent_name_in_provider_response' : 'no_absent_names_observed' };
+}
+
 function nonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -385,6 +431,7 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       ? { promptTokens: null, outputTokens: null, cachedTokens: null, cacheTelemetry: 'unknown' }
       : providerUsageTelemetry(responseBody);
     const ttftMs = firstResponseByteAt == null ? null : Math.max(0, firstResponseByteAt - started);
+    const contract = providerToolContractEvidence(parseBody(requestBody), responseBody);
     const record = {
       sequence,
       traceSession,
@@ -404,6 +451,7 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       logicalCall,
       logicalResponse,
       telemetry,
+      toolContract: { ...contract, providerRoute: safeUrl(targetBaseUrl) },
       ...(error ? { error } : {}),
     };
     if (typeof onExchange === 'function') {
@@ -428,6 +476,7 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
           streamDisposition: record.streamDisposition,
           streamShortCircuit: record.streamShortCircuit,
           usableResponseObserved: record.usableResponseObserved,
+          toolContract: record.toolContract,
         });
       } catch {
         // Provider accounting is best effort and must never affect model traffic.
