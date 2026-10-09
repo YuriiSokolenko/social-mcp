@@ -202,8 +202,8 @@ export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = 
   if (codingSessionTool && DIRECT_PAYLOAD_TOOLS.has(toolName)) {
     return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
       + 'The change is too large for the normal Implementer response. Do not regenerate the payload in this response. '
-      + `Call ${codingSessionTool} now: the runtime continues this same session with a large output ceiling, `
-      + 'where you write the code and tests, run checks, fix and submit.';
+      + `Call ${codingSessionTool} now WITHOUT handoff: runtime already supplies the issue, prepared plan, and worktree state to the isolated coding child with a large output ceiling, `
+      + 'where you write the code and tests, run checks, fix and submit. Include an optional handoff only for a genuinely new post-planning fact.';
   }
   const splitAdvice = 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
     + '(for a new file, write a minimal skeleton first, then add sections with separate edits).';
