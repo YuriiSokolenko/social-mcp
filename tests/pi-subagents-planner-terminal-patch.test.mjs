@@ -258,16 +258,20 @@ test('runner build applies pinned patch and shared helper before saving Pi packa
     .replace(/node --check /g, 'node  --check  ');
   assertPatchedPiPackageSeed(reformatted);
 
+  const patchInvocation = dockerfile.match(/node\s+\/home\/runner\/build-tools\/infra\/github-runner-autoscaler\/patch-pi-subagents-planner-terminal\.mjs\s+\/home\/runner\/\.pi\/agent\/npm\/node_modules\/pi-subagents/)?.[0];
+  const seedCopyInvocation = dockerfile.match(/cp\s+-a\s+\/home\/runner\/\.pi\/agent\/npm\s+\/opt\/pi-package-seed\//)?.[0];
+  assert.ok(patchInvocation && seedCopyInvocation, 'fixture contains both patch and seed commands');
+  // Swap only the commands, preserving Docker's shell continuation syntax.
+  const reorderedSeed = dockerfile.replace(patchInvocation, '__PATCH_COMMAND__')
+    .replace(seedCopyInvocation, patchInvocation)
+    .replace('__PATCH_COMMAND__', seedCopyInvocation);
   const variants = [
     ['missing patch COPY', dockerfile.replace(/^COPY[^\n]*patch-pi-subagents-planner-terminal\.mjs[^\n]*\n/m, '')],
     ['missing helper COPY', dockerfile.replace(/^COPY[^\n]*restored-work\.mjs[^\n]*\n/m, '')],
     ['missing source patch', dockerfile.replace(/^\s*&&\s+node\s+\S*patch-pi-subagents-planner-terminal\.mjs[^\n]*\n/m, '')],
     ['missing syntax check', dockerfile.replace(/^\s*&&\s+node\s+--check[^\n]*\n/m, '')],
     ['missing seed copy', dockerfile.replace(/^\s*&&\s+cp\s+-a[^\n]*\n/m, '')],
-    ['stale seed before patch', dockerfile.replace(
-      /(\s*&& node\s+\S*patch-pi-subagents-planner-terminal\.mjs[^\n]*)(\s*\\\n\s*&& node --check[^\n]*)(\s*\\\n\s*&& mkdir -p[^\n]*)(\s*\\\n\s*&& cp -a[^\n]*)/,
-      '$4$2$3$1',
-    )],
+    ['stale seed before patch', reorderedSeed],
     ['helper copied too late', dockerfile.replace(
       /^(COPY[^\n]*restored-work\.mjs[^\n]*\n)/m, '',
     ) + '\nCOPY scripts/pi-common/restored-work.mjs /home/runner/build-tools/scripts/pi-common/restored-work.mjs\n'],
