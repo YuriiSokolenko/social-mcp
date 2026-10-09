@@ -572,6 +572,8 @@ export default function (pi) {
   let mainToolProfileTelemetry = null;
   let mainProfileHiddenAttempts = 0;
   const profileHiddenCorrections = new Set();
+  // Pi can report the same call through tool_call, tool_execution_end and tool_result.
+  const countedProfileHiddenCalls = new Set();
   // Process-local between-turn obligation. It is consumed by the next real
   // tool-bearing request or discarded when the stage/process ends; it never
   // survives teardown and cannot carry into a new Pi stage.
@@ -1594,6 +1596,40 @@ export default function (pi) {
     profileHiddenCorrections.add(key);
     await pi.sendUserMessage(profileHiddenToolAdvice(name, snapshot), { deliverAs: 'steer' });
   }
+  async function accountProfileHiddenToolCall(event, ctx, snapshot, source) {
+    const key = event.toolCallId == null ? null : `${snapshot.request}:${event.toolCallId}`;
+    if (key && countedProfileHiddenCalls.has(key)) {
+      return mainProfileHiddenAttempts > MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS;
+    }
+    if (key) countedProfileHiddenCalls.add(key);
+    mainProfileHiddenAttempts += 1;
+    console.warn('PI_MAIN_PROFILE_TOOL_HIDDEN ' + JSON.stringify({
+      stage, request: snapshot.request,
+      attemptedTool: event.toolName,
+      group: optionalMainToolGroup(event.toolName),
+      requestCapabilitiesExposed: snapshot.executableTools.includes(MAIN_CAPABILITY_REQUEST_TOOL),
+      source, count: mainProfileHiddenAttempts,
+      correctionLimit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
+    }));
+    if (mainProfileHiddenAttempts > MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS) {
+      const reason = 'profile-hidden tool called repeatedly despite explicit capability guidance; preserve worktree and report blocker';
+      recordRuntimeAbort('PI_UNAVAILABLE_CAPABILITY_ABORT', reason, {
+        attemptedTool: event.toolName, unavailableCapabilityKind: 'profile_hidden',
+        profileHiddenAttempts: mainProfileHiddenAttempts,
+        correction_limit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
+        checkpoint: { worktree_preserved: true },
+      });
+      console.error('PI_MAIN_PROFILE_HIDDEN_ABORT ' + JSON.stringify({
+        stage, request: snapshot.request, source,
+        attemptedTool: event.toolName, count: mainProfileHiddenAttempts,
+        checkpoint: { worktree_preserved: true },
+      }));
+      await ctx.abort();
+      return true;
+    }
+    await steerProfileHidden(event.toolName, snapshot);
+    return false;
+  }
   const missingExecutorCalls = new Map();
   async function handleMissingExecutor(event, ctx) {
     const kind = classifyMissingExecutor(event.toolName, providerCapabilitySnapshot);
@@ -1615,7 +1651,10 @@ export default function (pi) {
       // It must not promise that request's surface: another tool in this response may still
       // change state and remove the deferred tool again, so the guidance stays conditional on
       // the authoritative snapshot of the request that carries it.
-      if (kind === 'profile_hidden') await steerProfileHidden(event.toolName, snapshot);
+      if (kind === 'profile_hidden') {
+        const exhausted = await accountProfileHiddenToolCall(event, ctx, snapshot, 'missing_executor');
+        if (exhausted) return 'BLOCKED: repeated hidden-tool attempts exhausted the bounded profile correction. Preserve the worktree and report a blocker.';
+      }
       if (kind === 'deferred') {
         await pi.sendUserMessage(
           `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. Do not retry it in this response. On the next request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given) and it is still needed; the surface may change again before then.`,
@@ -1636,7 +1675,7 @@ export default function (pi) {
       unavailableCapabilityKindThisTurn = kind === 'deferred'
         ? 'stale_after_capability_transition'
         : kind === 'profile_hidden' ? 'profile_hidden' : 'executor_not_found';
-      console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : kind === 'profile_hidden' ? 'PI_MAIN_PROFILE_TOOL_HIDDEN' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
+      if (kind !== 'profile_hidden') console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
         kind: kind === 'deferred' ? 'deferred_tool_called' : kind === 'profile_hidden' ? 'profile_hidden_tool_called' : 'executor_not_found',
         attemptedTool: event.toolName,
@@ -3731,37 +3770,14 @@ export default function (pi) {
         !activeToolNames.includes(event.toolName));
     if (enforceActiveSurface) {
       if (profileHidden) {
-        // Profile-hidden is neither late activation nor a generic unavailable
-        // executor. Count it independently and leave both generic budgets
-        // untouched. A persistent refusal to follow its grant guidance must
-        // terminate with the worktree preserved, not consume 100 model turns.
-        mainProfileHiddenAttempts += 1;
-        console.warn('PI_MAIN_PROFILE_TOOL_HIDDEN ' + JSON.stringify({
-          stage, request: providerCapabilitySnapshot.request,
-          attemptedTool: event.toolName,
-          group: optionalMainToolGroup(event.toolName),
-          requestCapabilitiesExposed: requestTools.includes(MAIN_CAPABILITY_REQUEST_TOOL),
-          count: mainProfileHiddenAttempts,
-          correctionLimit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
-        }));
-        if (mainProfileHiddenAttempts > MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS) {
-          const reason = 'profile-hidden tool called repeatedly despite explicit capability guidance; preserve worktree and report blocker';
-          recordRuntimeAbort('PI_UNAVAILABLE_CAPABILITY_ABORT', reason, {
-            attemptedTool: event.toolName, unavailableCapabilityKind: 'profile_hidden',
-            profileHiddenAttempts: mainProfileHiddenAttempts,
-            correction_limit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
-            checkpoint: { worktree_preserved: true },
-          });
-          console.error('PI_MAIN_PROFILE_HIDDEN_ABORT ' + JSON.stringify({
-            stage, request: providerCapabilitySnapshot.request,
-            attemptedTool: event.toolName, count: mainProfileHiddenAttempts,
-            checkpoint: { worktree_preserved: true },
-          }));
-          await ctx.abort();
-          return { block: true, reason: 'BLOCKED: repeated hidden-tool attempts exhausted the bounded profile correction. Preserve the worktree and report a blocker.' };
-        }
-        await steerProfileHidden(event.toolName, providerCapabilitySnapshot);
-        return { block: true, reason: profileHiddenToolAdvice(event.toolName) };
+        // Keep hidden retries separate from generic unavailable and loop strikes;
+        // Pi's missing-executor fallback shares this exact same bounded counter.
+        const exhausted = await accountProfileHiddenToolCall(
+          event, ctx, providerCapabilitySnapshot, 'tool_call'
+        );
+        return { block: true, reason: exhausted
+          ? 'BLOCKED: repeated hidden-tool attempts exhausted the bounded profile correction. Preserve the worktree and report a blocker.'
+          : profileHiddenToolAdvice(event.toolName) };
       }
       unavailableToolAttempts += 1;
       unavailableCapabilityAttemptedThisTurn = true;
