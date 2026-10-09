@@ -807,7 +807,7 @@ test('toolUse with zero parsed calls keeps the bounded 8192 submission-only reco
     max_tokens: 4096, tools: [{ type: 'function', function: { name: 'submit_plan' } }],
   } });
   await h.handlers.get('message_end')({ message: {
-    role: 'assistant', stopReason: 'toolUse', content: [],
+    role: 'assistant', stopReason: 'toolUse', usage: { inputTokens: 1000, outputTokens: 300 }, content: [],
   } });
   const recovery = await h.handlers.get('turn_end')({ entries: [] }, { ...h.abortContext, model: h.model });
   assert.equal(recovery.continue, true);
