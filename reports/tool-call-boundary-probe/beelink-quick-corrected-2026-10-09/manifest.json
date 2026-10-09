@@ -1,0 +1,107 @@
+{
+  "createdAt": "2026-10-09T10:27:14.987Z",
+  "suite": "quick",
+  "repeat": 1,
+  "requestCount": 8,
+  "seed": null,
+  "endpoints": [
+    {
+      "name": "direct",
+      "url": "http://127.0.0.1:3009/v1"
+    },
+    {
+      "name": "proxy",
+      "url": "http://127.0.0.1:4001/v1"
+    }
+  ],
+  "cases": [
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": true,
+      "stream": true,
+      "payload": "small",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": true,
+      "stream": false,
+      "payload": "large",
+      "budget": 2048,
+      "reasoning": "default"
+    },
+    {
+      "tool": "write",
+      "toolChoice": "required",
+      "strict": true,
+      "stream": true,
+      "payload": "large",
+      "budget": 16384,
+      "reasoning": "default"
+    },
+    {
+      "tool": "submit_result",
+      "toolChoice": "required",
+      "strict": true,
+      "stream": false,
+      "payload": "result",
+      "budget": 2048,
+      "reasoning": "default"
+    }
+  ],
+  "requests": [
+    {
+      "id": "direct-case1-r1",
+      "endpoint": "direct",
+      "caseIndex": 1,
+      "repeat": 1
+    },
+    {
+      "id": "direct-case2-r1",
+      "endpoint": "direct",
+      "caseIndex": 2,
+      "repeat": 1
+    },
+    {
+      "id": "direct-case3-r1",
+      "endpoint": "direct",
+      "caseIndex": 3,
+      "repeat": 1
+    },
+    {
+      "id": "direct-case4-r1",
+      "endpoint": "direct",
+      "caseIndex": 4,
+      "repeat": 1
+    },
+    {
+      "id": "proxy-case1-r1",
+      "endpoint": "proxy",
+      "caseIndex": 1,
+      "repeat": 1
+    },
+    {
+      "id": "proxy-case2-r1",
+      "endpoint": "proxy",
+      "caseIndex": 2,
+      "repeat": 1
+    },
+    {
+      "id": "proxy-case3-r1",
+      "endpoint": "proxy",
+      "caseIndex": 3,
+      "repeat": 1
+    },
+    {
+      "id": "proxy-case4-r1",
+      "endpoint": "proxy",
+      "caseIndex": 4,
+      "repeat": 1
+    }
+  ],
+  "constraint_activation": "unverified",
+  "safety": "synthetic tool calls only; calls are never executed"
+}
