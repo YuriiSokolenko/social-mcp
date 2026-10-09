@@ -3,6 +3,7 @@
 // failure because the terminating assistant toolUse turn has no final prose.
 // Main revalidates this same per-lifecycle sidecar independently.
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
