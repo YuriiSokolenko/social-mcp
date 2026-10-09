@@ -92,7 +92,7 @@ function cleanGitWorktree(root) {
   return work;
 }
 
-function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Object.keys(files), expectedError = null, upstreamFiles = {}, checkpointCommit = false }) {
+function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Object.keys(files), expectedError = null, upstreamFiles = {}, checkpointCommit = false, savedUpstreamPatch = false }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-success-'));
   const work = cleanGitWorktree(root);
   if (Object.keys(upstreamFiles).length) {
@@ -106,6 +106,10 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
     }
     upstreamGit('add', '-A');
     upstreamGit('commit', '-m', 'Update dev upstream');
+    if (savedUpstreamPatch) fs.writeFileSync(
+      path.join(root, 'upstream.patch'),
+      upstreamGit('show', '--format=', '--binary', 'HEAD'),
+    );
     upstreamGit('push', 'origin', 'dev');
   }
   const context = path.join(root, 'issue.json');
@@ -166,6 +170,7 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
         PI_RESUME_ACTIVE: 'false',
         PI_VALIDATION_REPAIR: 'false',
         ...modeEnv,
+        ...(savedUpstreamPatch ? { PI_RESUME_PATCH: path.join(root, 'upstream.patch') } : {}),
       },
     });
     assert.equal(child.status, 0, child.stderr + child.stdout);
@@ -408,6 +413,14 @@ test('restored and validation-repair work derive changed files with empty submit
     params: {},
     expectedError: /lacks trusted replay proof/,
   });
+  const proven = runSuccessfulSubmit({
+    modeEnv: { PI_RESUME_ACTIVE: 'true', PI_VALIDATION_REPAIR: 'false' },
+    params: {},
+    upstreamFiles: { 'src/proven.txt': 'already integrated\\n' },
+    savedUpstreamPatch: true,
+  });
+  assert.equal(proven.metadata.outcome, 'already_satisfied');
+  assert.deepEqual(proven.metadata.files, []);
 });
 
 test('fresh already_satisfied and blocked result shapes still execute successfully', () => {
