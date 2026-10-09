@@ -92,7 +92,7 @@ function cleanGitWorktree(root) {
   return work;
 }
 
-function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Object.keys(files), expectedError = null, upstreamFiles = {}, checkpointCommit = false, savedUpstreamPatch = false }) {
+function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Object.keys(files), expectedError = null, upstreamFiles = {}, checkpointCommit = false, savedUpstreamPatch = false, submissionFirstAttempt = null }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-success-'));
   const work = cleanGitWorktree(root);
   if (Object.keys(upstreamFiles).length) {
@@ -172,6 +172,30 @@ function runSuccessfulSubmit({ modeEnv, params, files = {}, acceptedFiles = Obje
           await emit('turn_end', { message: { stopReason: 'toolUse' } });
           await emit('before_provider_request', { payload: { max_completion_tokens: 4096,
             tools: [{ function: { name: 'submit_result' } }, { function: { name: 'write' } }] } });
+          const firstAttempt = ${JSON.stringify(submissionFirstAttempt)};
+          if (firstAttempt) {
+            if (firstAttempt === 'blank') {
+              await emit('tool_call', { toolName: 'submit_result', toolCallId: 'blank-first',
+                input: { resultText: '   ' } });
+            }
+            await emit('message_end', { message: { role: 'assistant',
+              stopReason: firstAttempt === 'prose' ? 'stop' : 'toolUse',
+              content: firstAttempt === 'prose' ? [{ type: 'text', text: 'Done.' }]
+                : [{ type: 'toolCall', id: 'blank-first', name: 'submit_result' }] } });
+            if (firstAttempt === 'blank') {
+              let invalidRejected = false;
+              try { await tool.execute('blank-first', { resultText: '   ' }); }
+              catch (error) { invalidRejected = error.message.includes('result_submission_not_complete'); }
+              if (!invalidRejected) throw new Error('Blank resultText incorrectly accepted');
+              await emit('tool_execution_end', { toolCallId: 'blank-first',
+                toolName: 'submit_result', isError: true });
+            }
+            await emit('turn_end', { message: { stopReason: firstAttempt === 'prose' ? 'stop' : 'toolUse' } });
+            const correction = await emit('before_provider_request', { payload: {
+              max_completion_tokens: 4096, tools: [{ function: { name: 'submit_result' } }]
+            } });
+            if (correction?.tools?.length !== 1) throw new Error('Missing correction-only provider surface');
+          }
           await emit('tool_call', { toolName: 'submit_result', toolCallId: 'submit', input: params });
           await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
             content: [{ type: 'toolCall', id: 'submit', name: 'submit_result' }] } });
@@ -325,6 +349,20 @@ test('fresh submission uses a new submit-only provider request and one truncatio
     assert.equal(child.status, 0, child.stderr + child.stdout);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#640 a corrected prose or blank resultText reaches the real terminal executor', () => {
+  for (const first of ['prose', 'blank']) {
+    const result = runSuccessfulSubmit({
+      modeEnv: {},
+      params: { resultText: 'Complete implementation description after format correction.' },
+      files: { 'src/corrected.txt': 'corrected implementation\\n' },
+      submissionFirstAttempt: first,
+    });
+    assert.equal(result.metadata.outcome, 'changed', first);
+    assert.deepEqual(result.metadata.files, ['src/corrected.txt']);
+    assert.match(result.metadata.result_text, /after format correction/);
   }
 });
 
