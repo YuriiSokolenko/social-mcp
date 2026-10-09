@@ -198,6 +198,28 @@ test('the coding session is the same Implementer runtime, defined only in truste
 // persisted transcript. pi-bash-timeout.mjs needs the pi package, so the host asserts its path
 // but does not import it; run_check / submit_result executors are stubbed (their gates are real).
 let lastMetrics = [];
+// Pi invokes every extension hook in registration order. The scenario host used to
+// replace the runtime hook when result-tool registered its own phase hooks.
+function registerScenarioHook(map, name, fn) {
+  const prior = map.get(name);
+  if (!prior) { map.set(name, fn); return; }
+  // Keep synchronous provider-request hooks synchronous; only tool calls and
+  // terminal hooks that genuinely await a Promise should return a Promise.
+  map.set(name, (event, ctx) => {
+    const afterFirst = first => {
+      if (name === 'tool_call' && first?.block) return first;
+      // The next extension receives the payload transformed by the first.
+      const nextEvent = name === 'before_provider_request' && first !== undefined
+        ? { ...event, payload: first } : event;
+      const second = fn(nextEvent, ctx);
+      return second?.then
+        ? second.then(value => value === undefined ? first : value)
+        : second === undefined ? first : second;
+    };
+    const first = prior(event, ctx);
+    return first?.then ? first.then(afterFirst) : afterFirst(first);
+  });
+}
 function runtimeScenario(mode) {
   const dir = tempDir();
   try {
@@ -249,6 +271,7 @@ function runtimeScenario(mode) {
     fs.writeFileSync(context, JSON.stringify({ title: 'Coding session smoke', body: 'Create generated.py and its test' }));
     fs.writeFileSync(loader, TYPEBOX_STUB_LOADER);
     fs.writeFileSync(scenario, `
+      ${registerScenarioHook.toString()}
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
       import { EventEmitter } from 'node:events';
@@ -306,7 +329,7 @@ function runtimeScenario(mode) {
       const pi = {
         events: { on: (event, fn) => { bus.on(event, fn); return () => bus.off(event, fn); }, emit: (...args) => bus.emit(...args) },
         registerTool: tool => tools.set(tool.name, tool),
-        on: (name, fn) => handlers.set(name, fn),
+        on: (name, fn) => registerScenarioHook(handlers, name, fn),
         appendEntry: () => {},
         getAllTools: () => [...new Set([...tools.keys(), 'read', 'write', 'edit', 'bash'])].filter(name => mode !== 'narrow-registry' || name !== 'bash').map(name => ({ name })),
         getActiveTools: () => [...active], setActiveTools: names => { active = names; },
@@ -357,7 +380,7 @@ function runtimeScenario(mode) {
           sessionManager: { getSessionId: () => 'coding', getSessionFile: () => null, getEntries: () => inherited, getHeader: () => ({}) } };
         let childActive = [...definition.tools];
         const childPi = { events: new EventEmitter(), registerTool: t => childTools.set(t.name, t),
-          on: (n, f) => childHandlers.set(n, f),
+          on: (n, f) => registerScenarioHook(childHandlers, n, f),
           getActiveTools: () => [...childActive], setActiveTools: names => { childActive = names.filter(name => definition.tools.includes(name)); },
           setModel: async model => { childCaps.push(model.maxTokens); childCtx.model = model; return true; },
           sendUserMessage: async () => {} };
@@ -365,7 +388,17 @@ function runtimeScenario(mode) {
         for (const extensionPath of definition.extensions) {
           if (extensionPath.endsWith('/pi-bash-timeout.mjs')) continue;
           const { default: extension } = await import(new URL('file://' + extensionPath).href);
-          extension(childPi);
+          if (extensionPath.endsWith('/pi-implementer-result-tool.mjs')) {
+            // This legacy runtime scenario stubs the terminal executor and verifies
+            // coding/recovery gates, not the real result-phase protocol. Its hook
+            // lifecycle is replayed separately by the dedicated submission test.
+            const on = childPi.on;
+            childPi.on = () => {};
+            extension(childPi);
+            childPi.on = on;
+          } else {
+            extension(childPi);
+          }
         }
         // Thinking off on the wire, from the trusted runtime, whatever the settings say.
         const realProviderPatch = childHandlers.get('before_provider_request');
@@ -1308,6 +1341,8 @@ function runtimeScenario(mode) {
         }
         const event = { toolName: name, toolCallId: name + turn, input };
         assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked');
+        // Pi completes the provider assistant message before executing its tool calls.
+        // The result admission gate checks this completed message and the same toolCallId.
         if (name === 'submit_result' && input?.resultText) {
           await handlers.get('message_end')?.({ message: { role: 'assistant',
             stopReason: 'toolUse', content: [{ type: 'toolCall', id: event.toolCallId, name }] } }, ctx);

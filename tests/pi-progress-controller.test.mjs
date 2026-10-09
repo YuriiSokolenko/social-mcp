@@ -948,7 +948,7 @@ test('stage configuration centralizes per-agent runtime policy', () => {
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetTool, 'request_large_mutation_budget');
   assert.equal(stageConfig('implementer').productiveProgress.largeMutationBudgetMaxTokens, IMPLEMENTER_RESPONSE_MAX_TOKENS);
   assert.equal(stageConfig('implementer').fixedResponseMaxTokens, undefined);
-  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'submit_result']);
+  assert.deepEqual(stageConfig('implementer').productiveProgress.actionTools, ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'begin_result_submission', 'submit_result']);
   assert.deepEqual(stageConfig('implementer').productiveProgress.controlTools, ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget']);
   assert.equal(stageConfig('dispatcher').productiveProgress.activationReadSuffix, 'pi-dispatcher-context.json');
   assert.deepEqual(stageConfig('dispatcher').productiveProgress.actionTools, ['submit_result']);
