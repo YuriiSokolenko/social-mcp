@@ -314,10 +314,11 @@ test('fresh submission uses a new submit-only provider request and one truncatio
         content: [{ type: 'toolCall', id: submit.toolCallId, name: 'submit_result' }] } });
       // The Git terminal executor has a separate fixture; here simulate its successful receipt.
       await emit('tool_execution_end', { ...submit, isError: false });
+      assert.deepEqual(caps, [4096, 8192, 2048], 'restore parent budget after successful terminal tool');
       await emit('turn_end', { message: { stopReason: 'toolUse' } });
       assert.equal(aborts, 0);
       assert.equal((await emit('tool_call', { toolName: 'read', toolCallId: 'after', input: {} })).block, true);
-      assert.equal(caps.length, 2, 'a completed submit never uses additional budgets');
+      assert.equal(caps.length, 3, 'only the dedicated budgets and the final restore run');
     `;
     const child = runProgram({ dir, program, env: { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' } });
     assert.equal(child.status, 0, child.stderr + child.stdout);
