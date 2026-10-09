@@ -1929,7 +1929,7 @@ export default function (pi) {
   let previousMainPromptMetadata = null;
   let mainPromptRequestSequence = 0;
   if (stage === 'implementer') {
-    pi.on('before_provider_request', (event) => {
+    pi.on('before_provider_request', (event, ctx) => {
       if (runCheckPreflightFailed) {
         console.error('PI_RUN_CHECK_PREFLIGHT_PROVIDER_BLOCKED');
         return { ...event.payload, tools: [], tool_choice: 'none' };
@@ -2258,7 +2258,7 @@ export default function (pi) {
           providerWireOutputBudget.ceiling >= needed;
         if (!executable.includes(correction.tool) || !allowedBudget) {
           abortCodingTransportRecovery(
-            arguments[1],
+            ctx,
             !executable.includes(correction.tool)
               ? 'PI_CODING_TOOL_RECOVERY_CAPABILITY_UNAVAILABLE'
               : 'PI_CODING_TOOL_RECOVERY_WIRE_BUDGET_UNVERIFIED',
