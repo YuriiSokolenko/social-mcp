@@ -585,8 +585,8 @@ test('Pi runtime fail-closes the stage when session_start preflight fails instea
       assert.equal(aborted, true, 'session_start explicitly aborts the Pi stage');
       assert.equal(modelSet, false, 'no agent budget/model work may start after a failed preflight');
       const blocked = handlers.get('before_provider_request')({ payload: { tools: [{ function: { name: 'write' } }] } });
-      assert.deepEqual(blocked.tools, [], 'defensive request gate exposes no actionable tools');
-      assert.equal(blocked.tool_choice, 'none');
+      assert.equal(Object.hasOwn(blocked, 'tools'), false, 'defensive gate exposes no actionable tools');
+      assert.equal(Object.hasOwn(blocked, 'tool_choice'), false, 'no invalid tool choice on a blocked request');
       const failure = JSON.parse((await import('node:fs')).readFileSync(${JSON.stringify(failureFile)}, 'utf8'));
       assert.equal(failure.failure_class, 'infrastructure');
       assert.equal(failure.failure_code, 'PI_RUN_CHECK_PREFLIGHT_FAILED');

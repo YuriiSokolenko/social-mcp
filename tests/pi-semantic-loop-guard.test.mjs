@@ -2062,8 +2062,8 @@ test('#426 runtime keeps selected conflict recovery armed after wrong read targe
     );
     assert.equal(
       secondRequest.tool_choice,
-      undefined,
-      'this synthetic inactive-state scenario verifies recovery retention via the narrowed surface; action-required forcing is covered separately',
+      'required',
+      'the exact selected recovery tool remains provider-required even in the synthetic inactive state',
     );
 
     assert.equal(await handlers.get('tool_call')({
