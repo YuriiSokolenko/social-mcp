@@ -38,6 +38,8 @@ export function mainPromptRequestMetadata(payload, previous = null) {
   const systemText = systemMessages.map(messageText).join('\n');
   const skillsBlock = systemText.match(/<skills>[\s\S]*?<\/skills>/)?.[0] ?? '';
   const skillCount = (skillsBlock.match(/<skill>/g) ?? []).length;
+  const discoveryIndex = skillsBlock.match(/<skill_discovery_index>([\s\S]*?)<\/skill_discovery_index>/)?.[1] ?? '';
+  const indexedSkillCount = discoveryIndex.split('\n').filter(line => line.includes('\t')).length;
 
   return {
     systemMessageCount: systemMessages.length,
@@ -47,6 +49,8 @@ export function mainPromptRequestMetadata(payload, previous = null) {
     systemTextBytes: Buffer.byteLength(systemText, 'utf8'),
     skillCatalogBytes: Buffer.byteLength(skillsBlock, 'utf8'),
     skillCount,
+    indexedSkillCount,
+    discoverableSkillCount: skillCount + indexedSkillCount,
     initialUserContextBytes: user.bytes,
     initialUserContextHash: user.hash,
     sharedContractCount: (initialUserText.match(/<shared_agent_contract\b/g) ?? []).length,
