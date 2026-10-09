@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
+import { spawnSync } from 'node:child_process';
 import { SseToolCallParser, classifyToolResponse, compressEvidenceBuffer, evaluateComparability, pairComparisonRecords, timeoutSettings, validateToolCall } from '../scripts/research/tool-call-boundary-probe.mjs';
 
 const frame = payload => `data: ${JSON.stringify(payload)}\n\n`;
@@ -54,6 +55,25 @@ test('JSON parseable wrong tool names are classified independently', () => {
 test('both tool schemas accept their required string fields', () => {
   assert.equal(validateToolCall({name:'write',arguments:'{"path":"p.py","content":"print(1)"}'}).status,'valid');
   assert.equal(validateToolCall({name:'submit_result',arguments:'{"resultText":"done","files":["a.py"]}'}).status,'valid');
+});
+
+test('#681 planner probe dry-run produces matched auto, required and named tool-choice cases', () => {
+  const child = spawnSync(process.execPath, [
+    'scripts/research/tool-call-boundary-probe.mjs', '--suite', 'planner',
+    '--dry-run', '--repeat', '1', '--max-requests', '6',
+  ], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(child.status, 0, child.stderr);
+  const manifest = JSON.parse(child.stdout);
+  assert.equal(manifest.requestCount, 6);
+  assert.equal(manifest.cases.length, 3);
+  assert.deepEqual(manifest.cases.map(c => c.toolChoice), ['auto', 'required', 'named']);
+  assert.ok(manifest.cases.every(c => c.tool === 'submit_plan' && c.budget === 4096 &&
+    c.payload === 'plan' && c.stream === true && c.strict === false));
+  assert.equal(manifest.requests.filter(r => r.endpoint === 'direct').length, 3);
+  assert.equal(manifest.requests.filter(r => r.endpoint === 'proxy').length, 3);
+  assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":"Update src/a.py and test."}' }).status, 'valid');
+  assert.deepEqual(validateToolCall({ name: 'submit_plan', arguments: '{}' }).missing, ['planText']);
+  assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":123}' }).status, 'schema_error');
 });
 
 test('submit_result files must be an array of strings, not JSON encoded text', () => {
