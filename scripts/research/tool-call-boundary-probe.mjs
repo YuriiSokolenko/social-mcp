@@ -102,11 +102,48 @@ const PROMPTS = {
     large: `Call write exactly once with path "probe/synthetic_large.py". The content must be a valid Python module with exactly 180 functions named transform_001 through transform_180, each accepting value, having a short docstring, and returning a deterministic f-string prefixed case-N:. Include the exact first marker # BEGIN TOOL_CALL_BOUNDARY_PROBE and final marker # END TOOL_CALL_BOUNDARY_PROBE. Do not summarize or omit functions. This synthetic file is not to be executed.`,
   },
   submit_result: { result: 'Call submit_result exactly once with resultText exactly: "Synthetic probe completed; no files were written and no generated code was executed." and files exactly ["probe/synthetic.py"].' },
-  submit_plan: { plan: 'Call submit_plan exactly once with planText exactly: "Inspect src/diagnostics.py, make the minimal fix, and run focused tests." Do not return ordinary Markdown prose or execute anything.' },
+  submit_plan: { plan: 'Finish the implementation plan for the issue from the verified repository observations. This is the submission phase: there are no repository tools available. Provide the complete actionable plan.' },
 };
+// Synthetic but structurally realistic: prior read-only calls and the completed
+// begin_plan_submission are retained in the model's conversation, but the sole
+// executable tool advertised for this new provider request is submit_plan.
+// No exact planText string is supplied. These calls are NEVER executed.
+export function plannerSyntheticMessages(contextVariant = 'research') {
+  const messages = [
+    { role: 'system', content: 'You are the implementation Planner. Repository research is read-only. After begin_plan_submission has executed, the plan must be submitted through submit_plan; plain assistant prose is not an accepted terminal handoff. All artifacts and calls in this diagnostic are synthetic.' },
+    { role: 'user', content: 'Issue: Fix retry behavior in src/social_mcp/sender.py, preserve public signatures and add tests in tests/test_sender.py. Inspect how async sends handle 429/503, cancellations and Retry-After. Prepare a narrowly scoped change, do not execute any code.' },
+  ];
+  if (contextVariant === 'research') {
+    for (let i = 0; i < 24; i++) {
+      const id = 'synthetic_read_' + String(i).padStart(2, '0');
+      const file = i % 3 === 0 ? 'src/social_mcp/sender.py'
+        : i % 3 === 1 ? 'src/social_mcp/retry_policy.py' : 'tests/test_sender.py';
+      messages.push({
+        role: 'assistant', content: null,
+        tool_calls: [{ id, type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: file, offset: i * 20, limit: 40 }) } }],
+      });
+      const lines = Array.from({ length: 12 }, (_, n) =>
+        (i * 20 + n + 1) + ': observed ' + file + ': coroutine ' +
+        (n % 3 ? 'send_with_retry' : 'classify_error') + ' handles status ' +
+        (n % 2 ? 429 : 503) + '; preserve cancellation, deduplicate retry scheduling, respect total deadline and avoid double sends.');
+      messages.push({ role: 'tool', tool_call_id: id, content: lines.join('\n') });
+    }
+  } else if (contextVariant !== 'short') {
+    throw new Error('Unsupported Planner probe context variant: ' + contextVariant);
+  }
+  messages.push({ role: 'assistant', content: null, tool_calls: [{
+    id: 'synthetic_begin_submission', type: 'function',
+    function: { name: 'begin_plan_submission', arguments: '{}' },
+  }] });
+  messages.push({ role: 'tool', tool_call_id: 'synthetic_begin_submission',
+    content: 'Research closed. All repository tools are disabled; the next request exposes only submit_plan.' });
+  messages.push({ role: 'user', content: PROMPTS.submit_plan.plan });
+  return messages;
+}
+
 function scenarios(args) {
   const suite = argValue(args, 'suite', 'quick'); if (!['quick', 'full', 'followup', 'targeted', 'planner'].includes(suite)) throw new Error('--suite must be quick, full, followup, targeted, or planner');
-  const repeat = Number(argValue(args, 'repeat', ['full','followup'].includes(suite) ? 5 : 1)); if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) throw new Error('--repeat must be 1..100');
+  const repeat = Number(argValue(args, 'repeat', ['full','followup'].includes(suite) ? 5 : suite === 'planner' ? 3 : 1)); if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) throw new Error('--repeat must be 1..100');
   const list = [];
   if (suite === 'quick') list.push(
     { tool: 'write', toolChoice: 'required', strict: true, stream: true, payload: 'small', budget: 2048, reasoning: 'default' },
@@ -132,11 +169,14 @@ function scenarios(args) {
     ];
     for (const [tool,toolChoice,strict,stream,payload,budget,reasoning] of rows) list.push({tool,toolChoice,strict,stream,payload,budget,reasoning});
   }
-  // #681: matched minimal, terminal-only submit_plan choices, identical model and
-  // request body per endpoint. All raw SSE frames, tool deltas, parser results,
-  // finish reasons and independent schema validation are persisted by the runner.
-  if (suite === 'planner') for (const toolChoice of ['auto', 'required', 'named']) {
-    list.push({ tool: 'submit_plan', toolChoice, strict: false, stream: true, payload: 'plan', budget: 4096, reasoning: 'default' });
+  // #681: identical input for each direct-vs-proxy pair, and the same history
+  // for each auto/required/named triplet. Short and long synthetic research
+  // histories exercise the terminal boundary without a quoted planText.
+  if (suite === 'planner') for (const contextVariant of ['short', 'research']) {
+    for (const toolChoice of ['auto', 'required', 'named']) {
+      list.push({ tool: 'submit_plan', toolChoice, strict: true, stream: true, payload: 'plan',
+        contextVariant, budget: 4096, reasoning: 'default' });
+    }
   }
   if (suite === 'targeted') list.push({ tool: argValue(args,'tool','write'), toolChoice: argValue(args,'tool-choice','required'), strict: boolArg(argValue(args,'strict','true'),'strict'), stream: boolArg(argValue(args,'stream','true'),'stream'), payload: argValue(args,'payload','small'), budget: Number(argValue(args,'budget','2048')), reasoning: argValue(args,'reasoning','default') });
   if (args.has('probe-reasoning')) {
@@ -160,7 +200,9 @@ function requestFor(s) {
   let user = s.tool === 'write' ? PROMPTS.write[s.payload]
     : s.tool === 'submit_plan' ? PROMPTS.submit_plan.plan : PROMPTS.submit_result.result;
   if (s.tool === 'write' && s.payload === 'large') user += `\n\nRequired deterministic reference structure (do not copy as a shortcut; generate the complete content):\n${largePayload()}`;
-  const body = { model: null, messages: [{ role: 'system', content: 'You are a diagnostic model. All tool calls are synthetic data; never execute them. Return the requested tool call.' }, { role: 'user', content: user }], tools: tool, tool_choice: toolChoice, max_completion_tokens: s.budget, temperature: 0, stream: s.stream };
+  const messages = s.tool === 'submit_plan' ? plannerSyntheticMessages(s.contextVariant ?? 'short')
+    : [{ role: 'system', content: 'You are a diagnostic model. All tool calls are synthetic data; never execute them. Return the requested tool call.' }, { role: 'user', content: user }];
+  const body = { model: null, messages, tools: tool, tool_choice: toolChoice, max_completion_tokens: s.budget, temperature: 0, stream: s.stream };
   if (s.reasoning === 'thinking-off') body.chat_template_kwargs = { enable_thinking: false };
   return body;
 }
@@ -181,7 +223,7 @@ export function classifyToolResponse(s, parsed, calls, validations, response, mo
   const requiredViolation = !parsed.transportError && !parsed.missingDone && response?.status >= 200 && response.status < 300 && s.toolChoice !== 'auto' && calls.length === 0;
   return { category, requiredViolation, reasoningOnly: !calls.length && !text && Boolean(reasoning), ordinaryText: !calls.length && Boolean(text), tokenCeilingReached: truncated, modelsComparable };
 }
-function summaryRow(result) { return `${result.id} | ${result.endpointName} | ${result.case.tool}/${result.case.toolChoice}/${result.case.strict?'strict':'non-strict'}/${result.case.stream?'stream':'non-stream'}/${result.case.payload}/${result.case.budget}/${result.case.reasoning} | ${result.outcome.category} | ${result.validation.map(x=>x.status).join(',')||'no tool call'} | [raw](raw-responses/${result.id}.bin)`; }
+function summaryRow(result) { return `${result.id} | ${result.endpointName} | ${result.case.tool}/${result.case.toolChoice}/${result.case.strict?'strict':'non-strict'}/${result.case.stream?'stream':'non-stream'}/${result.case.payload}/${result.case.contextVariant ?? 'default'}/${result.case.budget}/${result.case.reasoning} | ${result.outcome.category} | ${result.validation.map(x=>x.status).join(',')||'no tool call'} | [raw](raw-responses/${result.id}.bin)`; }
 function p95(xs) { if (!xs.length) return null; return [...xs].sort((a,b)=>a-b)[Math.ceil(xs.length*.95)-1]; }
 function median(xs) { if (!xs.length) return null; const sorted=[...xs].sort((a,b)=>a-b); const middle=Math.floor(sorted.length/2); return sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2; }
 export function pairComparisonRecords(results) {
