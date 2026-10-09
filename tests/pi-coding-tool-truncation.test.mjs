@@ -110,6 +110,10 @@ test('#633 runtime replay: schema rejection at 2048 grants ONE bounded 16k mutat
     }`);
     const script = `
       import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import { execFileSync } from 'node:child_process';
+      const { registerMutationScope } = await import(${JSON.stringify(new URL('../scripts/pi-common/accepted-mutation-scope.mjs', import.meta.url).href)});
       const { default: runtime } = await import(${JSON.stringify(new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href)});
       process.env.PI_STAGE = 'implementer';
       process.env.PI_RESUME_ACTIVE = 'true';
@@ -126,6 +130,18 @@ test('#633 runtime replay: schema rejection at 2048 grants ONE bounded 16k mutat
         sendUserMessage: async text => { directives.push(text); },
       };
       const defs = names => names.map(name => ({ type: 'function', function: { name, parameters: { type: 'object' } } }));
+      const git = (...args) => execFileSync('git', args, { cwd: ctx.cwd });
+      git('init', '-q');
+      git('config', 'user.name', 'Replay');
+      git('config', 'user.email', 'replay@example.invalid');
+      fs.writeFileSync(path.join(ctx.cwd, 'base.txt'), 'baseline\\n');
+      git('add', '-A');
+      git('commit', '-qm', 'baseline');
+      git('update-ref', 'refs/remotes/origin/dev', 'HEAD');
+      registerMutationScope({
+        cwd: ctx.cwd, paths: ['done.txt'], disposition: 'publishable',
+        rationale: 'Intended output required by the issue.', env: process.env,
+      });
       runtime(pi);
       handlers.get('turn_start')({ turnIndex: 0 });
       const original = handlers.get('before_provider_request')({
@@ -150,16 +166,51 @@ test('#633 runtime replay: schema rejection at 2048 grants ONE bounded 16k mutat
       assert.deepEqual(corrected.tools.map(t => t.function.name).sort(), ['accept_mutation_scope', 'write']);
       assert.equal(aborted, 0);
 
-      // A second truncated tool transport under the already elevated grant must
-      // fail truthfully, not spend consecutive prose-only turns or write partial data.
+      // A successful tool call must pass accepted-scope, containment and
+      // journal guards before the simulated executor mutates the worktree.
+      const allowed = await handlers.get('tool_call')({
+        toolName: 'write', toolCallId: 'corrected-write',
+        input: { path: 'done.txt', content: 'safe output\\n' },
+      }, ctx);
+      assert.ok(!allowed?.block, allowed?.reason);
+      fs.writeFileSync(path.join(ctx.cwd, 'done.txt'), 'safe output\\n');
+      await handlers.get('tool_execution_end')({
+        toolName: 'write', toolCallId: 'corrected-write', isError: false,
+        result: { content: [{ type: 'text', text: 'Write succeeded' }] },
+      }, ctx);
+      await handlers.get('turn_end')({
+        turnIndex: 1, message: { stopReason: 'toolUse', usage: { output: 180 } },
+      }, ctx);
+      assert.equal(aborted, 0);
+      assert.equal(fs.readFileSync(path.join(ctx.cwd, 'done.txt'), 'utf8'), 'safe output\\n');
+      assert.equal(ctx.model.maxTokens, 2048, 'successful correction must restore the normal cap');
+
+      // A later independent truncation is allowed after recovered progress.
+      handlers.get('turn_start')({ turnIndex: 2 });
+      handlers.get('before_provider_request')({
+        payload: { messages: [{ role: 'user', content: 'new file' }], tools: defs(tools), max_completion_tokens: 2048 },
+      }, ctx);
       await handlers.get('tool_result')({
-        toolName: 'write', toolCallId: 'partial-again', isError: true,
+        toolName: 'write', toolCallId: 'second-incident', isError: true,
         content: [{ type: 'text', text: ${JSON.stringify(missingPath)} }],
       }, ctx);
       await handlers.get('turn_end')({
-        turnIndex: 1, message: { stopReason: 'toolUse', usage: { output: 16384 } },
+        turnIndex: 2, message: { stopReason: 'toolUse', usage: { output: 2048 } },
       }, ctx);
-      assert.equal(aborted, 1, 'bounded repeated truncation must terminate');
+      assert.equal(aborted, 0, 'independent truncation remains eligible');
+      assert.equal(ctx.model.maxTokens, 16384);
+      handlers.get('turn_start')({ turnIndex: 3 });
+      handlers.get('before_provider_request')({
+        payload: { messages: [{ role: 'user', content: 'retry new file' }], tools: defs(tools), max_completion_tokens: 16384 },
+      }, ctx);
+      await handlers.get('tool_result')({
+        toolName: 'write', toolCallId: 'repeat-second-incident', isError: true,
+        content: [{ type: 'text', text: ${JSON.stringify(missingPath)} }],
+      }, ctx);
+      await handlers.get('turn_end')({
+        turnIndex: 3, message: { stopReason: 'toolUse', usage: { output: 16384 } },
+      }, ctx);
+      assert.equal(aborted, 1, 'repeated truncation within one correction must terminate');
     `;
     const run = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8',
