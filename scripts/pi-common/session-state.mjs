@@ -128,6 +128,14 @@ export function reconcileProviderToolSurface(payload, { activeTools = [] } = {})
  * message without adding a chat role. Never modify tool results or linked
  * assistant calls. The dispatch gate remains authoritative either way.
  */
+function replaceCapabilityTextSuffix(text, suffix) {
+  const start = text.lastIndexOf(CAPABILITY_CONTRACT_START);
+  const original = start >= 0 && text.endsWith(CAPABILITY_CONTRACT_END)
+    ? text.slice(0, start)
+    : text;
+  return original + CAPABILITY_CONTRACT_START + suffix + CAPABILITY_CONTRACT_END;
+}
+
 function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
   if (!message || typeof message !== 'object') return null;
   if (responses && message.type === 'function_call_output') return null;
@@ -140,14 +148,17 @@ function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
       (message.tool_calls != null || message.function_call != null || message.tool_call_id != null)) return null;
   // Do not invent content on tool-call linkage or replace multimodal parts.
   if (typeof message.content === 'string') {
-    return { ...message, content: message.content + '\n\n' + suffix };
+    const content = replaceCapabilityTextSuffix(message.content, suffix);
+    return content === message.content ? message : { ...message, content };
   }
   if (!Array.isArray(message.content)) return null;
   const parts = message.content;
   const last = parts[parts.length - 1];
   const allowedTypes = responses ? ['input_text', 'output_text'] : ['text', 'input_text'];
   if (!last || !allowedTypes.includes(last.type) || typeof last.text !== 'string') return null;
-  return { ...message, content: [...parts.slice(0, -1), { ...last, text: last.text + '\n\n' + suffix }] };
+  const text = replaceCapabilityTextSuffix(last.text, suffix);
+  return text === last.text ? message
+    : { ...message, content: [...parts.slice(0, -1), { ...last, text }] };
 }
 
 const CAPABILITY_CONTRACT_START = '\n\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_START]\n';
