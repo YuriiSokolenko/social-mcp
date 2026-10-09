@@ -120,7 +120,7 @@ export function submitResultParameters() {
       maxLength: 1000,
       description: 'Fresh work only: concrete contradictory requirement, verified against the current repository.',
     })),
-  });
+  }, { additionalProperties: false });
 }
 
 function restoredWork() {
