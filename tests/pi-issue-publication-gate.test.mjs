@@ -477,7 +477,7 @@ test('PR head mismatch is behaviourally gated before publication succeeds', asyn
   }
 });
 
-test('fresh submit_result rejects an undeclared untracked probe before checkpoint publication', () => {
+test('restored submit_result rejects an undeclared untracked probe before checkpoint publication', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-file-set-'));
   const remote = path.join(root, 'remote.git');
   const work = path.join(root, 'work');
@@ -521,14 +521,7 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
       fs.writeFileSync('test_helper.py', 'from helper import value\\n');
       fs.writeFileSync('.probe.py"', 'probe = True\\n');
       try {
-        await submit.execute('submit', {
-          title: 'Probe regression',
-          summary: 'Update helper and test.',
-          changes: ['Update helper', 'Add regression test'],
-          files: ['helper.py', 'test_helper.py'],
-          security_notes: 'No security impact.',
-          limitations: 'None.',
-        }, null, null, { cwd: process.cwd() });
+        await submit.execute('submit', {}, null, null, { cwd: process.cwd() });
         process.exitCode = 10;
       } catch (error) {
         console.error(error.message);
@@ -544,7 +537,7 @@ test('fresh submit_result rejects an undeclared untracked probe before checkpoin
         PI_ISSUE: '334',
         PI_ISSUE_CONTEXT: context,
         PI_IMPLEMENTER_RESULT_FILE: resultFile,
-        PI_RESUME_ACTIVE: 'false',
+        PI_RESUME_ACTIVE: 'true',
         PI_VALIDATION_REPAIR: 'false',
       },
     });
