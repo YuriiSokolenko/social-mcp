@@ -28,6 +28,37 @@ export function providerToolNames(payload) {
 }
 
 /**
+ * Produce phase facts for the outbound Implementer snapshot from trusted
+ * controller/runtime state. A resumed checkpoint never grants a general repair
+ * window: only a concrete, separately selected terminalRecoveryRequiredTool
+ * can override its terminal-only routing. The coding child owns its own repair
+ * gate and must retain its isolated-session instructions.
+ */
+export function implementerRequestPhaseSnapshot({
+  codingSession = false,
+  preparationState = null,
+  resumed = false,
+  validationRepair = false,
+  codingRepair = false,
+  verificationState = null,
+  terminalRecoveryRequiredTool = null,
+} = {}) {
+  const coding = codingSession === true;
+  const restored = resumed === true;
+  const validation = validationRepair === true;
+  return {
+    mode: coding ? 'coding' : 'main',
+    preparationState,
+    resumed: restored,
+    validationRepair: validation,
+    codingRepair: coding && codingRepair === true,
+    repairAuthorized: !coding && !restored && validation,
+    verificationState,
+    terminalRecoveryRequiredTool,
+  };
+}
+
+/**
  * Request-local routing, never a second capability registry. Keep instructions
  * small: the registered descriptions and JSON schemas remain the canonical
  * explanation of each tool's arguments. Every named callable tool below must
@@ -46,8 +77,8 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
   const validationRepair = snapshot?.validationRepair === true;
   // Runtime authorization alone is not a capability grant: every routing hint
   // must also match a tool in this exact serialized provider request.
-  const authorizedRepair = snapshot?.repairAuthorized === true &&
-    (resumed || validationRepair || snapshot?.codingRepair === true);
+  const authorizedRepair = mode === 'main' && !resumed && validationRepair &&
+    snapshot?.repairAuthorized === true;
   const terminalOnly = names.length === 1 && has('submit_result');
   const append = (name, guidance) => { if (has(name)) hints.push(guidance); };
 
@@ -63,7 +94,9 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
     return hints.join(' ');
   }
 
-  if ((resumed || validationRepair) && !authorizedRepair) {
+  // A dedicated submit_result-only request is terminal even in a validation
+  // repair attempt. Do not suggest an edit when no repair tool is serialized.
+  if (mode === 'main' && (resumed || validationRepair) && (!authorizedRepair || terminalOnly)) {
     append('submit_result', 'Restored/validation-repair terminal-only state: call submit_result with no arguments immediately. Do not inspect, edit, or validate before submission.');
     if (!has('submit_result')) {
       hints.push('Restored/validation-repair terminal-only state: the terminal action submit_result is unavailable in this request. Preserve the worktree; do not invent a call or restart fresh work.');
