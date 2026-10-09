@@ -27,7 +27,7 @@ import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
 import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
-import { filterFreshMainToolProfile, MAIN_CAPABILITY_REQUEST_TOOL, MAIN_CAPABILITY_GROUPS, MAX_MAIN_CAPABILITY_ESCALATIONS, mainCapabilityGrant } from './pi-common/main-tool-profile.mjs';
+import { filterFreshMainToolProfile, isFreshMainToolProfilePhase, mainToolProfileResultTelemetry, optionalMainToolGroup, MAIN_CAPABILITY_REQUEST_TOOL, MAIN_CAPABILITY_GROUPS, MAX_MAIN_CAPABILITY_ESCALATIONS, mainCapabilityGrant } from './pi-common/main-tool-profile.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -569,6 +569,7 @@ export default function (pi) {
   let mainCapabilityRequests = 0;
   let mainCapabilityGroups = [];
   let mainToolProfileTelemetry = null;
+  const profileHiddenCorrections = new Set();
   // Process-local between-turn obligation. It is consumed by the next real
   // tool-bearing request or discarded when the stage/process ends; it never
   // survives teardown and cannot carry into a new Pi stage.
@@ -1574,6 +1575,13 @@ export default function (pi) {
   // pi reports `Tool X not found` through tool_execution_end and/or tool_result for the same call.
   // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
   // replacement guidance for the other (recoverable) classes.
+  function profileHiddenToolAdvice(name, snapshot = providerCapabilitySnapshot) {
+    const group = optionalMainToolGroup(name);
+    const permitted = snapshot?.executableTools?.includes(MAIN_CAPABILITY_REQUEST_TOOL);
+    return permitted
+      ? `BLOCKED: ${name} is intentionally hidden by the Main tool profile, not newly active. If this optional capability is genuinely required, call ${MAIN_CAPABILITY_REQUEST_TOOL} with group=${group} and a concrete reason; only a later provider request may expose ${name}. Do not retry this tool now.`
+      : `BLOCKED: ${name} is hidden by the Main tool profile, and ${MAIN_CAPABILITY_REQUEST_TOOL} is not executable in this request. Do not retry or assume it appears later; use an exposed safe action or preserve the worktree.`;
+  }
   const missingExecutorCalls = new Map();
   async function handleMissingExecutor(event, ctx) {
     const kind = classifyMissingExecutor(event.toolName, providerCapabilitySnapshot);
@@ -1582,9 +1590,11 @@ export default function (pi) {
       return null;
     }
     const snapshot = providerCapabilitySnapshot;
-    const guidance = kind === 'deferred'
-      ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response. On a later request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given). ${capabilitySnapshotGuidance(snapshot.executableTools)}`
-      : `BLOCKED: ${event.toolName} is not exposed by the runtime. ${capabilitySnapshotGuidance(snapshot.executableTools)}`;
+    const guidance = kind === 'profile_hidden'
+      ? `${profileHiddenToolAdvice(event.toolName, snapshot)} ${capabilitySnapshotGuidance(snapshot.executableTools)}`
+      : kind === 'deferred'
+        ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response. On a later request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given). ${capabilitySnapshotGuidance(snapshot.executableTools)}`
+        : `BLOCKED: ${event.toolName} is not exposed by the runtime. ${capabilitySnapshotGuidance(snapshot.executableTools)}`;
     const key = event.toolCallId ?? `${snapshot.request}:${event.toolName}`;
     if (!missingExecutorCalls.has(key)) {
       missingExecutorCalls.set(key, kind);
@@ -1593,6 +1603,9 @@ export default function (pi) {
       // It must not promise that request's surface: another tool in this response may still
       // change state and remove the deferred tool again, so the guidance stays conditional on
       // the authoritative snapshot of the request that carries it.
+      if (kind === 'profile_hidden') {
+        await pi.sendUserMessage(profileHiddenToolAdvice(event.toolName, snapshot), { deliverAs: 'steer' });
+      }
       if (kind === 'deferred') {
         await pi.sendUserMessage(
           `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. Do not retry it in this response. On the next request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given) and it is still needed; the surface may change again before then.`,
@@ -1608,14 +1621,14 @@ export default function (pi) {
           }
         }
       }
-      unavailableCapabilityAttemptedThisTurn = true;
+      if (kind !== 'profile_hidden') unavailableCapabilityAttemptedThisTurn = true;
       unavailableCapabilityToolThisTurn = event.toolName;
       unavailableCapabilityKindThisTurn = kind === 'deferred'
         ? 'stale_after_capability_transition'
-        : 'executor_not_found';
-      console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
+        : kind === 'profile_hidden' ? 'profile_hidden' : 'executor_not_found';
+      console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : kind === 'profile_hidden' ? 'PI_MAIN_PROFILE_TOOL_HIDDEN' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
-        kind: kind === 'deferred' ? 'deferred_tool_called' : 'executor_not_found',
+        kind: kind === 'deferred' ? 'deferred_tool_called' : kind === 'profile_hidden' ? 'profile_hidden_tool_called' : 'executor_not_found',
         attemptedTool: event.toolName,
         request: snapshot.request,
         requestTools: snapshot.executableTools,
