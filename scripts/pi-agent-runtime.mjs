@@ -509,6 +509,9 @@ export default function (pi) {
   let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
+  // Process-local between-turn obligation. It is consumed by the next real
+  // tool-bearing request or discarded when the stage/process ends; it never
+  // survives teardown and cannot carry into a new Pi stage.
   let unavailableCapabilityCorrectionPending = false;
   let providerWireOutputBudget = null;
   let codingToolTransportErrors = [];
@@ -2289,12 +2292,18 @@ export default function (pi) {
       }
       patched = steerCompaction.payload;
       if (!steerCompaction.blocked) {
-        // Request-local instructions never introduce an extra role=user turn.
-        // Normal text tails receive a suffix; after tool results or opaque
-        // assistant calls, use an already serialized tool description instead.
-        // Tool output bytes, role ordering, and linked call IDs remain unchanged.
+        // Keep one stable tool-schema carrier throughout tool-bearing turns.
+        // Tool output bytes, role ordering and linked call IDs stay unchanged.
+        // If no safe carrier remains (e.g. zero tools and a tool-result tail),
+        // execution still fails closed; log loss of the advisory instruction.
         patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
           trustedRuntimeEnvelope: stage === 'implementer',
+          onMissingCarrier: reason => console.warn(`PI_PROVIDER_CAPABILITY_GUIDANCE_OMITTED ${JSON.stringify({
+            stage,
+            request: providerCapabilitySnapshot?.request ?? null,
+            reason,
+            executableTools: providerCapabilitySnapshot?.executableTools ?? [],
+          })}`),
         });
       }
 
