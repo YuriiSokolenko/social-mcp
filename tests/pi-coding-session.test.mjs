@@ -251,7 +251,7 @@ function runtimeScenario(mode) {
     };
     fs.writeFileSync(preparedFile, JSON.stringify(mode === 'fallback'
       ? { ...preparedBase, status: 'fallback', failureClass: 'preparation_infrastructure_failure', reason: 'planner down' }
-      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], repositoryFacts: ['Planner fact marker'], complexity: 'nontrivial', evidenceBudget: 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-recovery', 'large-mutation-coding-argument-retry-abort'].includes(mode), reason: 'One lookup' }));
+      : { ...preparedBase, status: 'prepared', plan: ['Create generated.py'], repositoryFacts: ['Planner fact marker'], complexity: 'nontrivial', evidenceBudget: mode === 'action-required-serial' ? 0 : 1, largeMutation: ['large-mutation-auto-force', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-recovery', 'large-mutation-coding-argument-retry-abort'].includes(mode), reason: 'One lookup' }));
     const resultFile = path.join(dir, 'implementer-result.json');
     const scopeFile = path.join(dir, 'accepted-scope.json');
     const runtimeFailure = path.join(dir, 'runtime-failure.json');
@@ -279,7 +279,7 @@ function runtimeScenario(mode) {
       const terminalReceiptUrl = ${JSON.stringify(new URL('../scripts/pi-common/terminal-receipt.mjs', import.meta.url).href)};
       const implementerResultUrl = ${JSON.stringify(new URL('../scripts/pi-common/implementer-result.mjs', import.meta.url).href)};
       const codingValidationUrl = ${JSON.stringify(new URL('../scripts/pi-common/coding-session-validation.mjs', import.meta.url).href)};
-      const { default: runtime, providerErrorStatus, codingSessionArgumentValidation } = await import(runtimeUrl);
+      const { default: runtime, providerErrorStatus, codingSessionArgumentValidation, implementerToolChoiceDecision } = await import(runtimeUrl);
       const { createSuccessfulTerminalReceipt, writeTerminalReceiptFile, assertSuccessfulTerminalReceipt } = await import(terminalReceiptUrl);
       const { writeImplementerResult } = await import(implementerResultUrl);
       const { assertCodingBehavioralValidation, recordCodingBehavioralValidation } = await import(codingValidationUrl);
@@ -330,7 +330,7 @@ function runtimeScenario(mode) {
       persist({ type: 'session', id: 'parent' });
       persist({ type: 'message', message: { role: 'user', content: 'Implement issue: create generated.py and its test' } });
       persist({ type: 'message', message: { role: 'assistant', content: 'PARENT_TRANSCRIPT_ONLY_MARKER' } });
-      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-retry-abort', 'scope-prelude-cap'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
+      const ctx = { cwd, model: { maxTokens: 32000 }, abort: () => { if (!['ceiling-draft', 'action-prose-abort', 'action-repeat-abort', 'action-hidden-abort', 'tool-contract', 'parent-contract', 'parent-contract-reverse', 'deferred-capability', 'deferred-then-removed', 'evidence-missing-executor', 'no-submit-recovery-dead-end', 'large-mutation-prose-abort', 'large-mutation-length-retry-abort', 'large-mutation-provider-retry-abort', 'large-mutation-action-retry-abort', 'large-mutation-coding-argument-retry-abort', 'scope-prelude-cap', 'action-required-serial'].includes(mode)) throw new Error('unexpected abort'); aborts++; },
         sessionManager: { getSessionId: () => 'parent', getSessionFile: () => (mode === 'no-session' ? null : sessionFile) } };
       const signal = new AbortController();
       const pi = {
@@ -776,7 +776,7 @@ function runtimeScenario(mode) {
             messages: [],
             tools: childActive.map(name => ({ type: 'function', function: { name } })),
           };
-          assert.equal(providerPatch({ payload: actionPayload }, childCtx).tool_choice, undefined, 'child tool call clears forcing');
+          assert.equal(providerPatch({ payload: actionPayload }, childCtx).tool_choice, 'required', 'successful fork tools do not clear productive forcing');
         }
         await childCall('run_check', { kind: 'python_compile', paths: [cwd + '/generated.py'] });
         const testSource = mode === 'repair-evidence'
@@ -1279,8 +1279,8 @@ function runtimeScenario(mode) {
       // pi assembles the payload from the active surface; the runtime's own sync may only shrink it here.
       const unarmedPayload = { model: 'm', messages: [], tools: active.filter(name => name !== 'run_check').map(name => ({ type: 'function', function: { name } })) };
       const firstParentRequest = handlers.get('before_provider_request')({ payload: unarmedPayload }, ctx);
-      if (mode === 'restored') {
-        assert.equal(firstParentRequest.tool_choice, 'required', 'direct action_required startup constrains the first parent request');
+      if (mode === 'restored' || mode === 'action-required-serial') {
+        assert.equal(firstParentRequest.tool_choice, 'required', 'prepared action_required startup constrains the first parent request');
       } else {
         assert.equal(firstParentRequest, unarmedPayload, 'preparation-phase parent request is unchanged');
       }
@@ -1742,7 +1742,7 @@ function runtimeScenario(mode) {
             tools: active.map(name => ({ type: 'function', function: { name } })),
           },
         }, ctx);
-        assert.equal(normal.tool_choice, undefined, 'ordinary post-grant 2K turns are not globally action-forced');
+        assert.equal(normal.tool_choice, 'required', 'post-grant productive 2K turns remain forced');
         console.log('LARGE_MUTATION_AUTO_FORCE_OK');
         process.exit(0);
       }
@@ -1847,7 +1847,8 @@ function runtimeScenario(mode) {
 
           handlers.get('turn_start')({ turnIndex: turn });
           const fallback = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(fallback.tool_choice, undefined, '422 clears provider-level forced-tool fallback');
+          assert.equal(fallback.tool_choice, 'auto', '422 gets one compatibility request');
+          assert.equal(handlers.get('before_provider_request')({ payload: providerPayload }, ctx).tool_choice, 'required', 'state-based forcing resumes after the single fallback');
           assert.match(steers.at(-1), /provider rejected the provider-level required-tool request/);
           assert.match(steers.at(-1), /CURRENTLY EXPOSED TOOLS/);
           assert.match(steers.at(-1), /submit_result with blocked_reason/);
@@ -1874,7 +1875,7 @@ function runtimeScenario(mode) {
           assert.ok(repeated?.alreadySatisfied || /already/i.test(String(repeated?.reason ?? '')), 'repeat is rejected as already completed');
           assert.match(String(repeated.reason), /CURRENTLY EXPOSED TOOLS/);
           const afterRepeat = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
-          assert.equal(afterRepeat.tool_choice, undefined, 'an emitted tool call consumes provider forcing even when it is a no-op');
+          assert.equal(afterRepeat.tool_choice, 'required', 'policy-rejected call does not clear state forcing');
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
           assert.equal(aborts, 0, 'one no-op repeat is a single strike');
           handlers.get('turn_start')({ turnIndex: turn });
@@ -2849,22 +2850,22 @@ test('#512 one elevated mutation grant permits one scope prelude and repeated sc
 
 test('first prose-only action-required retry stays forced through a ceiling turn until a real exposed tool', () => {
   const logs = runtimeScenario('prose-force-direct');
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
-  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 2);
+  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_PERSISTENT/);
+  assert.ok((logs.match(/PI_IMPLEMENTER_PROVIDER_WIRE .*"toolChoice":"required"/g) ?? []).length >= 2);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"accept_mutation_scope"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
 test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover once from a forced 422', () => {
   const logs = runtimeScenario('prose-force-provider-statuses');
-  assert.ok((logs.match(/PI_ACTION_REQUIRED_TOOL_CHOICE .*"mode":"required"/g) ?? []).length >= 3);
+  assert.ok((logs.match(/PI_IMPLEMENTER_PROVIDER_WIRE .*"toolChoice":"required"/g) ?? []).length >= 3);
   assert.match(logs, /PI_PROVIDER_ERROR_TURN .*"status":408.*"forced":true/);
   assert.match(logs, /PI_PROVIDER_ERROR_TURN .*"status":429.*"forced":true/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED .*"reason":"provider_request_rejected".*"status":422.*"source":"turn_end"/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT/);
 });
 
-test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
+test('an already-completed repeated tool call cannot clear state forcing and still fails closed', () => {
   const logs = runtimeScenario('action-repeat-abort');
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"subagents_enable"/);
   assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
@@ -2894,9 +2895,9 @@ test('#469 evidence unlock is single-use; stale lifecycle races reset strikes be
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
-test('coding-session fork shares action_required forcing semantics and clears them on its first tool', () => {
+test('coding-session fork preserves action_required forcing after its first tool', () => {
   const logs = runtimeScenario('fork-prose-force');
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(logs, /PI_IMPLEMENTER_PROVIDER_WIRE .*"toolChoice":"required"/);
   assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"tool":"accept_mutation_scope"/);
 });
 
