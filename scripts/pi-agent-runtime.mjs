@@ -1576,6 +1576,7 @@ export default function (pi) {
   // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
   // replacement guidance for the other (recoverable) classes.
   function profileHiddenToolAdvice(name, snapshot = providerCapabilitySnapshot) {
+    if (name === MAIN_CAPABILITY_REQUEST_TOOL) return 'BLOCKED: the three successful Main capability grants have been used. No further capability expansion is available; keep the current safe tools or report a blocker.';
     if (['grep', 'find', 'ls'].includes(name)) return `BLOCKED: ${name} is permanently forbidden in Main; no capability grant can enable it. Use the permitted read or repository search tools.`;
     const group = optionalMainToolGroup(name);
     const permitted = snapshot?.executableTools?.includes(MAIN_CAPABILITY_REQUEST_TOOL);
@@ -2194,7 +2195,12 @@ export default function (pi) {
             profile: mainToolProfile.profile,
             phase: productiveState,
             admitted: tools.map(tool => tool.function?.name ?? tool.name),
-            denied: mainToolProfile.deferred,
+            denied: [
+              ...mainToolProfile.deferred,
+              ...(mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS &&
+                mainToolProfile.payload.tools.some(tool => (tool.function?.name ?? tool.name) === MAIN_CAPABILITY_REQUEST_TOOL)
+                ? [MAIN_CAPABILITY_REQUEST_TOOL] : []),
+            ],
             grantedGroups: [...mainCapabilityGroups],
             escalationAttempts: mainCapabilityRequests,
             toolSchemaBytesBeforeRaw: rawToolSchemaBytes,
@@ -2222,8 +2228,12 @@ export default function (pi) {
         // instead of advertising it.
         const executableTools = providerToolNames(patched);
         const liveActiveTools = pi.getActiveTools();
-        const profileHiddenTools = mainToolProfile.profile === 'phase_owned' ? [] :
-          mainToolProfile.deferred;
+        const profileHiddenTools = mainToolProfile.profile === 'phase_owned' ? [] : [
+          ...mainToolProfile.deferred,
+          ...(mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS &&
+          mainToolProfile.payload.tools.some(tool => (tool.function?.name ?? tool.name) === MAIN_CAPABILITY_REQUEST_TOOL)
+            ? [MAIN_CAPABILITY_REQUEST_TOOL] : []),
+        ];
         const deferredTools = liveActiveTools.filter(name =>
           !executableTools.includes(name) && !profileHiddenTools.includes(name));
         providerCapabilitySnapshot = {
