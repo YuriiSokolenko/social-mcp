@@ -1463,7 +1463,8 @@ test('implementer action-required aborts keep defensive execution-failure proven
   const guide = fs.readFileSync('docs/CI_RULES.md', 'utf8');
 
   assert.match(runtime, /tool_choice: 'required'/);
-  assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
+  assert.match(runtime, /PI_IMPLEMENTER_PROVIDER_WIRE/);
+  assert.match(runtime, /PI_PROVIDER_TOOL_CHOICE_CONTRACT_VIOLATION/);
   assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED/);
   assert.match(runtime, /runtimeFailureClassForCode\(failureCode\)/);
   assert.match(runtime, /PI_RUNTIME_FAILURE_FILE/);

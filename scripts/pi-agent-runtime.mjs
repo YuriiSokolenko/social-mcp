@@ -191,18 +191,68 @@ export function disableThinkingInPayload(payload) {
   return applyCodingThinkingPolicy(payload, { enableThinking: false });
 }
 
-// Both OpenAI-compatible Chat Completions and Responses requests accept tool_choice="required".
-// The active Pi tool surface has already been reduced to the valid action_required tools before
-// the request is built, so this forces a real tool call without choosing the tool on the model's
-// behalf. The runtime keeps this request constraint armed until the provider emits a tool call;
-// transport retries or ceiling-hit responses must not consume it. Pi surfaces rejected provider
-// requests as turn_end error messages, so a forced 400/422 gets one runtime continuation without
-// provider-level forcing. Other provider errors leave the requirement armed in case Pi itself retries.
+// The action-required invariant is derived at the final provider wire boundary. A valid tool
+// call never disarms it: only authoritative state, the actually serialized tool surface, or a
+// bounded provider 400/422 compatibility fallback can change the effective choice.
 export function requireToolChoiceInPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.tools) || payload.tools.length === 0) {
     return payload;
   }
   return { ...payload, tool_choice: 'required' };
+}
+
+// An empty Pi executor surface must never emit tool_choice alongside missing/empty tools:
+// OpenAI-compatible providers may reject that shape before the local safety gates run.
+export function withoutProviderTools(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const { tools, tool_choice, ...rest } = payload;
+  return rest;
+}
+
+// Pure wire policy, shared by Main and delegated coding sessions. Never infer executability
+// from getActiveTools(): only definitions actually serialized in payload.tools can be called.
+export function implementerToolChoiceDecision(payload, {
+  productiveState,
+  correctionSource = null,
+  exemption = null,
+} = {}) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.tools)) {
+    return { payload, toolChoice: payload?.tool_choice ?? null, source: null, exemption: 'no_serialized_tool_surface' };
+  }
+  const executableTools = providerToolNames(payload);
+  if (executableTools.length === 0) {
+    return {
+      payload: withoutProviderTools(payload),
+      toolChoice: null, source: null, exemption: 'zero_executable_tools',
+    };
+  }
+  // Preserve a stronger explicit named-tool constraint, but reject a stale constraint rather
+  // than advertising a tool that is absent from the serialized Pi executor snapshot.
+  const namedTool = payload.tool_choice && typeof payload.tool_choice === 'object'
+    ? payload.tool_choice.function?.name ?? payload.tool_choice.name ?? null
+    : null;
+  if (namedTool) {
+    if (!executableTools.includes(namedTool)) {
+      return {
+        payload: withoutProviderTools(payload),
+        toolChoice: null, source: null, exemption: 'named_tool_not_executable',
+      };
+    }
+    return { payload, toolChoice: payload.tool_choice, source: 'named_tool', exemption: null };
+  }
+  if (exemption) {
+    // An HTTP 400/422 compatibility continuation gets exactly one auto-choice request;
+    // it does not change the productive state or make later requests optional.
+    const next = { ...payload, tool_choice: 'auto' };
+    return { payload: next, toolChoice: 'auto', source: null, exemption };
+  }
+  const source = correctionSource ??
+    (productiveState === 'action_required' ? 'productive_action' : null);
+  if (source) {
+    const next = requireToolChoiceInPayload(payload);
+    return { payload: next, toolChoice: next.tool_choice, source, exemption: null };
+  }
+  return { payload, toolChoice: payload.tool_choice ?? 'auto', source: null, exemption: productiveState === 'evidence_allowed' ? 'evidence_allowed' : 'non_action_state' };
 }
 
 export function retryableProviderErrorStatus(status) {
@@ -493,8 +543,11 @@ export default function (pi) {
   let actionTurnAttemptedTool = false;
   let actionRequiredProseOnlyTurns = 0;
   let ceilingWithoutToolTurns = 0;
-  let requireToolOnNextProviderRequest = false;
   let forcedProviderRequestInFlight = false;
+  let providerToolChoiceRejectionFallbackPending = false;
+  let providerToolChoiceFallbackRequestInFlight = false;
+  // Counts only an uninterrupted rejection episode, not the lifetime of the stage.
+  let providerToolChoiceRejectionCount = 0;
   let loopGuardSteeredThisTurn = false;
   let terminalRecoveryState = null;
   let terminalRecoveryRequiredTool = null;
@@ -521,7 +574,6 @@ export default function (pi) {
   let codingToolTransportRecoveryCount = 0;
   // Successful trusted recovery transitions in this process; releases the incapable-fork guard.
   let trustedRecoveryEpoch = 0;
-  let lastProviderProductiveState = null;
   // True only when this runtime itself removed the verification tool from the model
   // surface (permit exhaustion or exact-retry substitution). A later valid
   // permit may restore it only in that case; unrelated removals stay removed.
@@ -841,7 +893,7 @@ export default function (pi) {
     if (request?.key && request.key !== codingValidationRepair.key) return false;
     codingValidationRepair.fallbackRequired = true;
     codingValidationRepair.fallbackAttempted = false;
-    requireToolOnNextProviderRequest = true;
+
     console.warn(`PI_CODING_REPAIR_ACTION_FALLBACK_ARMED ${JSON.stringify({
       stage,
       validationKey: codingValidationRepair.key,
@@ -999,7 +1051,7 @@ export default function (pi) {
     })}`);
     // The next response must take a concrete repair step. Because bounded read is now part of
     // the repair surface, provider-level required tool choice cannot force a blind mutation.
-    requireToolOnNextProviderRequest = true;
+
 
     if (nonImprovingFailures >= CODING_EQUIVALENT_FAILURE_LIMIT) {
       const reason = `Authoritative validation produced ${nonImprovingFailures} failures for the same kind+scope without a new strict reduction of the best failure set. Refusing further blind rewrites.`;
@@ -1746,7 +1798,7 @@ export default function (pi) {
         return;
       }
       terminalRecoveryRequiredTool = plan.tool;
-      requireToolOnNextProviderRequest = true;
+
       loopGuardSteeredThisTurn = true;
       const guidance = terminalRecoveryGuidance(plan);
       console.warn('PI_TERMINAL_RECOVERY_SELECTED ' + JSON.stringify({
@@ -1936,8 +1988,8 @@ export default function (pi) {
 
   // The request boundary is the capability authority. Re-synchronize the surface immediately
   // before every Implementer provider request, filter payload.tools to that surface, snapshot the
-  // executable definitions, and constrain the first request that enters action_required. This
-  // includes the first coding-session request, so inherited parent history cannot spend a turn
+  // executable definitions, and constrain EVERY action_required request. This includes the
+  // first coding-session request, so inherited parent history cannot spend a turn
   // attempting a read/cleanup tool that the fork does not expose yet.
   let codingReadyAt = null;
   let codingFirstToolLogged = false;
@@ -1950,7 +2002,7 @@ export default function (pi) {
     pi.on('before_provider_request', (event, ctx) => {
       if (runCheckPreflightFailed) {
         console.error('PI_RUN_CHECK_PREFLIGHT_PROVIDER_BLOCKED');
-        return { ...event.payload, tools: [], tool_choice: 'none' };
+        return withoutProviderTools(event.payload);
       }
       forcedProviderRequestInFlight = false;
       if (codingSession) codingProviderRequestStartedAt = Date.now();
@@ -2073,7 +2125,7 @@ export default function (pi) {
           );
           if (selected.length) {
             tools = selected;
-            requireToolOnNextProviderRequest = true;
+
             console.warn('PI_TERMINAL_RECOVERY_TOOL_SURFACE ' + JSON.stringify({
               stage,
               obligationKey: terminalRecoveryState?.obligationKey ?? null,
@@ -2126,8 +2178,8 @@ export default function (pi) {
             actionObserved: false,
             tool: null,
           };
-          requireToolOnNextProviderRequest = true;
-          console.warn(`PI_CODING_REPAIR_TOOL_CHOICE_ARMED ${JSON.stringify({
+
+          console.warn(`PI_CODING_REPAIR_TOOL_CHOICE_POLICY ${JSON.stringify({
             stage,
             phase: codingRepairProviderRequestInFlight.phase,
             request: codingRepairProviderRequestInFlight.request,
@@ -2135,8 +2187,8 @@ export default function (pi) {
           })}`);
         }
         if (codingSessionArgumentCorrectionRequest && executableTools.includes(codingSessionToolName)) {
-          requireToolOnNextProviderRequest = true;
-          console.warn(`PI_CODING_SESSION_ARGUMENT_TOOL_CHOICE_ARMED ${JSON.stringify({
+
+          console.warn(`PI_CODING_SESSION_ARGUMENT_TOOL_CHOICE_POLICY ${JSON.stringify({
             stage,
             request: providerCapabilitySnapshot.request,
             tool: codingSessionToolName,
@@ -2144,8 +2196,8 @@ export default function (pi) {
           })}`);
         }
         if (!terminalRecoveryRequiredTool && controller.largeMutationBudgetActive()) {
-          requireToolOnNextProviderRequest = true;
-          console.warn(`PI_LARGE_MUTATION_TOOL_CHOICE_ARMED ${JSON.stringify({
+
+          console.warn(`PI_LARGE_MUTATION_TOOL_CHOICE_POLICY ${JSON.stringify({
             stage,
             request: providerCapabilitySnapshot.request,
             activeTools: executableTools,
@@ -2171,7 +2223,7 @@ export default function (pi) {
             });
             console.error(`PI_UNAVAILABLE_CAPABILITY_ABORT ${JSON.stringify({ stage, reason, request: providerCapabilitySnapshot.request })}`);
             ctx?.abort?.();
-            return { ...patched, tools: [], tool_choice: 'none' };
+            return withoutProviderTools(patched);
           }
         }
         if (deferredTools.length) {
@@ -2184,76 +2236,33 @@ export default function (pi) {
           })}`);
         }
 
-        const enteringActionRequired =
-          productiveState === 'action_required' &&
-          lastProviderProductiveState !== 'action_required' &&
-          executableTools.length > 0;
-        if (enteringActionRequired) {
-          requireToolOnNextProviderRequest = true;
-          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED ${JSON.stringify({
-            stage,
-            reason: codingSession && lastProviderProductiveState == null
-              ? 'coding_session_first_request'
-              : 'action_required_entry',
-            activeTools: executableTools,
-          })}`);
-        }
-        lastProviderProductiveState = productiveState;
+        // The final, fully assembled request below derives its own wire constraint.
+        // No one-shot arm is consumed by an ordinary successful tool call.
       }
 
-      if (requireToolOnNextProviderRequest) {
-        const repairActionForced = Boolean(
-          codingRepairProviderRequestInFlight &&
-          codingRepairProviderRequestInFlight.request === providerCapabilitySnapshot?.request
-        );
-        const codingSessionArgumentCorrectionForced = Boolean(
-          codingSessionArgumentCorrectionPending &&
-          providerCapabilitySnapshot?.executableTools?.includes(config.productiveProgress?.codingSessionTool)
-        );
-        const largeMutationActionForced = Boolean(
-          stage === 'implementer' &&
-          controller.largeMutationBudgetActive() &&
-          providerCapabilitySnapshot?.request != null
-        );
-        if (!repairActionForced && !codingSessionArgumentCorrectionForced && !largeMutationActionForced && productiveState !== 'action_required') {
-          requireToolOnNextProviderRequest = false;
-          console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({ stage, reason: 'state_changed', productiveState })}`);
-        } else {
-          if (repairActionForced && productiveState !== 'action_required') {
-            console.warn(`PI_CODING_REPAIR_FORCE_STATE_DRIFT ${JSON.stringify({
-              stage,
-              productiveState,
-              phase: codingRepairProviderRequestInFlight.phase,
-              request: codingRepairProviderRequestInFlight.request,
-            })}`);
-          }
-          if (largeMutationActionForced && productiveState !== 'action_required') {
-            console.warn(`PI_LARGE_MUTATION_FORCE_STATE_DRIFT ${JSON.stringify({
-              stage,
-              productiveState,
-              request: providerCapabilitySnapshot?.request ?? null,
-            })}`);
-          }
-          const constrained = requireToolChoiceInPayload(patched);
-          if (constrained !== patched) {
-            forcedProviderRequestInFlight = true;
-            console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE ${JSON.stringify({
-              stage,
-              mode: 'required',
-              request: providerCapabilitySnapshot?.request ?? null,
-              activeTools: providerCapabilitySnapshot?.executableTools ?? pi.getActiveTools(),
-              source: repairActionForced
-                ? 'coding_repair'
-                : codingSessionArgumentCorrectionForced
-                  ? 'coding_session_argument_correction'
-                  : largeMutationActionForced
-                    ? 'large_mutation'
-                    : 'productive_action',
-            })}`);
-            patched = constrained;
-          }
-        }
-      }
+      const repairActionForced = Boolean(
+        codingRepairProviderRequestInFlight &&
+        codingRepairProviderRequestInFlight.request === providerCapabilitySnapshot?.request
+      );
+      const codingSessionArgumentCorrectionForced = Boolean(
+        codingSessionArgumentCorrectionPending &&
+        providerCapabilitySnapshot?.executableTools?.includes(config.productiveProgress?.codingSessionTool)
+      );
+      const largeMutationActionForced = Boolean(
+        controller.largeMutationBudgetActive() &&
+        providerCapabilitySnapshot?.request != null
+      );
+      const explicitCorrectionSource = repairActionForced
+        ? 'coding_repair'
+        : codingSessionArgumentCorrectionForced
+          ? 'coding_session_argument_correction'
+          : largeMutationActionForced
+            ? 'large_mutation'
+            : terminalRecoveryRequiredTool
+              ? 'terminal_recovery'
+              : codingToolTransportRecovery && !codingToolTransportRecovery.issued
+                ? 'coding_transport_correction'
+                : null;
 
       // #594: prune stale action steers only in the outgoing Implementer payload.
       // The Pi session transcript remains chronological and unchanged for replay/audit.
@@ -2330,7 +2339,7 @@ export default function (pi) {
             { selected_correction: correction.mode, tool: correction.tool,
               executable_tools: executable, incomplete_tool_transport: true },
           );
-          return { ...patched, tools: [], tool_choice: 'none' };
+          return withoutProviderTools(patched);
         }
         // Do not treat a missing request identity as a second unissued retry.
         if (!Number.isSafeInteger(providerCapabilitySnapshot?.request) ||
@@ -2338,7 +2347,7 @@ export default function (pi) {
           abortCodingTransportRecovery(ctx, 'PI_CODING_TOOL_CORRECTION_FAILED',
             'correction provider request has no authoritative request identity',
             { selected_correction: correction.mode, incomplete_tool_transport: true });
-          return { ...patched, tools: [], tool_choice: 'none' };
+          return withoutProviderTools(patched);
         }
         correction.request = providerCapabilitySnapshot.request;
         correction.issued = true;
@@ -2360,6 +2369,58 @@ export default function (pi) {
         reason: providerWireOutputBudget.reason ?? null,
       }));
 
+      // Authoritative wire decision AFTER phase filtering, runtime guidance, and transport
+      // corrections. A deferred/hidden tool cannot satisfy this constraint.
+      const fallbackExemption = providerToolChoiceRejectionFallbackPending &&
+        Array.isArray(patched?.tools) && patched.tools.length > 0
+          ? 'provider_400_422_one_request_fallback'
+          : null;
+      const decision = implementerToolChoiceDecision(patched, {
+        productiveState,
+        correctionSource: explicitCorrectionSource,
+        exemption: fallbackExemption,
+      });
+      patched = decision.payload;
+      if (decision.exemption === 'provider_400_422_one_request_fallback') {
+        providerToolChoiceRejectionFallbackPending = false;
+        providerToolChoiceFallbackRequestInFlight = true;
+      }
+      if (Array.isArray(event.payload?.tools)) {
+        const wireTools = providerToolNames(patched);
+        if (decision.exemption === 'named_tool_not_executable') {
+          recordRuntimeAbort('PI_PROVIDER_NAMED_TOOL_UNAVAILABLE',
+            'provider named-tool constraint is not executable in the serialized request',
+            { request: providerCapabilitySnapshot?.request ?? null, checkpoint: { worktree_preserved: true } });
+          ctx?.abort?.();
+        }
+        if (providerCapabilitySnapshot) {
+          providerCapabilitySnapshot.toolChoice = decision.toolChoice;
+          providerCapabilitySnapshot.toolChoiceSource = decision.source;
+          providerCapabilitySnapshot.toolChoiceExemption = decision.exemption;
+          providerCapabilitySnapshot.executableTools = wireTools;
+        }
+        forcedProviderRequestInFlight = decision.toolChoice === 'required';
+        if (forcedProviderRequestInFlight) {
+          console.warn('PI_ACTION_REQUIRED_TOOL_CHOICE ' + JSON.stringify({
+            stage,
+            mode: 'required',
+            request: providerCapabilitySnapshot?.request ?? null,
+            activeTools: wireTools,
+            source: decision.source,
+          }));
+        }
+        console.log('PI_IMPLEMENTER_PROVIDER_WIRE ' + JSON.stringify({
+          stage,
+          request: providerCapabilitySnapshot?.request ?? null,
+          productiveState,
+          toolChoice: decision.toolChoice,
+          toolChoiceSource: decision.source,
+          exemption: decision.exemption,
+          executableToolCount: wireTools.length,
+          executableTools: wireTools,
+          deferredTools: providerCapabilitySnapshot?.deferredTools ?? [],
+        }));
+      }
       if (!codingSession) {
         const metadata = mainPromptRequestMetadata(patched, previousMainPromptMetadata);
         // Runtime-scenario tests may use synthetic history-only payloads with no prompt
@@ -3249,7 +3310,7 @@ export default function (pi) {
                 ...recoveryReceipt,
                 inspection_complete: false,
               };
-              requireToolOnNextProviderRequest = true;
+
               console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
                 stage,
                 sessionId,
@@ -3461,11 +3522,9 @@ export default function (pi) {
     const transitionKey = controller.transitions.keyFor(event.toolName, event.input);
     const alreadySatisfiedTransition = controller.transitions.has(transitionKey);
 
-    // Provider forcing is transport-level: any emitted tool call proves tool_choice=required
-    // was satisfied. Local policy may still reject that call as hidden/already-satisfied, but
-    // forcing must not remain stuck across the next provider request.
-    const satisfiedProviderForcing = requireToolOnNextProviderRequest;
-    if (satisfiedProviderForcing) requireToolOnNextProviderRequest = false;
+    // Explicit correction forcing is transport-level and can be consumed by a tool call;
+    // ordinary action_required forcing is NOT consumed here and is re-derived on every request.
+    const satisfiedProviderForcing = providerCapabilitySnapshot?.toolChoice === 'required';
     // getActiveTools() and tool_call.event.toolName are both provider-facing names. Keep this
     // comparison before controllerToolName(): retry_last_failed_check is only canonicalized to
     // run_check for controller policy after visibility has been checked.
@@ -3673,7 +3732,7 @@ export default function (pi) {
           abortBlockedCodingRecovery(ctx, repairReadPolicy.reason);
           return blocked;
         }
-        requireToolOnNextProviderRequest = true;
+
         syncActionToolSurface(productiveState);
       }
       if (repairMutationPolicy?.block) {
@@ -3732,7 +3791,7 @@ export default function (pi) {
       if (terminalRecoveryRequiredTool === canonicalToolName) {
         // The selected recovery tool was emitted but rejected by local policy (for example,
         // wrong run_check arguments). Keep the exact recovery state armed for the next request.
-        requireToolOnNextProviderRequest = true;
+
       }
       return blocked;
     }
@@ -3762,7 +3821,7 @@ export default function (pi) {
       if (terminalRecoveryRequiredTool === canonicalToolName) {
         // The provider satisfied tool_choice, but the runtime refused execution after the
         // controller gate. Keep the selected recovery armed and force it again next request.
-        requireToolOnNextProviderRequest = true;
+
       }
     };
     try {
@@ -4410,7 +4469,15 @@ export default function (pi) {
     const repairRequest = codingRepairProviderRequestInFlight;
     codingRepairProviderRequestInFlight = null;
     const forcedRequestErrored = event.message?.stopReason === 'error' && forcedProviderRequestInFlight;
+    const fallbackRequestErrored = event.message?.stopReason === 'error' && providerToolChoiceFallbackRequestInFlight;
     forcedProviderRequestInFlight = false;
+    providerToolChoiceFallbackRequestInFlight = false;
+    if (event.message?.stopReason !== 'error' && event.message?.stopReason !== 'aborted') {
+      // A provider-successful response finishes the prior 400/422 incident, including
+      // a successful auto-choice compatibility continuation. A later independent 400
+      // (including unrelated context-length errors) gets a fresh bounded fallback.
+      providerToolChoiceRejectionCount = 0;
+    }
 
     // Cancellation must not queue a compensating mutation. Preserve all work
     // already accepted by the unchanged scope/journal safeguards.
@@ -4424,7 +4491,7 @@ export default function (pi) {
         codingToolTransportRecovery = null;
         codingToolTransportRecoveryUsed = false;
         controller.resetLargeMutationBudget();
-        requireToolOnNextProviderRequest = false;
+
       }
       return undefined;
     }
@@ -4444,7 +4511,7 @@ export default function (pi) {
             codingValidationRepair.fallbackAttempted = false;
           }
         }
-        requireToolOnNextProviderRequest = true;
+
         console.warn(`PI_CODING_REPAIR_PROVIDER_RETRY ${JSON.stringify({
           stage,
           phase: repairRequest.phase,
@@ -4457,7 +4524,7 @@ export default function (pi) {
         // repair phase under the same action-only surface and required tool choice.
         return undefined;
       }
-      requireToolOnNextProviderRequest = false;
+
       if (repairRequest.phase === 'reasoning') {
         await armCodingRepairActionFallback(
           status ? `provider_error_${status}` : 'provider_error',
@@ -4485,7 +4552,7 @@ export default function (pi) {
       // this turn, so it must not consume the elevated provider-retry allowance or the active
       // one-shot large-mutation grant. The bounded correction remains armed for the next real
       // provider request.
-      requireToolOnNextProviderRequest = true;
+
       console.warn(`PI_CODING_SESSION_ARGUMENT_VALIDATION_TURN ${JSON.stringify({
         stage,
         action: 'ignored_for_provider_retry',
@@ -4519,7 +4586,7 @@ export default function (pi) {
           ctx.abort();
           return undefined;
         }
-        requireToolOnNextProviderRequest = true;
+
         console.warn(`PI_LARGE_MUTATION_PROVIDER_RETRY ${JSON.stringify({
           stage,
           status,
@@ -4549,20 +4616,47 @@ export default function (pi) {
       return undefined;
     }
 
+    if (fallbackRequestErrored) {
+      const reason = 'the single auto-choice compatibility request failed; refusing another unverified provider retry';
+      recordRuntimeAbort('PI_PROVIDER_TOOL_CHOICE_REJECTED', reason, {
+        status, request: providerCapabilitySnapshot?.request ?? null,
+        classification: 'compatibility_fallback_provider_error',
+        checkpoint: { worktree_preserved: true },
+      });
+      console.error('PI_PROVIDER_TOOL_CHOICE_REJECTED ' + JSON.stringify({
+        stage, request: providerCapabilitySnapshot?.request ?? null,
+        status, classification: 'compatibility_fallback_provider_error', reason,
+      }));
+      ctx.abort();
+      return undefined;
+    }
+
     // Pi 0.79.4 surfaces provider 4xx failures as assistant error turns; its
     // after_provider_response hook is not emitted on this path. An error turn is transport
     // failure, not model prose, so it must not consume the prose/ceiling watchdogs.
     if (forcedRequestErrored && [400, 422].includes(status)) {
-      requireToolOnNextProviderRequest = false;
-      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_CLEARED ${JSON.stringify({
+
+      providerToolChoiceRejectionCount += 1;
+      if (providerToolChoiceRejectionCount > 1) {
+        const reason = 'required-tool provider request was rejected again after the single compatibility fallback';
+        recordRuntimeAbort('PI_PROVIDER_TOOL_CHOICE_REJECTED', reason, {
+          status, request: providerCapabilitySnapshot?.request ?? null,
+          checkpoint: { worktree_preserved: true },
+        });
+        console.error('PI_PROVIDER_TOOL_CHOICE_REJECTED ' + JSON.stringify({ stage, status, reason }));
+        ctx.abort();
+        return undefined;
+      }
+      providerToolChoiceRejectionFallbackPending = true;
+      console.warn(`PI_ACTION_REQUIRED_TOOL_CHOICE_FALLBACK ${JSON.stringify({
         stage,
         reason: 'provider_request_rejected',
         status,
         source: 'turn_end',
+        nextRequestChoice: 'auto',
       })}`);
-      // Rarely, Pi may also classify the 400/422 body text as retryable; in that case this
-      // queued steer can be delivered in addition to Pi's own retry. The forcing flag is already
-      // cleared, so the overlap is bounded and cannot create a forced-request loop.
+      // The exemption is consumed by exactly one tool-bearing request. A subsequent
+      // action_required request is forced again; a repeated rejection aborts closed.
       const activeToolNames = pi.getActiveTools();
       await pi.sendUserMessage(
         `RUNTIME: the provider rejected the provider-level required-tool request. Retry the pending action without provider-level forcing. ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim(),
@@ -4619,7 +4713,7 @@ export default function (pi) {
       }
 
       codingSessionArgumentCorrectionPending = true;
-      requireToolOnNextProviderRequest = true;
+
       console.warn(`PI_CODING_SESSION_ARGUMENT_CORRECTION ${JSON.stringify({
         stage,
         tool: codingSessionToolName,
@@ -4749,7 +4843,7 @@ export default function (pi) {
       };
       actionRequiredProseOnlyTurns = 0;
       ceilingWithoutToolTurns = 0;
-      requireToolOnNextProviderRequest = true;
+
       const instructions = mode === 'handoff'
         ? `Call ${chosen.tool} with a short, valid handoff (max ${CODING_SESSION_HANDOFF_MAX_LENGTH} chars) to continue safe writes in the isolated coding session.`
         : mode === 'elevated'
@@ -4904,7 +4998,7 @@ export default function (pi) {
           return;
         }
         preserveElevatedAfterFailedAction = true;
-        requireToolOnNextProviderRequest = true;
+
         console.warn(`PI_LARGE_MUTATION_ACTION_RETRY ${JSON.stringify({
           stage,
           retry: largeMutationActionRetryCount,
@@ -4995,7 +5089,7 @@ export default function (pi) {
         ctx.abort();
         return;
       }
-      requireToolOnNextProviderRequest = true;
+
       unavailableCapabilityCorrectionPending = true;
       const lastExecutableTools = providerCapabilitySnapshot?.executableTools ?? [];
       console.warn(`PI_UNAVAILABLE_CAPABILITY_CORRECTION ${JSON.stringify({
@@ -5034,6 +5128,28 @@ export default function (pi) {
       return;
     }
 
+    // A successful provider stop with no tool calls is a wire-contract violation only if
+    // THIS request actually carried required. Tool parser/schema failures, local policy
+    // rejections, transport errors, and output ceilings are handled separately.
+    const providerToolChoiceContractViolation = Boolean(
+      providerCapabilitySnapshot?.toolChoice === 'required' &&
+      event.message?.stopReason === 'stop' &&
+      !responseHitOutputCeiling &&
+      !actionTurnAttemptedTool &&
+      !unavailableCapabilityAttemptedThisTurn &&
+      !controller.turnMadeProgress &&
+      !(Array.isArray(event.message?.toolCalls) && event.message.toolCalls.length > 0) &&
+      !(Array.isArray(event.message?.content) && event.message.content.some(part => part?.type === 'toolCall'))
+    );
+    if (providerToolChoiceContractViolation) {
+      console.error('PI_PROVIDER_TOOL_CHOICE_CONTRACT_VIOLATION ' + JSON.stringify({
+        stage, request: providerCapabilitySnapshot.request,
+        toolChoice: 'required', productiveState: providerCapabilitySnapshot.productiveState,
+        stopReason: event.message.stopReason, toolCalls: 0,
+        outputTokens, classification: 'successful_stop_without_tool_calls',
+      }));
+    }
+
     actionRequiredProseOnlyTurns = nextActionRequiredProseOnlyTurns(
       actionRequiredProseOnlyTurns,
       {
@@ -5048,16 +5164,21 @@ export default function (pi) {
       recordRuntimeAbort(
         'PI_ACTION_REQUIRED_ABORT',
         'second consecutive prose-only action-required turn; aborting stage',
-        { actionRequiredProseOnlyTurns, ceilingWithoutToolTurns },
+        { actionRequiredProseOnlyTurns, ceilingWithoutToolTurns,
+          request: providerCapabilitySnapshot?.request ?? null,
+          effectiveToolChoice: providerCapabilitySnapshot?.toolChoice ?? null,
+          ...(providerToolChoiceContractViolation
+            ? { classification: 'provider_tool_choice_contract_violation',
+                providerResponse: 'successful_stop_without_tool_calls' }
+            : {}) },
       );
       console.error('PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn; aborting stage');
       ctx.abort();
       return;
     }
 
-    // The first genuine prose-only violation in the productive Implementer state gets one
-    // provider-level retry constraint. Output-ceiling turns are handled by their independent
-    // watchdog and are intentionally not converted into prose strikes.
+    // The first prose-only strike still gets a bounded steering hint. The wire policy
+    // already requires a tool on every action_required request, without any re-arm.
     if (
       stage === 'implementer' &&
       productiveActionRequired &&
@@ -5066,8 +5187,7 @@ export default function (pi) {
       !actionTurnAttemptedTool &&
       !controller.turnMadeProgress
     ) {
-      requireToolOnNextProviderRequest = true;
-      console.warn('PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED: next provider request requires one exposed tool call');
+      console.warn('PI_ACTION_REQUIRED_TOOL_CHOICE_PERSISTENT: next action_required provider request will also require a tool');
     }
 
     ceilingWithoutToolTurns = nextCeilingWithoutToolTurns(ceilingWithoutToolTurns, {

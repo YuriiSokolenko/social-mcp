@@ -313,7 +313,8 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
       const emptyRequest = handlers.get('before_provider_request')({
         payload: { ...payload, tools: [] },
       });
-      assert.deepEqual(emptyRequest.tools, []);
+      assert.equal(Object.hasOwn(emptyRequest, 'tools'), false);
+      assert.equal(Object.hasOwn(emptyRequest, 'tool_choice'), false);
       const denied = await handlers.get('tool_call')(
         { toolName: 'safe_edit', toolCallId: 'real-zero-tools', input: { path: 'ignored.py' } },
         { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
