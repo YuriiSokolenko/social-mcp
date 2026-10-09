@@ -287,8 +287,8 @@ function appendToolDescriptionGuidance(payload, instructions) {
 // leaving the rest of the stable system prompt, trusted role contracts and
 // tool-call/result transcript unchanged. Request-local routing lives in the
 // final provider tool description (or the zero-tool safe-text carrier).
-const STATIC_TOOL_CATALOG_PATTERN = /<tools(?:\\s[^>]*)?>[\\s\\S]*?<\\/tools>/g;
-const NEUTRAL_TOOL_CATALOG = '<tools>\\nExecutable tools and their arguments are defined only by this provider request\\'s tool schemas. Earlier inventories are not permissions.\\n</tools>';
+const STATIC_TOOL_CATALOG_PATTERN = /<tools(?:\s[^>]*)?>[\s\S]*?<\/tools>/g;
+const NEUTRAL_TOOL_CATALOG = '<tools>\nExecutable tools and their arguments are defined only by this provider request\'s tool schemas. Earlier inventories are not permissions.\n</tools>';
 const BUILTIN_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
 
 export function neutralizeStaleProviderToolCatalog(payload, { candidateNames = [] } = {}) {
