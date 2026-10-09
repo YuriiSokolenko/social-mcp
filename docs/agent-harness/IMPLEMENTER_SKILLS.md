@@ -2,11 +2,50 @@
 
 > **Implementation/measurement note, not a live workflow contract.** Issue #593 is closed. For current behavior use the [workflow guide](../CI_RULES.md), `scripts/pi-implementer-skill-index.mjs`, and its tests.
 
-The Implementer Main `pi` process keeps Pi's normal skill discovery and tool registration. Its trusted `pi-implementer-skill-index.mjs` extension uses the supported `before_agent_start` hook to replace only the recognized `<skills>` XML portion of the generated system prompt with a short catalog. All original skill **names** and absolute **SKILL.md locations** remain listed, in discovery order. The summary of each description is limited to 144 characters. Main can still call `read` on any listed file and load its complete content when appropriate; no task-name or language-based filtering is used. Normal Pi skill commands and registration are not disabled.
+For #593, the Implementer Main `pi` process kept Pi's normal skill discovery and tool registration. Its trusted `pi-implementer-skill-index.mjs` extension uses the supported `before_agent_start` hook to replace only the recognized `<skills>` XML portion of the generated system prompt with a short catalog. All original skill **names** and absolute **SKILL.md locations** remain listed, in discovery order. The summary of each description is limited to 144 characters. Main can still call `read` on any listed file and load its complete content when appropriate; no task-name or language-based filtering is used. Normal Pi skill commands and registration are not disabled.
 
-The extension is loaded explicitly only for the Implementer Main `buildPiInvocation` path. The prompt-less Planner bootstrap is a separate process; #590 owns the `implementation-planner` skill policy. The coding-session child uses its own explicit extension allowlist and `inheritSkills: false`. Reviewer, Architect and all other stages are unchanged.
+The same extension, now extended by #685, is loaded explicitly only for the Implementer Main `buildPiInvocation` path. The prompt-less Planner bootstrap is a separate process; #590 owns the `implementation-planner` skill policy. The coding-session child uses its own explicit extension allowlist and `inheritSkills: false`. Reviewer, Architect and all other stages are unchanged.
 
 **Compatibility guard:** the compression only occurs if exactly one Pi `<skills>` section and one `<available_skills>` catalog contain parseable `<skill><name>...<description>...<location>...` entries, with no unrecognized entry text. The parser also requires the number of fully parsed entries to equal the number of opening `<skill>` tags, so a missing `<location>` cannot silently merge two skills. Unrecognized formats, duplicates, empty catalogs or a compression that would increase size preserve the original prompt, rather than risk losing skills or other system content. The hook does not edit project/role contracts, original issue or `planText` handoff, runtime steering, resolved targets, security policy, available tools or tool schemas.
+
+## Follow-on curation — issue #685
+
+Issue #593 originally shortened descriptions but kept all 31 full XML entries. The
+Main-only #685 hook now uses the actual Pi `before_agent_start` event's `prompt`
+to rank skills by relevant name/topic and list **at most five** task-relevant
+summaries in `<available_skills>`. Every other discovered skill remains in
+`<skill_discovery_index>` as its original, exact `name<TAB>SKILL.md path`.
+This changes prompt advertising only: Pi still registers the complete local and
+repository skill set, and a skill path must be inspected using a tool **actually
+serialized on that request**. Neither the featured entries nor the index grant
+capabilities or override #683/#684 phase restrictions.
+
+Unknown or cross-domain tasks retain all paths in the index; selection is not an
+authorization boundary. Malformed, ambiguous and duplicated catalogs fail open.
+The hook is unchanged for Planner, Reviewer, Architect and isolated coding sessions.
+The feature selection is frozen from the first nonempty Main `before_agent_start`
+task prompt for the lifetime of that Pi extension instance. Even if Pi rebuilds
+its original full skills XML during a later `submit_result` phase, the same task
+is used to select featured entries; a repeated already-curated catalog stays
+unchanged. Only explicit skill names, multiple distinctive words and concrete
+language/CI/Docker/security topic signals earn featured slots. Short `py`,
+`js`, `ts` and `ci` aliases are recognized; incidental `review`, `database`,
+`api` and `design` mentions do not take a slot. The selected catalog does not
+require an extra tool call for discovery. Log `PI_MAIN_SKILLS` gives featured/indexed/total
+counts and system-byte savings; provider-boundary `PI_MAIN_PROMPT` also reports
+`skillCount` (featured), `indexedSkillCount`, `discoverableSkillCount`,
+`skillCatalogBytes`, total system text bytes and request schema size.
+
+### Validation still needed on live Pi
+
+Run the #677 Python smoke (or a disposable equivalent) and a JS/Docker
+specialized-skill task. Compare the first and later real outgoing provider
+payloads with the 31-entry / 10,398-byte #677 reference. In particular, confirm
+that the `before_agent_start` hook's replacement survives Pi's final prompt
+composition, no tool is falsely offered by text, the model can inspect an indexed
+SKILL.md using an eligible read capability, token counts/cache telemetry are
+reported without inventing missing values, and the tasks complete correctly.
+Synthetic tests and green CI alone are not live completion evidence.
 
 ## Measurement and validation
 

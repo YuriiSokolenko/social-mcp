@@ -311,7 +311,7 @@ export const STAGES = Object.freeze({
       // Fresh Main only: ProgressController enables these after a successful PreparedImplementation
       // handoff. Resumed/repair/coding modes enter action_required without that opt-in.
       directActionTools: ['read', 'repo_search', 'indexed_repo_search', 'bash'],
-      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
+      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget', 'request_capabilities'],
     },
     prompt: promptBuilders.implementer,
   },

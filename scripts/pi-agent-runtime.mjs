@@ -27,6 +27,7 @@ import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
 import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, classifyProviderReturnedTool, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
+import { filterFreshMainToolProfile, isFreshMainToolProfilePhase, mainToolProfileResultTelemetry, optionalMainToolGroup, MAIN_CAPABILITY_REQUEST_TOOL, MAIN_CAPABILITY_GROUPS, MAX_MAIN_CAPABILITY_ESCALATIONS, MAX_MAIN_CAPABILITY_NOOPS, MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS, mainCapabilityGrant } from './pi-common/main-tool-profile.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -563,6 +564,16 @@ export default function (pi) {
   let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
+  // Only fresh Main may request optional capabilities. The grant affects the
+  // NEXT serialized request; the in-flight provider snapshot remains immutable.
+  let mainCapabilityRequests = 0;
+  let mainCapabilityNoops = 0;
+  let mainCapabilityGroups = [];
+  let mainToolProfileTelemetry = null;
+  let mainProfileHiddenAttempts = 0;
+  const profileHiddenCorrections = new Set();
+  // Pi can report the same call through tool_call, tool_execution_end and tool_result.
+  const countedProfileHiddenCalls = new Set();
   // Process-local between-turn obligation. It is consumed by the next real
   // tool-bearing request or discarded when the stage/process ends; it never
   // survives teardown and cannot carry into a new Pi stage.
@@ -1620,6 +1631,57 @@ export default function (pi) {
   // pi reports `Tool X not found` through tool_execution_end and/or tool_result for the same call.
   // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
   // replacement guidance for the other (recoverable) classes.
+  function profileHiddenToolAdvice(name, snapshot = providerCapabilitySnapshot) {
+    if (name === MAIN_CAPABILITY_REQUEST_TOOL) return mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS
+      ? 'BLOCKED: the Main capability-request no-op limit has been reached. No more capability requests; use a permitted safe tool or preserve the worktree and report a blocker.'
+      : 'BLOCKED: the three successful Main capability grants have been used. No further capability expansion is available; keep the current safe tools or report a blocker.';
+    if (['grep', 'find', 'ls'].includes(name)) return `BLOCKED: ${name} is permanently forbidden in Main; no capability grant can enable it. Use the permitted read or repository search tools.`;
+    const group = optionalMainToolGroup(name);
+    const permitted = snapshot?.executableTools?.includes(MAIN_CAPABILITY_REQUEST_TOOL);
+    return permitted
+      ? `BLOCKED: ${name} is intentionally hidden by the Main tool profile, not newly active. If this optional capability is genuinely required, call ${MAIN_CAPABILITY_REQUEST_TOOL} with group=${group} and a concrete reason; only a later provider request may expose ${name}. Do not retry this tool now.`
+      : `BLOCKED: ${name} is hidden by the Main tool profile, and ${MAIN_CAPABILITY_REQUEST_TOOL} is not executable in this request. Do not retry or assume it appears later; use an exposed safe action or preserve the worktree.`;
+  }
+  async function steerProfileHidden(name, snapshot) {
+    const key = `${snapshot?.request ?? 'unknown'}:${name}`;
+    if (profileHiddenCorrections.has(key)) return;
+    profileHiddenCorrections.add(key);
+    await pi.sendUserMessage(profileHiddenToolAdvice(name, snapshot), { deliverAs: 'steer' });
+  }
+  async function accountProfileHiddenToolCall(event, ctx, snapshot, source) {
+    const key = event.toolCallId == null ? null : `${snapshot.request}:${event.toolCallId}`;
+    if (key && countedProfileHiddenCalls.has(key)) {
+      return mainProfileHiddenAttempts > MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS;
+    }
+    if (key) countedProfileHiddenCalls.add(key);
+    mainProfileHiddenAttempts += 1;
+    console.warn('PI_MAIN_PROFILE_TOOL_HIDDEN ' + JSON.stringify({
+      stage, request: snapshot.request,
+      attemptedTool: event.toolName,
+      group: optionalMainToolGroup(event.toolName),
+      requestCapabilitiesExposed: snapshot.executableTools.includes(MAIN_CAPABILITY_REQUEST_TOOL),
+      source, count: mainProfileHiddenAttempts,
+      correctionLimit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
+    }));
+    if (mainProfileHiddenAttempts > MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS) {
+      const reason = 'profile-hidden tool called repeatedly despite explicit capability guidance; preserve worktree and report blocker';
+      recordRuntimeAbort('PI_UNAVAILABLE_CAPABILITY_ABORT', reason, {
+        attemptedTool: event.toolName, unavailableCapabilityKind: 'profile_hidden',
+        profileHiddenAttempts: mainProfileHiddenAttempts,
+        correction_limit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
+        checkpoint: { worktree_preserved: true },
+      });
+      console.error('PI_MAIN_PROFILE_HIDDEN_ABORT ' + JSON.stringify({
+        stage, request: snapshot.request, source,
+        attemptedTool: event.toolName, count: mainProfileHiddenAttempts,
+        checkpoint: { worktree_preserved: true },
+      }));
+      await ctx.abort();
+      return true;
+    }
+    await steerProfileHidden(event.toolName, snapshot);
+    return false;
+  }
   const missingExecutorCalls = new Map();
   async function handleMissingExecutor(event, ctx) {
     // Record the provider violation, but keep Pi's original lifecycle-specific
@@ -1631,9 +1693,11 @@ export default function (pi) {
       return null;
     }
     const snapshot = providerCapabilitySnapshot;
-    const guidance = kind === 'deferred'
-      ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response. On a later request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given). ${capabilitySnapshotGuidance(snapshot.executableTools)}`
-      : `BLOCKED: ${event.toolName} is not exposed by the runtime. ${capabilitySnapshotGuidance(snapshot.executableTools)}`;
+    const guidance = kind === 'profile_hidden'
+      ? `${profileHiddenToolAdvice(event.toolName, snapshot)} ${capabilitySnapshotGuidance(snapshot.executableTools)}`
+      : kind === 'deferred'
+        ? `LIFECYCLE: ${event.toolName} became active after provider request ${snapshot.request} was built, so it is not executable in this response. Do not retry it in this response. On a later request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given). ${capabilitySnapshotGuidance(snapshot.executableTools)}`
+        : `BLOCKED: ${event.toolName} is not exposed by the runtime. ${capabilitySnapshotGuidance(snapshot.executableTools)}`;
     const key = event.toolCallId ?? `${snapshot.request}:${event.toolName}`;
     if (!missingExecutorCalls.has(key)) {
       missingExecutorCalls.set(key, kind);
@@ -1642,6 +1706,10 @@ export default function (pi) {
       // It must not promise that request's surface: another tool in this response may still
       // change state and remove the deferred tool again, so the guidance stays conditional on
       // the authoritative snapshot of the request that carries it.
+      if (kind === 'profile_hidden') {
+        const exhausted = await accountProfileHiddenToolCall(event, ctx, snapshot, 'missing_executor');
+        if (exhausted) return 'BLOCKED: repeated hidden-tool attempts exhausted the bounded profile correction. Preserve the worktree and report a blocker.';
+      }
       if (kind === 'deferred') {
         await pi.sendUserMessage(
           `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. Do not retry it in this response. On the next request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given) and it is still needed; the surface may change again before then.`,
@@ -1657,14 +1725,14 @@ export default function (pi) {
           }
         }
       }
-      unavailableCapabilityAttemptedThisTurn = true;
+      if (kind !== 'profile_hidden') unavailableCapabilityAttemptedThisTurn = true;
       unavailableCapabilityToolThisTurn = event.toolName;
       unavailableCapabilityKindThisTurn = kind === 'deferred'
         ? 'stale_after_capability_transition'
-        : 'executor_not_found';
-      console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
+        : kind === 'profile_hidden' ? 'profile_hidden' : 'executor_not_found';
+      if (kind !== 'profile_hidden') console.warn(`${kind === 'deferred' ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
-        kind: kind === 'deferred' ? 'deferred_tool_called' : 'executor_not_found',
+        kind: kind === 'deferred' ? 'deferred_tool_called' : kind === 'profile_hidden' ? 'profile_hidden_tool_called' : 'executor_not_found',
         attemptedTool: event.toolName,
         request: snapshot.request,
         requestTools: snapshot.executableTools,
@@ -2143,6 +2211,7 @@ export default function (pi) {
         const reconciled = reconcileProviderToolSurface(patched, {
           activeTools: pi.getActiveTools(),
         });
+        const rawToolSchemaBytes = Buffer.byteLength(JSON.stringify(patched.tools), 'utf8');
         let tools = reconciled.payload.tools;
         const codingSessionToolName = config.productiveProgress?.codingSessionTool;
         const codingSessionArgumentCorrectionRequest = Boolean(
@@ -2203,6 +2272,50 @@ export default function (pi) {
           }
           tools = tools.filter(tool => permitted.has(tool.function?.name ?? tool.name));
         }
+        // Optional definitions are removed only for fresh Main. Existing
+        // exact recovery / resumed / validation-repair / coding gates win.
+        // Intersect the final phase-approved definitions, never add new ones.
+        const mainToolProfile = filterFreshMainToolProfile({ tools }, {
+          freshMain: isFreshMainToolProfilePhase({
+            stage, codingSession: Boolean(codingSession), resumed: resumedImplementer,
+            validationRepair, terminalRecoveryRequiredTool,
+            preComplexityActionRequired: controller.preComplexityActionRequired(),
+          }),
+          grantedGroups: mainCapabilityGroups,
+        });
+        if (mainToolProfile.profile !== 'phase_owned') {
+          const beforeBytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
+          tools = mainToolProfile.payload.tools.filter(tool =>
+            (mainCapabilityGroups.length < MAX_MAIN_CAPABILITY_ESCALATIONS &&
+              mainCapabilityNoops < MAX_MAIN_CAPABILITY_NOOPS) ||
+            (tool.function?.name ?? tool.name) !== MAIN_CAPABILITY_REQUEST_TOOL
+          );
+          mainToolProfileTelemetry = {
+            profile: mainToolProfile.profile,
+            phase: productiveState,
+            admitted: tools.map(tool => tool.function?.name ?? tool.name),
+            denied: [
+              ...mainToolProfile.deferred,
+              ...((mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS ||
+                 mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS) &&
+                mainToolProfile.payload.tools.some(tool => (tool.function?.name ?? tool.name) === MAIN_CAPABILITY_REQUEST_TOOL)
+                ? [MAIN_CAPABILITY_REQUEST_TOOL] : []),
+            ],
+            grantedGroups: [...mainCapabilityGroups],
+            escalationAttempts: mainCapabilityRequests,
+            escalationNoops: mainCapabilityNoops,
+            profileHiddenAttempts: mainProfileHiddenAttempts,
+            toolSchemaBytesBeforeRaw: rawToolSchemaBytes,
+            toolSchemaBytesBeforePhase: beforeBytes,
+            toolSchemaBytesAfterProfile: Buffer.byteLength(JSON.stringify(tools), 'utf8'),
+            toolSchemaBytesAfter: null,
+          };
+          console.log('PI_MAIN_TOOL_PROFILE ' + JSON.stringify({
+            stage, request: providerRequestSequence + 1, ...mainToolProfileTelemetry,
+          }));
+        } else {
+          mainToolProfileTelemetry = null;
+        }
         if (
           tools.length !== patched.tools.length ||
           tools.some((tool, index) => tool !== patched.tools[index])
@@ -2217,7 +2330,15 @@ export default function (pi) {
         // instead of advertising it.
         const executableTools = providerToolNames(patched);
         const liveActiveTools = pi.getActiveTools();
-        const deferredTools = liveActiveTools.filter(name => !executableTools.includes(name));
+        const profileHiddenTools = mainToolProfile.profile === 'phase_owned' ? [] : [
+          ...mainToolProfile.deferred,
+          ...((mainCapabilityGroups.length >= MAX_MAIN_CAPABILITY_ESCALATIONS ||
+            mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS) &&
+          mainToolProfile.payload.tools.some(tool => (tool.function?.name ?? tool.name) === MAIN_CAPABILITY_REQUEST_TOOL)
+            ? [MAIN_CAPABILITY_REQUEST_TOOL] : []),
+        ];
+        const deferredTools = liveActiveTools.filter(name =>
+          !executableTools.includes(name) && !profileHiddenTools.includes(name));
         providerCapabilitySnapshot = {
           request: ++providerRequestSequence,
           productiveState,
@@ -2243,6 +2364,7 @@ export default function (pi) {
           executableTools,
           liveActiveTools,
           deferredTools,
+          profileHiddenTools,
         };
         if (repairThinkingRequest || repairFallbackRequest) {
           codingRepairProviderRequestInFlight = {
@@ -2376,21 +2498,26 @@ export default function (pi) {
         })}`);
       }
       patched = steerCompaction.payload;
-      if (!steerCompaction.blocked) {
-        // Keep one stable tool-schema carrier throughout tool-bearing turns.
-        // Tool output bytes, role ordering and linked call IDs stay unchanged.
-        // If no safe carrier remains (e.g. zero tools and a tool-result tail),
-        // execution still fails closed; log loss of the advisory instruction.
-        patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
-          trustedRuntimeEnvelope: stage === 'implementer',
-          onMissingCarrier: reason => console.warn(`PI_PROVIDER_CAPABILITY_GUIDANCE_OMITTED ${JSON.stringify({
-            stage,
-            request: providerCapabilitySnapshot?.request ?? null,
-            reason,
-            executableTools: providerCapabilitySnapshot?.executableTools ?? [],
-          })}`),
-        });
-      }
+      // Compaction may safely decline to rewrite a tool-linked action steer.
+      // That must not disable this independent final-wire capability contract:
+      // it only edits trusted system/developer catalogs and a tool description
+      // (or an existing safe text carrier), never linked calls/results.
+      // Keep a single stable tool-schema carrier across tool-bearing requests.
+      patched = withProviderCapabilityInstructions(patched, providerCapabilitySnapshot, {
+        trustedRuntimeEnvelope: stage === 'implementer',
+        onCatalogAudit: audit => console.log('PI_PROVIDER_TOOL_ADVERTISEMENT_AUDIT ' + JSON.stringify({
+          stage,
+          request: providerCapabilitySnapshot?.request ?? null,
+          // Names only, no schema bodies, instructions, credentials or user text.
+          ...audit,
+        })),
+        onMissingCarrier: reason => console.warn(`PI_PROVIDER_CAPABILITY_GUIDANCE_OMITTED ${JSON.stringify({
+          stage,
+          request: providerCapabilitySnapshot?.request ?? null,
+          reason,
+          executableTools: providerCapabilitySnapshot?.executableTools ?? [],
+        })}`),
+      });
 
       // Inspect the outgoing, fully serialized request after all policies and
       // tool filtering. Neither ctx.model.maxTokens nor a successful setModel()
@@ -2535,6 +2662,19 @@ export default function (pi) {
           assertMainPromptComposition(metadata);
         }
         const request = ++mainPromptRequestSequence;
+        if (mainToolProfileTelemetry) {
+          // After all request-local tool guidance, tool-choice and transport policy.
+          // Matches PI_MAIN_PROMPT_METADATA and the actual outgoing schema bytes.
+          mainToolProfileTelemetry.toolSchemaBytesAfter = metadata.toolSchemaBytes;
+          const { admitted, denied, ...profileMetrics } = mainToolProfileTelemetry;
+          console.log('PI_MAIN_TOOL_PROFILE_FINAL ' + JSON.stringify({
+            stage, request, ...profileMetrics,
+            admittedCount: admitted.length, deniedCount: denied.length,
+            systemPromptBytes: metadata.systemPromptBytes,
+            initialUserContextBytes: metadata.initialUserContextBytes,
+            requestBodyBytes: metadata.requestBodyBytes,
+          }));
+        }
         console.log(`PI_MAIN_PROMPT_METADATA ${JSON.stringify({ stage, request, ...metadata })}`);
         previousMainPromptMetadata = metadata;
       }
@@ -2652,6 +2792,61 @@ export default function (pi) {
       });
     }
   });
+
+  if (stage === 'implementer' && !codingSession && !resumedImplementer && !validationRepair) {
+    pi.registerTool({
+      name: MAIN_CAPABILITY_REQUEST_TOOL,
+      label: 'Request optional Main capabilities',
+      description: 'Request optional tools for a concrete need: docs, lsp, history, delegation, or extended. At most three distinct approved groups; after three invalid or duplicate requests no more requests are allowed. A grant never changes the CURRENT provider request or bypasses evidence, mutation, or phase gates. Tools become callable only if a subsequent request actually exposes their schemas. Use normal need_more_evidence for one-off inspection.',
+      parameters: Type.Object({
+        group: Type.Union(MAIN_CAPABILITY_GROUPS.map(group => Type.Literal(group))),
+        reason: Type.String({ minLength: 8, maxLength: 300 }),
+      }),
+      async execute(_toolCallId, params) {
+        mainCapabilityRequests += 1;
+        // The registered executor can outlive the snapshot that advertised it.
+        // Do not permit a direct stale call to bypass the no-op exhaustion gate.
+        if (mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS) {
+          console.warn('PI_MAIN_CAPABILITY_NOOP_LIMIT ' + JSON.stringify({
+            stage, group: params.group, attempts: mainCapabilityRequests,
+            noops: mainCapabilityNoops, limit: MAX_MAIN_CAPABILITY_NOOPS,
+            checkpoint: { worktree_preserved: true },
+          }));
+          return { content: [{ type: 'text', text: 'Capability request no-op limit reached. Do not request capabilities again. Use an exposed safe tool or preserve worktree and report a blocker.' }], isError: true };
+        }
+        const grant = mainCapabilityGrant(mainCapabilityGroups, params.group);
+        if (!grant.ok || !grant.changed) {
+          mainCapabilityNoops += 1;
+          const why = grant.ok ? 'already_granted' : (grant.reason ?? 'request_limit');
+          console.warn('PI_MAIN_CAPABILITY_NOOP ' + JSON.stringify({
+            stage, group: params.group, reason: why,
+            attempts: mainCapabilityRequests, noops: mainCapabilityNoops,
+            limit: MAX_MAIN_CAPABILITY_NOOPS,
+            exhausted: mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS,
+          }));
+          return {
+            content: [{ type: 'text', text: grant.ok
+              ? 'Capability group was already approved. Do not repeat this transition.'
+              : 'Optional capability request denied: ' + why + '. Do not invent or bypass missing tools.' }],
+            isError: !grant.ok,
+            details: { ...grant, noops: mainCapabilityNoops },
+          };
+        }
+        mainCapabilityGroups = grant.granted;
+        console.log('PI_MAIN_CAPABILITY_ESCALATION ' + JSON.stringify({
+          stage, group: params.group, reason: params.reason, attempts: mainCapabilityRequests,
+          changed: true, successfulGrants: mainCapabilityGroups.length,
+          noops: mainCapabilityNoops, effectiveFrom: 'next_provider_request_only',
+        }));
+        return {
+          content: [{ type: 'text', text: grant.changed
+            ? 'Approved for later requests: ' + params.group + '. Only tools serialized by the NEXT provider request may be called, within normal phase and evidence gates.'
+            : 'Capability group was already approved. Do not repeat this transition.' }],
+          details: { ...grant, effectiveFrom: 'next_provider_request_only' },
+        };
+      },
+    });
+  }
 
   if (controller.requireComplexity && !config.implementationPlannerAgent) {
     pi.registerTool({
@@ -3652,7 +3847,10 @@ export default function (pi) {
     const missingAtRequestBoundary = requestTools != null && !requestTools.includes(event.toolName);
     const removedSinceRequest = requestTools?.includes(event.toolName) === true &&
       !activeToolNames.includes(event.toolName);
-    const newlyActiveButDeferred = missingAtRequestBoundary && activeToolNames.includes(event.toolName);
+    const profileHidden = missingAtRequestBoundary &&
+      providerCapabilitySnapshot?.profileHiddenTools?.includes(event.toolName);
+    const newlyActiveButDeferred = missingAtRequestBoundary && !profileHidden &&
+      activeToolNames.includes(event.toolName);
     const enforceActiveSurface =
       missingAtRequestBoundary ||
       (lastSurfaceSignature !== null &&
@@ -3660,6 +3858,16 @@ export default function (pi) {
         !recoveryPolicyTool &&
         !activeToolNames.includes(event.toolName));
     if (enforceActiveSurface) {
+      if (profileHidden) {
+        // Keep hidden retries separate from generic unavailable and loop strikes;
+        // Pi's missing-executor fallback shares this exact same bounded counter.
+        const exhausted = await accountProfileHiddenToolCall(
+          event, ctx, providerCapabilitySnapshot, 'tool_call'
+        );
+        return { block: true, reason: exhausted
+          ? 'BLOCKED: repeated hidden-tool attempts exhausted the bounded profile correction. Preserve the worktree and report a blocker.'
+          : profileHiddenToolAdvice(event.toolName) };
+      }
       unavailableToolAttempts += 1;
       unavailableCapabilityAttemptedThisTurn = true;
       unavailableCapabilityToolThisTurn = event.toolName;
@@ -4580,6 +4788,15 @@ export default function (pi) {
         ...(event.message?.usage ? {} : { reason: 'provider_usage_unavailable' }),
       });
       codingProviderRequestStartedAt = null;
+    }
+    if (!codingSession && mainToolProfileTelemetry) {
+      // A provider omitting cache or token counts means unknown, not zero.
+      const usage = event.message?.usage ?? null;
+      console.log('PI_MAIN_TOOL_PROFILE_RESULT ' + JSON.stringify({
+        stage,
+        ...mainToolProfileResultTelemetry(mainToolProfileTelemetry, usage, providerCapabilitySnapshot?.request ?? null),
+        stopReason: event.message?.stopReason ?? null,
+      }));
     }
     const status = providerErrorStatus(event.message);
     const repairRequest = codingRepairProviderRequestInFlight;

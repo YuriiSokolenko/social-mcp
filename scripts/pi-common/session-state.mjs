@@ -281,7 +281,70 @@ function appendToolDescriptionGuidance(payload, instructions) {
   return { ...payload, tools: [...definitions.slice(0, index), patchedTool, ...definitions.slice(index + 1)] };
 }
 
-export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false, onMissingCarrier = null } = {}) {
+// Pi assembles its system <tools> catalog before the final provider-request
+// filters run. Keeping that catalog can advertise read (or another hidden tool)
+// after the wire schema has removed it. Both system and developer roles
+// can carry this generated catalog, depending on the Pi/provider adapter.
+// Neutralize ONLY the generated catalog,
+// leaving the rest of the stable system prompt, trusted role contracts and
+// tool-call/result transcript unchanged. Request-local routing lives in the
+// final provider tool description (or the zero-tool safe-text carrier).
+const STATIC_TOOL_CATALOG_PATTERN = /<tools(?:\s[^>]*)?>[\s\S]*?<\/tools>/g;
+const NEUTRAL_TOOL_CATALOG = '<tools>\nExecutable tools and their arguments are defined only by this provider request\'s tool schemas. Earlier inventories are not permissions.\n</tools>';
+const BUILTIN_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
+
+export function neutralizeStaleProviderToolCatalog(payload, { candidateNames = [] } = {}) {
+  if (!payload || typeof payload !== 'object') {
+    return { payload, neutralized: 0, mentionedNames: [] };
+  }
+  const candidates = [...new Set([...BUILTIN_TOOL_NAMES, ...candidateNames])]
+    .filter(name => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  const mentioned = new Set();
+  let neutralized = 0;
+  const sanitize = value => {
+    if (typeof value !== 'string' || !value.includes('<tools')) return value;
+    return value.replace(STATIC_TOOL_CATALOG_PATTERN, catalog => {
+      if (catalog === NEUTRAL_TOOL_CATALOG) return catalog;
+      neutralized++;
+      for (const name of candidates) {
+        if (new RegExp('(?:^|[^A-Za-z0-9_])' + name + '(?![A-Za-z0-9_])').test(catalog)) {
+          mentioned.add(name);
+        }
+      }
+      return NEUTRAL_TOOL_CATALOG;
+    });
+  };
+  const sanitizeMessage = message => {
+    if (message?.role !== 'system' && message?.role !== 'developer') return message;
+    if (typeof message.content === 'string') {
+      const content = sanitize(message.content);
+      return content === message.content ? message : { ...message, content };
+    }
+    if (!Array.isArray(message.content)) return message;
+    const content = message.content.map(part => {
+      if (!part || !['text', 'input_text'].includes(part.type) || typeof part.text !== 'string') return part;
+      const next = sanitize(part.text);
+      return next === part.text ? part : { ...part, text: next };
+    });
+    return content.every((part, index) => part === message.content[index])
+      ? message : { ...message, content };
+  };
+  let result = payload;
+  for (const key of ['messages', 'input']) {
+    if (!Array.isArray(result[key])) continue;
+    const messages = result[key].map(sanitizeMessage);
+    if (messages.some((message, index) => message !== result[key][index])) {
+      result = { ...result, [key]: messages };
+    }
+  }
+  if (typeof result.instructions === 'string') {
+    const instructions = sanitize(result.instructions);
+    if (instructions !== result.instructions) result = { ...result, instructions };
+  }
+  return { payload: result, neutralized, mentionedNames: [...mentioned] };
+}
+
+export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false, onMissingCarrier = null, onCatalogAudit = null } = {}) {
   if (!payload || !snapshot || !trustedRuntimeEnvelope) return payload;
   const hasMessages = Array.isArray(payload.messages);
   const hasInput = Array.isArray(payload.input);
@@ -289,12 +352,22 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
   // Trust comes from the installed Implementer runtime, not tool-result contents.
   // This also survives compaction that removes the original role overlay.
   const key = hasMessages ? 'messages' : 'input';
+  if (payload[key].length === 0) return payload; // no real conversation envelope to update
+  const catalog = neutralizeStaleProviderToolCatalog(payload, {
+    candidateNames: [...(snapshot.liveActiveTools ?? []), ...(snapshot.deferredTools ?? []), ...providerToolNames(payload)],
+  });
+  payload = catalog.payload;
+  const schemaNames = providerToolNames(payload);
+  onCatalogAudit?.({
+    schemaNames,
+    guidanceNames: [...schemaNames],
+    neutralizedCatalogCount: catalog.neutralized,
+    staleStaticMentions: catalog.mentionedNames.filter(name => !schemaNames.includes(name)),
+  });
   const history = payload[key];
-  if (history.length === 0) return payload; // no real conversation envelope to update
   // Never use snapshot.activeTools or a historical prompt as a source for
   // callable names. Derive both inventory and routing from the *final* payload.
-  const executableTools = providerToolNames(payload)
-    .filter(name => snapshot.executableTools?.includes(name));
+  const executableTools = schemaNames;
   const explainDeferred = snapshot.explainDeferred === true;
   const deferred = explainDeferred
     ? (snapshot.deferredTools ?? []).filter(name => !executableTools.includes(name))
@@ -334,13 +407,14 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
  * Classifies pi's `Tool X not found` result against the authoritative provider-request snapshot.
  * pi resolves tool calls against the turn context captured with the request, so:
  * - a tool the request advertised but pi cannot execute is a real tool-contract failure;
- * - a tool activated after the payload was assembled (deferred) is a lifecycle mismatch: pi exposes
- *   it from the next request;
+ * - a tool deliberately hidden by a fresh Main profile requires explicit capability escalation;
+ * - a tool activated after assembly (deferred) is a lifecycle mismatch: pi may expose it next request;
  * - any other tool was never offered to the model and is an ordinary unavailable-tool attempt.
  * Without a snapshot nothing proves the tool was not advertised, so it stays a contract failure.
  */
 export function classifyMissingExecutor(toolName, snapshot) {
   if (!snapshot || snapshot.executableTools?.includes(toolName)) return 'contract_failure';
+  if (snapshot.profileHiddenTools?.includes(toolName)) return 'profile_hidden';
   if (snapshot.deferredTools?.includes(toolName)) return 'deferred';
   return 'unavailable';
 }

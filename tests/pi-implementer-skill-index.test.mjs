@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import implementerSkillIndex, { compactImplementerSkillPrompt } from '../scripts/pi-implementer-skill-index.mjs';
+import implementerSkillIndex, { compactImplementerSkillPrompt, curateImplementerSkillPrompt } from '../scripts/pi-implementer-skill-index.mjs';
 import { buildPiInvocation, buildBootstrapInvocation } from '../scripts/pi-common/pi-stage-backend.mjs';
 import { mainPromptRequestMetadata } from '../scripts/pi-common/main-prompt-observability.mjs';
 
@@ -130,4 +130,202 @@ test('#593 provider-side Main metadata measures exact UTF-8 skills bytes on firs
   assert.equal(next.skillCatalogBytes, firstMetrics.skillCatalogBytes);
   assert.equal(next.systemTextBytes, firstMetrics.systemTextBytes);
   assert.equal(next.changedFromPrevious.system, false);
+});
+
+
+test('#685 Python Main promotes relevant skills and keeps every other exact read path', () => {
+  const before = '<role>Trusted safety and task contract remain unchanged.</role>\n'
+    + catalog(allNames) + '\n<project_context>original planText remains unmodified</project_context>';
+  const after = curateImplementerSkillPrompt(before, {
+    taskText: 'Create src/social_mcp/diagnostics/smoke_unique_terms.py and tests/diagnostics/test_smoke_unique_terms.py. Verify with pytest.',
+  });
+  const featured = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
+  const index = after.match(/<skill_discovery_index>([\s\S]*?)<\/skill_discovery_index>/)?.[1] ?? '';
+  assert.match(featured, /<name>python-testing-patterns<\/name>/);
+  assert.doesNotMatch(featured, /<name>docker-compose<\/name>/);
+  assert.match(index, /docker-compose\t\/work\/\.agents\/skills\/docker-compose\/SKILL\.md/);
+  assert.match(index, /github-actions-hardening\t\/work\/\.agents\/skills\/github-actions-hardening\/SKILL\.md/);
+  assert.equal((featured.match(/<skill>/g) ?? []).length
+    + index.split('\n').filter(line => line.includes('\t')).length, allNames.length);
+  assert.ok((featured.match(/<skill>/g) ?? []).length < 6);
+  assert.ok(Buffer.byteLength(after) < Buffer.byteLength(before) * 0.5,
+    'the 31-entry catalog should shrink substantially without removing any skill path');
+  assert.match(after, /Trusted safety and task contract remain unchanged/);
+  assert.match(after, /original planText remains unmodified/);
+  assert.match(after, /tool actually present in this request/);
+  assert.equal(curateImplementerSkillPrompt(after, { taskText: 'Python pytest' }), after,
+    'later phase transitions must not duplicate or widen the index');
+});
+
+test('#685 JS, Docker/CI and multi-domain tasks feature bounded relevant skills', () => {
+  const names = ['python-testing-patterns', 'modern-javascript-patterns',
+    'docker-compose', 'github-actions-hardening', 'security-review', 'repomap-navigation'];
+  for (const [task, expected] of [
+    ['Update src/main.mjs and run node tests.', ['modern-javascript-patterns']],
+    ['Update Dockerfile and .github/workflows/test.yml for Docker CI.', ['docker-compose', 'github-actions-hardening']],
+    ['Refactor Python pytest + TypeScript .ts, Dockerfile, GitHub Actions and security architecture.',
+      ['python-testing-patterns', 'modern-javascript-patterns', 'docker-compose', 'github-actions-hardening', 'security-review']],
+  ]) {
+    const after = curateImplementerSkillPrompt(catalog(names), { taskText: task });
+    const featured = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
+    for (const name of expected) assert.match(featured, new RegExp('<name>' + name + '</name>'), task);
+    assert.ok((featured.match(/<skill>/g) ?? []).length <= 5, 'selection stays bounded');
+    for (const name of names) {
+      assert.ok(after.includes('/work/.agents/skills/' + name + '/SKILL.md'),
+        'exact discovery location must remain available: ' + name);
+    }
+  }
+});
+
+test('#685 unfamiliar requests retain lossless dynamic discovery instead of guessed skills', () => {
+  const names = ['python-testing-patterns', 'docker-compose', 'github-actions-hardening'];
+  const before = catalog(names);
+  const after = curateImplementerSkillPrompt(before, {
+    taskText: 'Investigate the opaque flux calibrator with an unfamiliar cross-domain dependency.',
+  });
+  assert.equal((after.match(/<skill>/g) ?? []).length, 0);
+  for (const name of names) {
+    assert.match(after, new RegExp(name + '\\t/work/\\.agents/skills/' + name + '/SKILL\\.md'));
+  }
+  const malformed = before.replace('<location>/work/.agents/skills/docker-compose/SKILL.md</location>', '');
+  assert.equal(curateImplementerSkillPrompt(malformed, { taskText: 'Dockerfile' }), malformed);
+  const duplicated = catalog(['python-testing-patterns', 'python-testing-patterns']);
+  assert.equal(curateImplementerSkillPrompt(duplicated, { taskText: 'pytest' }), duplicated);
+  assert.equal(curateImplementerSkillPrompt('<system>no skills</system>', { taskText: 'pytest' }),
+    '<system>no skills</system>');
+});
+
+test('#685 Main hook uses task prompt while isolated coding and non-Main sessions do not curate', () => {
+  let handler;
+  implementerSkillIndex({ on: (_name, callback) => { handler = callback; } });
+  const stage = process.env.PI_STAGE;
+  const child = process.env.PI_CODING_SESSION;
+  const before = catalog(allNames);
+  try {
+    process.env.PI_STAGE = 'implementer';
+    delete process.env.PI_CODING_SESSION;
+    const first = handler({ systemPrompt: before, prompt: 'Create tests/test_terms.py with pytest.' });
+    assert.ok(first?.systemPrompt.includes('<skill_discovery_index>'));
+    assert.match(first.systemPrompt, /<name>python-testing-patterns<\/name>/);
+    const later = handler({ systemPrompt: first.systemPrompt, prompt: 'submit_result' });
+    assert.equal(later, undefined, 'a later phase must not mutate an already curated catalog');
+    process.env.PI_CODING_SESSION = '{"sessionId":"child"}';
+    assert.equal(handler({ systemPrompt: before, prompt: 'Python pytest' }), undefined);
+    delete process.env.PI_CODING_SESSION;
+    process.env.PI_STAGE = 'reviewer';
+    assert.equal(handler({ systemPrompt: before, prompt: 'Python pytest' }), undefined);
+  } finally {
+    if (stage === undefined) delete process.env.PI_STAGE;
+    else process.env.PI_STAGE = stage;
+    if (child === undefined) delete process.env.PI_CODING_SESSION;
+    else process.env.PI_CODING_SESSION = child;
+  }
+});
+
+
+test('#685 provider-boundary metrics distinguish featured from indexed entries on first/later turns', () => {
+  const system = curateImplementerSkillPrompt('<role>safe</role>\n' + catalog(allNames), {
+    taskText: 'Create src/app.py with pytest',
+  });
+  const first = {
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: '<shared_agent_contract/><role_contract/>' },
+    ],
+    tools: [],
+  };
+  const metadata = mainPromptRequestMetadata(first);
+  assert.ok(metadata.skillCount > 0 && metadata.skillCount <= 5);
+  assert.equal(metadata.indexedSkillCount + metadata.skillCount, 31);
+  assert.equal(metadata.discoverableSkillCount, 31);
+  assert.ok(metadata.skillCatalogBytes < 10398,
+    'fixture: the curated catalog must be smaller than the #677 reference bytes');
+  assert.equal(metadata.systemTextBytes, Buffer.byteLength(system));
+  const next = mainPromptRequestMetadata({
+    ...first,
+    messages: [...first.messages, { role: 'assistant', content: 'verification complete' }],
+  }, metadata);
+  assert.equal(next.changedFromPrevious.system, false);
+  assert.equal(next.discoverableSkillCount, metadata.discoverableSkillCount);
+});
+
+
+test('#685 small skill aliases py, ci, js and ts match domain signals', () => {
+  const names = ['py', 'ci-cd', 'js', 'ts', 'code-review-checklist',
+    'docker-compose', 'other-helper'];
+  for (const [task, target] of [
+    ['Add src/x.py and test with pytest.', 'py'],
+    ['Run checks in CI on the ci pipeline.', 'ci-cd'],
+    ['Fix src/app.js and run node tests.', 'js'],
+    ['Update src/app.ts and its TypeScript types.', 'ts'],
+  ]) {
+    const after = curateImplementerSkillPrompt(catalog(names), { taskText: task });
+    const featured = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
+    assert.match(featured, new RegExp('<name>' + target + '</name>'), task);
+    assert.doesNotMatch(featured, /<name>code-review-checklist<\/name>/);
+    for (const name of names) {
+      assert.ok(after.includes('/work/.agents/skills/' + name + '/SKILL.md'));
+    }
+  }
+});
+
+test('#685 incidental review/database/api wording cannot fill the five featured slots', () => {
+  const names = ['code-review-checklist', 'database-guide', 'api-design-guide',
+    'python-testing-patterns', 'py', 'generic-helper', 'generic-repo',
+    'unrelated-maintainer', 'docker-compose'];
+  const taskText = [
+    'Implement src/x.py with pytest.',
+    'Address review feedback mentioning the database, API and design notes.',
+    'Do not modify the database or API; these are only reviewer comments.',
+  ].join(' ');
+  const after = curateImplementerSkillPrompt(catalog(names), { taskText });
+  const featured = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
+  assert.match(featured, /<name>python-testing-patterns<\/name>/);
+  assert.match(featured, /<name>py<\/name>/);
+  assert.doesNotMatch(featured, /<name>code-review-checklist<\/name>/);
+  assert.doesNotMatch(featured, /<name>database-guide<\/name>/);
+  assert.doesNotMatch(featured, /<name>api-design-guide<\/name>/);
+  assert.ok((featured.match(/<skill>/g) ?? []).length <= 5);
+  assert.ok(after.includes('code-review-checklist\t/work/.agents/skills/code-review-checklist/SKILL.md'));
+});
+
+test('#685 real Main phase simulation freezes selection even when Pi rebuilds the entire catalog', () => {
+  let handler;
+  implementerSkillIndex({ on: (name, callback) => {
+    assert.equal(name, 'before_agent_start');
+    handler = callback;
+  } });
+  const stage = process.env.PI_STAGE;
+  const child = process.env.PI_CODING_SESSION;
+  try {
+    process.env.PI_STAGE = 'implementer';
+    delete process.env.PI_CODING_SESSION;
+    const full = '<contract>Safety and original task requirements</contract>\n'
+      + catalog(['py', 'python-testing-patterns', 'ci-cd', 'docker-compose',
+        'code-review-checklist', 'repomap-navigation']);
+    const first = handler({
+      systemPrompt: full,
+      prompt: 'Create a Python helper in src/x.py and test using pytest.',
+    })?.systemPrompt;
+    assert.ok(first?.includes('<skill_discovery_index>'));
+    // Crucial: Pi might provide fresh full XML here, NOT first.systemPrompt.
+    const later = handler({
+      systemPrompt: full,
+      prompt: 'submit_result',
+    })?.systemPrompt;
+    assert.equal(later, first, 'Main feature selection must not depend on late-phase prompt');
+    const metadata1 = mainPromptRequestMetadata({
+      messages: [{ role: 'system', content: first }], tools: [],
+    });
+    const metadata2 = mainPromptRequestMetadata({
+      messages: [{ role: 'system', content: later }], tools: [],
+    }, metadata1);
+    assert.equal(metadata2.changedFromPrevious.system, false);
+    assert.equal(metadata1.discoverableSkillCount, 6);
+  } finally {
+    if (stage === undefined) delete process.env.PI_STAGE;
+    else process.env.PI_STAGE = stage;
+    if (child === undefined) delete process.env.PI_CODING_SESSION;
+    else process.env.PI_CODING_SESSION = child;
+  }
 });
