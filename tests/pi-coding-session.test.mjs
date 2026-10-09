@@ -1284,7 +1284,14 @@ function runtimeScenario(mode) {
       if (mode === 'restored' || mode === 'action-required-serial') {
         assert.equal(firstParentRequest.tool_choice, 'required', 'prepared action_required startup constrains the first parent request');
       } else {
-        assert.equal(firstParentRequest, unarmedPayload, 'preparation-phase parent request is unchanged');
+        const advertised = firstParentRequest.tools.map(tool => tool.function.name);
+        const previouslyActive = unarmedPayload.tools.map(tool => tool.function.name);
+        assert.ok(advertised.length < previouslyActive.length, 'fresh Main removes optional schema from the first request');
+        assert.ok(advertised.every(name => previouslyActive.includes(name)), 'profile never synthesizes a new executor');
+        for (const required of ['read', 'write', 'safe_edit', 'accept_mutation_scope', 'submit_result']) {
+          assert.ok(advertised.includes(required), required + ' must remain callable in the fresh Main fixture');
+        }
+        assert.ok(!advertised.includes('subagents_enable'), 'delegation requires explicit later capability grant');
       }
       if (mode === 'action-required-serial') {
         const payload = () => ({
