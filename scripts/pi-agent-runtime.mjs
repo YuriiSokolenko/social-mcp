@@ -3456,7 +3456,9 @@ export default function (pi) {
           ? `BLOCKED: capability lifecycle changed after provider request ${providerCapabilitySnapshot.request}: ${event.toolName} was executable at request start but a later state transition removed it. Do not retry the stale call. ${capabilitySnapshotGuidance(requestTools)}`
           : newlyActiveButDeferred
             ? `BLOCKED: ${event.toolName} became active only after provider request ${providerCapabilitySnapshot.request} was serialized. It is DEFERRED, not executable now. Try only on a later request that lists it. ${capabilitySnapshotGuidance(requestTools)}`
-            : `BLOCKED: that tool is not executable in this provider request. ${capabilitySnapshotGuidance(requestTools ?? activeToolNames)}`,
+            : requestTools == null
+              ? `BLOCKED: that tool is not currently exposed by the runtime. ${capabilitySnapshotGuidance(activeToolNames)}`
+              : `BLOCKED: that tool is not executable in this provider request. ${capabilitySnapshotGuidance(requestTools)}`,
       };
       console.warn(`${removedSinceRequest || newlyActiveButDeferred ? 'PI_CAPABILITY_LIFECYCLE_MISMATCH' : 'PI_UNAVAILABLE_TOOL_ATTEMPT'} ${JSON.stringify({
         stage,
