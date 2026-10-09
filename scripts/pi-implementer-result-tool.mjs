@@ -212,13 +212,25 @@ export default function (pi) {
 
   const submission = { phase: 'coding', budget: null, retryUsed: false, control: null,
     lastAssistant: null, providerEvidence: null, providerRequest: 0, lastInputTokens: null,
-    truncatedToolArguments: false };
+    truncatedToolArguments: false, originalModel: null };
 
-  const submissionFailure = (code, reason, ctx) => {
+  const restoreSubmissionBudget = async () => {
+    if (!submission.originalModel) return;
+    const original = submission.originalModel;
+    submission.originalModel = null;
+    try {
+      if (!(await pi.setModel(original))) console.warn('PI_IMPLEMENTER_SUBMISSION_BUDGET_RESTORE_UNAVAILABLE');
+    } catch (error) {
+      console.warn(`PI_IMPLEMENTER_SUBMISSION_BUDGET_RESTORE_FAILED ${String(error?.message ?? error)}`);
+    }
+  };
+
+  const submissionFailure = async (code, reason, ctx) => {
     submission.phase = 'failed';
     console.error(`PI_IMPLEMENTER_SUBMISSION_FAILED ${JSON.stringify({
       code, reason, budget: submission.budget, checkpoint: { worktree_preserved: true },
     })}`);
+    await restoreSubmissionBudget();
     ctx?.abort?.();
   };
   const applySubmissionBudget = async (ctx, target) => {
@@ -230,8 +242,10 @@ export default function (pi) {
           (!Number.isFinite(submission.lastInputTokens) ||
           submission.lastInputTokens + target + 1024 > contextWindow)) return false;
     }
+    const before = { ...ctx.model };
     const changed = await pi.setModel({ ...ctx.model, maxTokens: target });
     if (!changed) return false;
+    submission.originalModel ??= before;
     submission.budget = target;
     return true;
   };
@@ -300,8 +314,13 @@ export default function (pi) {
       if (Number.isFinite(input) && input >= 0) submission.lastInputTokens = input;
       submission.lastAssistant = { reason, calls };
     });
-    pi.on('tool_execution_end', event => {
+    pi.on('tool_execution_end', async event => {
       if (submission.control && event.toolCallId === submission.control.id) submission.control.executed = !event.isError;
+      // Restore the pre-submission model budget once the terminal executor has
+      // committed a result; terminal completion may skip the turn_end event.
+      if (submission.phase === 'submission_pending' && !event.isError &&
+          event.toolName === 'submit_result' && submission.control?.kind === 'submit' &&
+          submission.control?.executed) await restoreSubmissionBudget();
     });
     pi.on('tool_result', event => {
       if (submission.phase === 'submission_pending' && event.toolName === 'submit_result' && event.isError &&
@@ -320,7 +339,7 @@ export default function (pi) {
         submission.control = null;
         if (!control.executed || !complete) return;
         if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_TOKENS))) {
-          submissionFailure('result_submission_budget_unavailable', '4096 token submission request unavailable', ctx);
+          await submissionFailure('result_submission_budget_unavailable', '4096 token submission request unavailable', ctx);
           return;
         }
         submission.phase = 'submission_pending';
@@ -337,22 +356,22 @@ export default function (pi) {
       }
       submission.control = null;
       if (!submission.providerEvidence?.verified) {
-        submissionFailure('result_submission_budget_unverified', 'Actual provider output budget does not match submission phase', ctx);
+        await submissionFailure('result_submission_budget_unverified', 'Actual provider output budget does not match submission phase', ctx);
         return;
       }
       const truncated = last?.reason === 'length' || submission.truncatedToolArguments;
       submission.truncatedToolArguments = false;
       if (!truncated) {
-        submissionFailure('result_submission_incomplete', 'No complete and valid submit_result tool call', ctx);
+        await submissionFailure('result_submission_incomplete', 'No complete and valid submit_result tool call', ctx);
         return;
       }
       if (submission.retryUsed) {
-        submissionFailure('result_submission_retry_exhausted', 'Submission-only retry was incomplete', ctx);
+        await submissionFailure('result_submission_retry_exhausted', 'Submission-only retry was incomplete', ctx);
         return;
       }
       submission.retryUsed = true;
       if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_RETRY_TOKENS))) {
-        submissionFailure('result_submission_context_exhausted', '8192 token retry unsupported or cannot fit', ctx);
+        await submissionFailure('result_submission_context_exhausted', '8192 token retry unsupported or cannot fit', ctx);
         return;
       }
       pi.setActiveTools?.(['submit_result']);
