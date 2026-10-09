@@ -23,8 +23,15 @@ capabilities or override #683/#684 phase restrictions.
 Unknown or cross-domain tasks retain all paths in the index; selection is not an
 authorization boundary. Malformed, ambiguous and duplicated catalogs fail open.
 The hook is unchanged for Planner, Reviewer, Architect and isolated coding sessions.
-The selected catalog is stable across Main phase transitions and does not require
-one new tool call for discovery. Log `PI_MAIN_SKILLS` gives featured/indexed/total
+The feature selection is frozen from the first nonempty Main `before_agent_start`
+task prompt for the lifetime of that Pi extension instance. Even if Pi rebuilds
+its original full skills XML during a later `submit_result` phase, the same task
+is used to select featured entries; a repeated already-curated catalog stays
+unchanged. Only explicit skill names, multiple distinctive words and concrete
+language/CI/Docker/security topic signals earn featured slots. Short `py`,
+`js`, `ts` and `ci` aliases are recognized; incidental `review`, `database`,
+`api` and `design` mentions do not take a slot. The selected catalog does not
+require an extra tool call for discovery. Log `PI_MAIN_SKILLS` gives featured/indexed/total
 counts and system-byte savings; provider-boundary `PI_MAIN_PROMPT` also reports
 `skillCount` (featured), `indexedSkillCount`, `discoverableSkillCount`,
 `skillCatalogBytes`, total system text bytes and request schema size.
