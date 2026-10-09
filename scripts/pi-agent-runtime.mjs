@@ -3731,15 +3731,35 @@ export default function (pi) {
         !activeToolNames.includes(event.toolName));
     if (enforceActiveSurface) {
       if (profileHidden) {
-        // This is neither a late-active executor nor an unknown unavailable
-        // capability. Do not feed it to the generic loop guard or consume its
-        // correction budget. Give one request-local escalation explanation.
+        // Profile-hidden is neither late activation nor a generic unavailable
+        // executor. Count it independently and leave both generic budgets
+        // untouched. A persistent refusal to follow its grant guidance must
+        // terminate with the worktree preserved, not consume 100 model turns.
+        mainProfileHiddenAttempts += 1;
         console.warn('PI_MAIN_PROFILE_TOOL_HIDDEN ' + JSON.stringify({
           stage, request: providerCapabilitySnapshot.request,
           attemptedTool: event.toolName,
           group: optionalMainToolGroup(event.toolName),
           requestCapabilitiesExposed: requestTools.includes(MAIN_CAPABILITY_REQUEST_TOOL),
+          count: mainProfileHiddenAttempts,
+          correctionLimit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
         }));
+        if (mainProfileHiddenAttempts > MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS) {
+          const reason = 'profile-hidden tool called repeatedly despite explicit capability guidance; preserve worktree and report blocker';
+          recordRuntimeAbort('PI_UNAVAILABLE_CAPABILITY_ABORT', reason, {
+            attemptedTool: event.toolName, unavailableCapabilityKind: 'profile_hidden',
+            profileHiddenAttempts: mainProfileHiddenAttempts,
+            correction_limit: MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS,
+            checkpoint: { worktree_preserved: true },
+          });
+          console.error('PI_MAIN_PROFILE_HIDDEN_ABORT ' + JSON.stringify({
+            stage, request: providerCapabilitySnapshot.request,
+            attemptedTool: event.toolName, count: mainProfileHiddenAttempts,
+            checkpoint: { worktree_preserved: true },
+          }));
+          await ctx.abort();
+          return { block: true, reason: 'BLOCKED: repeated hidden-tool attempts exhausted the bounded profile correction. Preserve the worktree and report a blocker.' };
+        }
         await steerProfileHidden(event.toolName, providerCapabilitySnapshot);
         return { block: true, reason: profileHiddenToolAdvice(event.toolName) };
       }
