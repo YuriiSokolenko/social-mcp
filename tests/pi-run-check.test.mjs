@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { runCheck, checkMetricRecord, sandboxPreflight, CHECK_KINDS, CHECK_STATUSES } from '../scripts/pi-common/run-check.mjs';
+import { runCheck, buildRunCheckSpec, normalizeRunCheckPaths, checkMetricRecord, sandboxPreflight, CHECK_KINDS, CHECK_STATUSES } from '../scripts/pi-common/run-check.mjs';
 import { ruffArgs } from '../scripts/pi-common/ruff-spec.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { createDockerSandboxBackend } from '../scripts/pi-common/run-check-docker-backend.mjs';
@@ -224,6 +224,36 @@ test('#635 invalid framework and unsafe Node paths never invoke a runner or arm 
   assert.match(mismatch.summary, /use kind=node_test/);
   const inverse = await runCheck(dir, { kind: 'node_test', targets: ['tests/test_engine.py'] }, { backend });
   assert.match(inverse.summary, /use kind=pytest/);
+});
+
+test('#635 trusted executor revalidates runner paths in staged worktree namespace', t => {
+  const relative = 'examples/workflow-smoke/arkanoid/engine.test.mjs';
+  const runner = worktree({ [relative]: "import test from 'node:test'; test('ok', () => {});\n" });
+  const staged = worktree({ [relative]: "import test from 'node:test'; test('ok', () => {});\n" });
+  const outside = worktree({ 'escape.test.mjs': '' });
+  t.after(() => [runner, staged, outside].forEach(dir => fs.rmSync(dir, { recursive: true, force: true })));
+  const input = { kind: 'node_test', targets: [path.join(runner, relative)] };
+  const request = normalizeRunCheckPaths(runner, input);
+  assert.deepEqual(request, { kind: 'node_test', targets: [relative] });
+  const built = buildRunCheckSpec(staged, request, { bins: { node: '/usr/local/bin/node' } });
+  assert.equal(built.spec.command, '/usr/local/bin/node');
+  assert.deepEqual(built.spec.args, ['--test', '--test-reporter=tap', relative]);
+  fs.rmSync(path.join(staged, relative));
+  fs.symlinkSync(path.join(outside, 'escape.test.mjs'), path.join(staged, relative));
+  assert.throws(() => buildRunCheckSpec(staged, request, { bins: { node: '/usr/local/bin/node' } }), /resolves outside/);
+  assert.throws(() => buildRunCheckSpec(staged, { kind: 'pytest', targets: [relative] }), /resolves outside/);
+});
+
+test('#635 sandbox executor and image pin Node and preflight its availability', () => {
+  const executor = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-executor.mjs', import.meta.url), 'utf8');
+  const image = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-sandbox.Dockerfile', import.meta.url), 'utf8');
+  const probe = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-sandbox-probe.py', import.meta.url), 'utf8');
+  assert.match(executor, /node: '\/usr\/local\/bin\/node'/);
+  assert.match(executor, /buildStagedRunCheckSpec\(stageInfo\.canonicalRoot, stageInfo\.stage, stagedParams/);
+  assert.match(executor, /--network', 'none'/);
+  assert.match(image, /COPY --from=node-runtime \/usr\/local\/bin\/node/);
+  assert.match(probe, /node_available = node_probe\.stdout\.strip\(\)\.startswith\("v"\)/);
+  assert.match(probe, /and node_available/);
 });
 
 test('#635 Node timeout returns timeout, never a test failure', async t => {
