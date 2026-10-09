@@ -127,6 +127,18 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
         payload: { ...payload, tools: [...payload.tools, ...['run_check', 'retry_last_failed_check', 'bash'].map(name => ({ function: { name } }))] },
       });
       assert.deepEqual(later.tools.map(x => x.function.name), ['safe_edit', 'submit_result']);
+      // A genuine request with an actual role envelope and ZERO tool definitions
+      // must fail closed even when safe_edit is still live in the host.
+      const emptyRequest = handlers.get('before_provider_request')({
+        payload: { ...payload, tools: [] },
+      });
+      assert.deepEqual(emptyRequest.tools, []);
+      const denied = await handlers.get('tool_call')(
+        { toolName: 'safe_edit', toolCallId: 'real-zero-tools', input: { path: 'ignored.py' } },
+        { cwd: ${JSON.stringify(dir)}, model: { maxTokens: 2048 }, abort: () => {} },
+      );
+      assert.equal(denied?.block, true, 'zero tools means zero dispatch privileges');
+      assert.match(denied.reason, /not executable in this provider request/);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
