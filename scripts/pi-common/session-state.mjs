@@ -345,6 +345,16 @@ export function classifyMissingExecutor(toolName, snapshot) {
   return 'unavailable';
 }
 
+// Check a decoded provider tool name only against the final request-local wire inventory.
+// A host-active or historically known tool is never promoted into that request.
+export function classifyProviderReturnedTool(toolName, snapshot, { activeTools = [], knownTools = [] } = {}) {
+  if (!snapshot || !Array.isArray(snapshot.executableTools)) return 'missing_request_snapshot';
+  if (snapshot.executableTools.includes(toolName)) return 'allowed';
+  if (snapshot.deferredTools?.includes(toolName) || activeTools.includes(toolName)) return 'deferred';
+  if (knownTools.includes(toolName)) return 'known_disabled';
+  return 'unknown';
+}
+
 export function capabilitySnapshotGuidance(activeToolNames) {
   return `${activeToolGuidance(activeToolNames)} This capability snapshot is authoritative for this provider request. Tool names mentioned in earlier history or static contracts but absent from this list are not directly callable now; use only an exposed runtime transition to make another capability available.`;
 }

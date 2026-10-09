@@ -26,7 +26,7 @@ import {
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, classifyProviderReturnedTool, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -567,6 +567,13 @@ export default function (pi) {
   // tool-bearing request or discarded when the stage/process ends; it never
   // survives teardown and cannot carry into a new Pi stage.
   let unavailableCapabilityCorrectionPending = false;
+  // This protocol is separate from the normal unavailable-capability strike counter.
+  // A single absent-name response may cause ONE fresh-schema corrective provider call.
+  let providerNameCorrectionPending = false;
+  let providerNameCorrectionInFlight = false;
+  let providerNameCorrectionAttempts = 0;
+  let providerNameViolationCalls = new Map();
+  let providerNameValidToolObserved = false;
   let providerWireOutputBudget = null;
   let codingToolTransportErrors = [];
   let codingToolTransportRecovery = null;
@@ -1565,11 +1572,58 @@ export default function (pi) {
     await ctx.abort();
   }
 
+  const safeToolName = value =>
+    typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,95}$/.test(value)
+      ? value : '[invalid_tool_name]';
+
+  function recordProviderToolNameViolation(event, origin, liveTools = pi.getActiveTools()) {
+    const snapshot = providerCapabilitySnapshot;
+    const classification = classifyProviderReturnedTool(event.toolName, snapshot, {
+      activeTools: liveTools, knownTools: unrestrictedActiveTools ?? [],
+    });
+    if (classification === 'allowed' || classification === 'missing_request_snapshot') return false;
+    const key = event.toolCallId ?? `${snapshot.request}:${safeToolName(event.toolName)}`;
+    if (providerNameViolationCalls.has(key)) return true;
+    const returnedToolName = safeToolName(event.toolName);
+    providerNameViolationCalls.set(key, returnedToolName);
+    unavailableCapabilityAttemptedThisTurn = true;
+    unavailableCapabilityToolThisTurn = returnedToolName;
+    unavailableCapabilityKindThisTurn = 'provider_tool_name_violation';
+    // These are metadata only, not model arguments or response bodies.
+    console.error('PI_PROVIDER_TOOL_NAME_VIOLATION ' + JSON.stringify({
+      stage, request: snapshot.request, requestedToolNames: snapshot.executableTools,
+      returnedToolName, tool_choice: snapshot.toolChoice ?? null,
+      providerRoute: snapshot.providerRoute ?? null, classification, origin,
+      correctionAttempts: providerNameCorrectionAttempts,
+      outcome: 'blocked_before_execution',
+    }));
+    return true;
+  }
+
+  function abortProviderToolNameViolation(ctx, code, reason) {
+    const snapshot = providerCapabilitySnapshot;
+    const detail = {
+      request: snapshot?.request ?? null,
+      requestedToolNames: snapshot?.executableTools ?? [],
+      returnedToolNames: [...providerNameViolationCalls.values()],
+      tool_choice: snapshot?.toolChoice ?? null,
+      providerRoute: snapshot?.providerRoute ?? null,
+      correctionAttempts: providerNameCorrectionAttempts,
+      checkpoint: { worktree_preserved: true },
+    };
+    recordRuntimeAbort(code, reason, detail);
+    console.error(code + ' ' + JSON.stringify({ stage, ...detail, reason, outcome: 'aborted' }));
+    ctx.abort();
+  }
+
   // pi reports `Tool X not found` through tool_execution_end and/or tool_result for the same call.
   // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
   // replacement guidance for the other (recoverable) classes.
   const missingExecutorCalls = new Map();
   async function handleMissingExecutor(event, ctx) {
+    if (recordProviderToolNameViolation(event, 'missing_executor')) {
+      return `BLOCKED: provider returned an unadvertised tool name. ${capabilitySnapshotGuidance(providerCapabilitySnapshot.executableTools)}`;
+    }
     const kind = classifyMissingExecutor(event.toolName, providerCapabilitySnapshot);
     if (kind === 'contract_failure') {
       await abortToolContract(event.toolName, ctx);
@@ -2418,6 +2472,31 @@ export default function (pi) {
           providerCapabilitySnapshot.toolChoiceSource = decision.source;
           providerCapabilitySnapshot.toolChoiceExemption = decision.exemption;
           providerCapabilitySnapshot.executableTools = wireTools;
+          // The URL is intentionally limited to route identity; no credentials or query values.
+          const rawRoute = process.env.PI_MODEL_BASE_URL ?? '';
+          try {
+            const route = new URL(rawRoute);
+            providerCapabilitySnapshot.providerRoute = route.origin + route.pathname;
+          } catch {
+            providerCapabilitySnapshot.providerRoute = 'unspecified';
+          }
+          if (providerNameCorrectionPending) {
+            providerNameCorrectionPending = false;
+            if (!wireTools.length || (terminalRecoveryRequiredTool && !wireTools.includes(terminalRecoveryRequiredTool))) {
+              abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED',
+                'no phase-authorized serialized tool is available for the bounded correction');
+              return withoutProviderTools(patched);
+            }
+            providerNameCorrectionInFlight = true;
+            providerNameCorrectionAttempts += 1;
+            console.warn('PI_PROVIDER_TOOL_NAME_CORRECTION_REQUEST ' + JSON.stringify({
+              stage, request: providerCapabilitySnapshot.request,
+              requestedToolNames: wireTools, tool_choice: decision.toolChoice,
+              providerRoute: providerCapabilitySnapshot.providerRoute,
+              correctionAttempts: providerNameCorrectionAttempts,
+              outcome: 'fresh_request_serialized',
+            }));
+          }
         }
         forcedProviderRequestInFlight = decision.toolChoice === 'required';
         if (forcedProviderRequestInFlight) {
@@ -3494,6 +3573,8 @@ export default function (pi) {
     unavailableCapabilityAttemptedThisTurn = false;
     unavailableCapabilityKindThisTurn = null;
     unavailableCapabilityToolThisTurn = null;
+    providerNameViolationCalls = new Map();
+    providerNameValidToolObserved = false;
     elevatedTurnObservedActionTool = false;
     elevatedTurnAttemptedFinishTool = false;
     elevatedTurnSuccessfulFinishTool = false;
@@ -3516,6 +3597,15 @@ export default function (pi) {
   });
 
   pi.on('tool_call', async (event, ctx) => {
+    if (recordProviderToolNameViolation(event, 'tool_call')) {
+      return { block: true, reason: `BLOCKED: provider tool-name contract violation. ${capabilitySnapshotGuidance(providerCapabilitySnapshot.executableTools)}` };
+    }
+    if (providerCapabilitySnapshot?.executableTools?.includes(event.toolName)) {
+      providerNameValidToolObserved = true;
+    }
+    if (providerNameViolationCalls.size) {
+      return { block: true, reason: 'BLOCKED: no additional tool calls may execute after a provider tool-name contract violation in this response.' };
+    }
     if (codingSession && !codingFirstToolLogged) {
       codingFirstToolLogged = true;
       codingSessionLog('first_tool_call', { side: 'fork', sessionId: codingSession.sessionId, tool: event.toolName, msSinceReady: codingReadyAt ? Date.now() - codingReadyAt : null });
@@ -4686,11 +4776,79 @@ export default function (pi) {
       // turn_end return values are not part of that continuation contract.
       return undefined;
     }
+    if (event.message?.stopReason === 'error' && providerNameCorrectionInFlight) {
+      providerNameCorrectionInFlight = false;
+      abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED',
+        'the single corrective request failed at the provider/transport boundary');
+      return undefined;
+    }
     if (event.message?.stopReason === 'error') {
       // Provider/transport error turns are not model attempts: do not consume prose/ceiling
       // watchdogs or one-shot mutation budget. Any active grant remains available if Pi retries.
       console.warn(`PI_PROVIDER_ERROR_TURN ${JSON.stringify({ stage, status, forced: forcedRequestErrored })}`);
       return undefined;
+    }
+
+    // Pi may reject an unknown name before firing tool_call or tool_result; inspect
+    // decoded tool calls as well. Never infer tool calls from assistant prose.
+    const decodedCalls = [
+      ...(Array.isArray(event.message?.toolCalls) ? event.message.toolCalls : []),
+      ...(Array.isArray(event.message?.content)
+        ? event.message.content.filter(part => part?.type === 'toolCall') : []),
+    ];
+    for (const [index, call] of decodedCalls.entries()) {
+      const name = call?.name ?? call?.toolName ?? call?.function?.name;
+      if (typeof name === 'string') {
+        recordProviderToolNameViolation({
+          toolName: name, toolCallId: call?.id ?? call?.toolCallId ?? `decoded:${index}:${name}`,
+        }, 'turn_end');
+      }
+    }
+    if (providerNameViolationCalls.size > 0) {
+      if (providerNameCorrectionInFlight || providerNameCorrectionAttempts >= 1 ||
+          providerNameViolationCalls.size > 1) {
+        providerNameCorrectionInFlight = false;
+        abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED',
+          'unadvertised provider tool call repeated or multiple invalid calls appeared in one response');
+        return undefined;
+      }
+      const candidates = pi.getActiveTools();
+      if (!candidates.length) {
+        abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_VIOLATION',
+          'no executable candidate remains for a corrective continuation');
+        return undefined;
+      }
+      providerNameCorrectionPending = true;
+      console.warn('PI_PROVIDER_TOOL_NAME_CORRECTION ' + JSON.stringify({
+        stage, request: providerCapabilitySnapshot?.request ?? null,
+        requestedToolNames: providerCapabilitySnapshot?.executableTools ?? [],
+        returnedToolNames: [...providerNameViolationCalls.values()],
+        tool_choice: providerCapabilitySnapshot?.toolChoice ?? null,
+        providerRoute: providerCapabilitySnapshot?.providerRoute ?? null,
+        correctionAttempts: providerNameCorrectionAttempts, correctionLimit: 1,
+        outcome: 'one_correction_queued',
+      }));
+      await pi.sendUserMessage(
+        `RUNTIME PROVIDER TOOL CONTRACT CORRECTION: The prior response named a tool absent from its serialized request; it was not executed. On the NEXT request, use ONLY the tools actually present in its RUNTIME EXECUTABLE TOOL CONTRACT and obey its current phase. No retired/deferred tool may be activated from history. Choose a permitted action, not prose. If none is available, preserve the worktree and report the blocker.`,
+        { deliverAs: 'steer' },
+      );
+      return undefined;
+    }
+    if (providerNameCorrectionInFlight) {
+      providerNameCorrectionInFlight = false;
+      if (!providerNameValidToolObserved || event.message?.stopReason === 'aborted') {
+        abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED',
+          'the single corrective continuation ended without an executable tool call');
+        return undefined;
+      }
+      console.log('PI_PROVIDER_TOOL_NAME_CORRECTION_RESOLVED ' + JSON.stringify({
+        stage, request: providerCapabilitySnapshot?.request ?? null,
+        requestedToolNames: providerCapabilitySnapshot?.executableTools ?? [],
+        tool_choice: providerCapabilitySnapshot?.toolChoice ?? null,
+        providerRoute: providerCapabilitySnapshot?.providerRoute ?? null,
+        correctionAttempts: providerNameCorrectionAttempts,
+        outcome: 'executable_tool_observed',
+      }));
     }
 
     const codingSessionToolName = config.productiveProgress?.codingSessionTool;
