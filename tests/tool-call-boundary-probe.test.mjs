@@ -74,6 +74,7 @@ test('#681 planner probe dry-run produces matched auto, required and named tool-
   assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":"Update src/a.py and test."}' }).status, 'valid');
   assert.deepEqual(validateToolCall({ name: 'submit_plan', arguments: '{}' }).missing, ['planText']);
   assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":123}' }).status, 'schema_error');
+  assert.equal(validateToolCall({ name: 'submit_plan', arguments: '{"planText":""}' }).status, 'schema_error');
 });
 
 test('submit_result files must be an array of strings, not JSON encoded text', () => {
