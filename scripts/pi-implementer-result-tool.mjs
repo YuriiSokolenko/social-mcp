@@ -271,6 +271,8 @@ export default function (pi) {
           return { block: true, reason: 'begin_result_submission is single-use and takes no arguments.' };
         }
         submission.control = { kind: 'begin', id: event.toolCallId, executed: false };
+      } else if (submission.phase === 'coding' && submission.control?.kind === 'begin') {
+        return { block: true, reason: 'begin_result_submission must be the sole tool call in its completed provider response.' };
       } else if (submission.phase === 'submission_pending') {
         if (event.toolName !== 'submit_result') {
           return { block: true, reason: 'Implementer submission phase forbids repository evidence and mutations.' };
