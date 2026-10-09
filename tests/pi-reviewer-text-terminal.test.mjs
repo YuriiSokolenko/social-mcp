@@ -288,6 +288,16 @@ test('#704 truncation gets exactly one 8192-token request and no loops', async (
   assert.equal(h.ctx.aborted, true);
 });
 
+test('#704 an unsubmitted Reviewer receives one bounded settle nudge', async () => {
+  const h = fakePi();
+  const first = await h.emit('agent_before_settle');
+  assert.equal(first.continue, true);
+  assert.match(first.entries[0].content, /begin_review_submission/);
+  assert.equal(await h.emit('agent_before_settle'), undefined, 'nudge cannot loop indefinitely');
+  await begin(h);
+  assert.equal(await h.emit('agent_before_settle'), undefined, 'terminal phase owns its bounded recovery');
+});
+
 test('#704 runtime rejects direct pre-transition submit and preserves failure state', async () => {
   const h = fakePi();
   assert.match((await h.emit('tool_call', {
