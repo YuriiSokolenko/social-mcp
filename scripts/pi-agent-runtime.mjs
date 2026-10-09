@@ -3600,9 +3600,6 @@ export default function (pi) {
     if (recordProviderToolNameViolation(event, 'tool_call')) {
       return { block: true, reason: `BLOCKED: provider tool-name contract violation. ${capabilitySnapshotGuidance(providerCapabilitySnapshot.executableTools)}` };
     }
-    if (providerCapabilitySnapshot?.executableTools?.includes(event.toolName)) {
-      providerNameValidToolObserved = true;
-    }
     if (providerNameViolationCalls.size) {
       return { block: true, reason: 'BLOCKED: no additional tool calls may execute after a provider tool-name contract violation in this response.' };
     }
@@ -4095,6 +4092,10 @@ export default function (pi) {
         productiveState,
         repositoryStateBefore,
       });
+    }
+    // Count only a call that survived every phase, validation and mutation gate.
+    if (providerCapabilitySnapshot?.executableTools?.includes(event.toolName)) {
+      providerNameValidToolObserved = true;
     }
     return undefined;
     } catch (error) {
@@ -4605,6 +4606,12 @@ export default function (pi) {
       }
       return undefined;
     }
+    if (event.message?.stopReason === 'error' && providerNameCorrectionInFlight) {
+      providerNameCorrectionInFlight = false;
+      abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED',
+        'the single corrective request failed at the provider/transport boundary');
+      return undefined;
+    }
     if (event.message?.stopReason === 'error' && codingToolTransportRecovery?.issued) {
       abortCodingTransportRecovery(ctx, 'PI_CODING_TOOL_CORRECTION_FAILED',
         'correction provider request failed before a verified coding mutation',
@@ -4774,12 +4781,6 @@ export default function (pi) {
       );
       // Pi continues because sendUserMessage() queues a steer consumed by its post-agent-run loop;
       // turn_end return values are not part of that continuation contract.
-      return undefined;
-    }
-    if (event.message?.stopReason === 'error' && providerNameCorrectionInFlight) {
-      providerNameCorrectionInFlight = false;
-      abortProviderToolNameViolation(ctx, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED',
-        'the single corrective request failed at the provider/transport boundary');
       return undefined;
     }
     if (event.message?.stopReason === 'error') {
