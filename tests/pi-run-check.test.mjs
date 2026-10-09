@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { runCheck, checkMetricRecord, sandboxPreflight, CHECK_KINDS, CHECK_STATUSES } from '../scripts/pi-common/run-check.mjs';
+import { runCheck, buildRunCheckSpec, normalizeRunCheckPaths, checkMetricRecord, sandboxPreflight, CHECK_KINDS, CHECK_STATUSES } from '../scripts/pi-common/run-check.mjs';
 import { ruffArgs } from '../scripts/pi-common/ruff-spec.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
 import { createDockerSandboxBackend } from '../scripts/pi-common/run-check-docker-backend.mjs';
@@ -152,6 +152,129 @@ test('pytest pass and failing-test diagnostics with node id, line and message', 
   assert.equal(pass.summary, '5 passed in 0.1s');
 });
 
+test('#635 node_test runs Arkanoid .test.mjs with trusted fixed argv and bounded TAP diagnostics', async t => {
+  const dir = worktree({
+    'examples/workflow-smoke/arkanoid/engine.test.mjs': "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('engine works', () => assert.equal(2 + 2, 4));\n",
+    'examples/workflow-smoke/arkanoid/broken.test.js': "const test = require('node:test');\nconst assert = require('node:assert/strict');\ntest('engine breaks', () => assert.equal(2 + 2, 5));\n",
+    'examples/workflow-smoke/arkanoid/nested.test.mjs': "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('outer', async t => { await t.test('inner', () => assert.equal(1, 2)); });\n",
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Execute the real Node runner directly first (no network or production-sandbox claim).
+  const pass = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, directOptions({ bins: { node: process.execPath } }));
+  assert.equal(pass.status, 'pass', pass.stderr_tail || pass.stdout_tail);
+  assert.match(pass.summary, /1 passed, 0 failed/);
+  const failed = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/broken.test.js'] }, directOptions({ bins: { node: process.execPath } }));
+  assert.equal(failed.status, 'fail', failed.stderr_tail || failed.stdout_tail);
+  assert.match(failed.summary, /0 passed, 1 failed/);
+  assert.equal(failed.diagnostics[0].code, 'NodeTestFailure');
+  assert.match(failed.diagnostics[0].message, /engine breaks/);
+  assert.match(failed.diagnostics[0].message, /Expected values to be strictly equal/);
+  assert.match(failed.diagnostics[0].message, /4 !== 5/);
+  assert.ok(failed.stdout_tail.length <= 3000);
+  assert.equal(failed.truncated, false);
+
+  // Nested TAP failures include an unhelpful parent "1 subtest failed" record.
+  // Preserve the assertion from the leaf and suppress that redundant parent.
+  const nested = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/nested.test.mjs'] }, directOptions({ bins: { node: process.execPath } }));
+  assert.equal(nested.status, 'fail', nested.stderr_tail || nested.stdout_tail);
+  assert.equal(nested.diagnostics.length, 1, JSON.stringify(nested.diagnostics));
+  assert.match(nested.diagnostics[0].message, /inner: Expected values to be strictly equal/);
+  assert.match(nested.diagnostics[0].message, /1 !== 2/);
+  assert.doesNotMatch(nested.diagnostics[0].message, /subtest failed/);
+  assert.equal(nested.summary, '0 passed, 2 failed', 'TAP totals include the parent subtest failure');
+});
+
+test('#635 Node TAP YAML block modifiers keep the first assertion details', async t => {
+  const file = 'tests/failure.test.mjs';
+  const dir = worktree({ [file]: "import test from 'node:test'; test('present', () => {});\n" });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const marker of ['|', '|-', '|+']) {
+    const tap = [
+      'TAP version 13', 'not ok 1 - assertion',
+      '  ---', '  failureType: testCodeFailure', '  error: ' + marker,
+      '    Expected values to be strictly equal:',
+      '    ',
+      '    1 !== 2', '  code: ERR_ASSERTION', '  ...',
+      '# pass 0', '# fail 1',
+    ].join('\n');
+    // This backend supplies only reporter output, not a fake recursive runCheck
+    // or simulated Docker execution; it isolates the TAP parsing behavior.
+    const result = await runCheck(dir, { kind: 'node_test', targets: [file] }, {
+      backend: { run: async () => ({ exitCode: 1, durationMs: 1, stdout: tap, stderr: '' }) },
+    });
+    assert.equal(result.status, 'fail', marker);
+    assert.deepEqual(result.diagnostics.map(item => item.message), [
+      'assertion: Expected values to be strictly equal: 1 !== 2',
+    ], marker);
+  }
+});
+
+test('#635 invalid framework and unsafe Node paths never invoke a runner or arm failed-check recovery', async t => {
+  const dir = worktree({
+    'examples/workflow-smoke/arkanoid/engine.test.mjs': "import test from 'node:test'; test('ok', () => {});\n",
+    'tests/test_engine.py': 'def test_ok(): assert True\n',
+    'tests/not-a-test.mjs': '',
+  });
+  const outside = worktree({ 'escape.test.mjs': '' });
+  t.after(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+  fs.symlinkSync(outside, path.join(dir, 'escape'));
+  let executed = 0;
+  const backend = { run: async () => { executed++; throw Error('invalid request executed'); } };
+  for (const request of [
+    { kind: 'pytest', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] },
+    { kind: 'node_test', targets: ['tests/test_engine.py'] },
+    { kind: 'node_test', targets: ['tests/not-a-test.mjs'] },
+    { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs::test_name'] },
+    { kind: 'node_test', targets: ['../escape.test.mjs'] },
+    { kind: 'node_test', targets: ['escape/escape.test.mjs'] },
+    { kind: 'node_test', targets: ['does-not-exist.test.mjs'] },
+    { kind: 'node_test', targets: ['--inspect'] },
+    { kind: 'node_test', targets: Array.from({ length: 21 }, () => 'tests/test_engine.py') },
+    { kind: 'node_test', targets: ['tests/test_engine.py'], command: 'bash' },
+    { kind: 'shell', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] },
+  ]) {
+    const result = await runCheck(dir, request, { backend });
+    assert.equal(result.status, 'invalid', JSON.stringify(request));
+    assert.equal(result.diagnostics.length, 0);
+  }
+  assert.equal(executed, 0, 'invalid checks never become code failures that require a retry');
+  const mismatch = await runCheck(dir, { kind: 'pytest', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, { backend });
+  assert.match(mismatch.summary, /use kind=node_test/);
+  const inverse = await runCheck(dir, { kind: 'node_test', targets: ['tests/test_engine.py'] }, { backend });
+  assert.match(inverse.summary, /use kind=pytest/);
+});
+
+test('#635 trusted executor revalidates runner paths in staged worktree namespace', t => {
+  const relative = 'examples/workflow-smoke/arkanoid/engine.test.mjs';
+  const runner = worktree({ [relative]: "import test from 'node:test'; test('ok', () => {});\n" });
+  const staged = worktree({ [relative]: "import test from 'node:test'; test('ok', () => {});\n" });
+  const outside = worktree({ 'escape.test.mjs': '' });
+  t.after(() => [runner, staged, outside].forEach(dir => fs.rmSync(dir, { recursive: true, force: true })));
+  const input = { kind: 'node_test', targets: [path.join(runner, relative)] };
+  const request = normalizeRunCheckPaths(runner, input);
+  assert.deepEqual(request, { kind: 'node_test', targets: [relative] });
+  const built = buildRunCheckSpec(staged, request, { bins: { node: '/usr/local/bin/node' } });
+  assert.equal(built.spec.command, '/usr/local/bin/node');
+  assert.deepEqual(built.spec.args, ['--test', '--test-reporter=tap', relative]);
+  fs.rmSync(path.join(staged, relative));
+  fs.symlinkSync(path.join(outside, 'escape.test.mjs'), path.join(staged, relative));
+  assert.throws(() => buildRunCheckSpec(staged, request, { bins: { node: '/usr/local/bin/node' } }), /resolves outside/);
+  assert.throws(() => buildRunCheckSpec(staged, { kind: 'pytest', targets: [relative] }), /resolves outside/);
+});
+
+test('#635 Node timeout returns timeout, never a test failure', async t => {
+  const dir = worktree({ 'tests/hanging.test.mjs': "import test from 'node:test'; test('hangs', async () => new Promise(resolve => setTimeout(resolve, 30000)));\n" });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const result = await runCheck(dir, { kind: 'node_test', targets: ['tests/hanging.test.mjs'] }, directOptions({
+    bins: { node: process.execPath }, timeoutMs: 400,
+  }));
+  assert.equal(result.status, 'timeout', result.stderr_tail || result.stdout_tail);
+  assert.match(result.summary, /process tree killed/);
+});
+
 test('timeout kills the whole subprocess tree', async () => {
   const dir = worktree({ 'tests/test_slow.py': '' });
   const pidFile = path.join(dir, 'grandchild.pid');
@@ -192,7 +315,7 @@ test('#503 pytest focused-check scope has no hidden -k or marker filters', async
 
 test('no arbitrary command is expressible through the public contract', async () => {
   const dir = worktree({ 'ok.py': '' });
-  assert.deepEqual(CHECK_KINDS, ['python_compile', 'ruff', 'pytest', 'profile']);
+  assert.deepEqual(CHECK_KINDS, ['python_compile', 'ruff', 'pytest', 'node_test', 'profile']);
   for (const request of [
     { kind: 'shell', command: 'id' },
     { kind: 'ruff', paths: ['ok.py'], command: 'id' },

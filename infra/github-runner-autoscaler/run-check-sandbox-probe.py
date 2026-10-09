@@ -2,6 +2,7 @@
 """Fixed sandbox health probe used by the manager gate and runtime preflight."""
 import json
 import os
+import subprocess
 import sys
 
 
@@ -27,7 +28,18 @@ def main():
         any(marker in name.upper() for marker in ("TOKEN", "SECRET", "API_KEY", "ACCESS_KEY", "GITHUB", "MODEL", "OPENAI", "ANTHROPIC", "SSH_AUTH_SOCK"))
         for name in environment_names
     )
+    # Node checks are a supported focused-validation contract, not an optional
+    # runner dependency. Verify the pinned binary in the same no-network image.
+    try:
+        node_probe = subprocess.run(
+            ["/usr/local/bin/node", "--version"],
+            check=True, capture_output=True, text=True, timeout=3,
+        )
+        node_available = node_probe.stdout.strip().startswith("v")
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        node_available = False
     result = {
+        "node_available": node_available,
         "uid": os.getuid(),
         "effective_capabilities": status.get("CapEff"),
         "no_new_privileges": status.get("NoNewPrivs") == "1",
@@ -47,6 +59,7 @@ def main():
         and workspace_readable
         and host_paths_absent
         and secret_environment_absent
+        and node_available
     )
     result["ok"] = ok
     print(json.dumps(result, separators=(",", ":")))

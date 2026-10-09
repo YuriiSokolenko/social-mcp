@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { ruffArgs } from './ruff-spec.mjs';
 import { duplicatePackageRootDiagnostics } from './package-root-check.mjs';
@@ -18,7 +19,7 @@ import { appendDiagnostic } from './diagnostics-artifact.mjs';
  * both use the repository-owned Ruff spec.
  */
 
-export const CHECK_KINDS = Object.freeze(['python_compile', 'ruff', 'pytest', 'profile']);
+export const CHECK_KINDS = Object.freeze(['python_compile', 'ruff', 'pytest', 'node_test', 'profile']);
 
 // `infra_error` means the runner could not run the check at all (sandbox or tool missing/broken).
 // It is never a verdict on the agent's change, unlike `fail`, and must not be answered with a retry or a shell.
@@ -112,7 +113,7 @@ export function normalizeRunCheckPaths(root, params, canonicalRoot = root) {
     return { ...params, paths: Array.isArray(params.paths)
       ? params.paths.map(item => relativeCheckPath(root, item, canonicalRoot)) : params.paths };
   }
-  if (params?.kind === 'pytest') {
+  if (params?.kind === 'pytest' || params?.kind === 'node_test') {
     return { ...params, targets: Array.isArray(params.targets) ? params.targets.map(target => {
       if (typeof target !== 'string') throw new InvalidCheck('targets must be strings');
       const [file, ...selectors] = target.split('::');
@@ -188,6 +189,35 @@ function pathList(root, value, field, options) {
   return value.map(item => containedRelativePath(root, item, options));
 }
 
+// Target paths are never commands: they must be real workspace entries and must match
+// the chosen test runner before either the runner or recovery ledger sees a failure.
+function focusedTestTargets(root, targets, kind) {
+  if (!Array.isArray(targets) || targets.length < 1 || targets.length > MAX_PATHS) {
+    throw new InvalidCheck(`targets must be an array of 1-${MAX_PATHS} strings`);
+  }
+  return targets.map(target => {
+    if (typeof target !== 'string') throw new InvalidCheck('targets must be strings');
+    const [file, ...selectors] = target.split('::');
+    if (kind === 'node_test' && selectors.length) {
+      throw new InvalidCheck('node_test takes .test.mjs/.test.js file paths without pytest :: selectors');
+    }
+    const relative = containedRelativePath(root, file, { mustBeFile: kind === 'node_test' });
+    if (kind === 'node_test') {
+      if (!/\.test\.(?:mjs|js)$/.test(relative)) {
+        throw new InvalidCheck('node_test accepts .test.mjs or .test.js files only; use kind=pytest for Python .py tests');
+      }
+      return relative;
+    }
+    if (fs.statSync(path.resolve(root, relative)).isFile() && !relative.endsWith('.py')) {
+      throw new InvalidCheck('pytest accepts Python .py test files only; use kind=node_test for .test.mjs/.test.js files');
+    }
+    if (selectors.length && !fs.statSync(path.resolve(root, relative)).isFile()) {
+      throw new InvalidCheck('pytest :: selectors require a Python .py test file');
+    }
+    return [relative, ...selectors].join('::');
+  });
+}
+
 function commandFor(root, params, bins) {
   switch (params.kind) {
     case 'python_compile': {
@@ -203,18 +233,16 @@ function commandFor(root, params, bins) {
     }
     case 'pytest': {
       rejectUnknownFields(params, ['kind', 'targets']);
-      if (!Array.isArray(params.targets) || params.targets.length < 1 || params.targets.length > MAX_PATHS) {
-        throw new InvalidCheck(`targets must be an array of 1-${MAX_PATHS} strings`);
-      }
-      const targets = params.targets.map(target => {
-        if (typeof target !== 'string') throw new InvalidCheck('targets must be strings');
-        const [file, ...rest] = target.split('::');
-        return [containedRelativePath(root, file), ...rest].join('::');
-      });
+      const targets = focusedTestTargets(root, params.targets, 'pytest');
       return {
         command: bins.pytest,
         args: ['-q', '--tb=short', '-rfE', '--no-header', '-p', 'no:cacheprovider', ...targets],
       };
+    }
+    case 'node_test': {
+      rejectUnknownFields(params, ['kind', 'targets']);
+      const targets = focusedTestTargets(root, params.targets, 'node_test');
+      return { command: bins.node, args: ['--test', '--test-reporter=tap', ...targets] };
     }
     case 'profile': {
       rejectUnknownFields(params, ['kind', 'profile']);
@@ -236,6 +264,7 @@ export function buildRunCheckSpec(root, params, options = {}) {
     python: options.bins?.python ?? env.PI_PYTHON_BIN ?? 'python3',
     ruff: options.bins?.ruff ?? 'ruff',
     pytest: options.bins?.pytest ?? 'pytest',
+    node: options.bins?.node ?? 'node',
   };
   const request = normalizeRunCheckPaths(root, params, fs.realpathSync(root));
   return { request, spec: commandFor(root, request, bins) };
@@ -443,6 +472,79 @@ function pytestSummary(text) {
   return null;
 }
 
+function parseNodeTest(text) {
+  const lines = text.split('\n');
+  const failures = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const failure = /^(\s*)not ok \d+ - (.+)$/.exec(lines[index]);
+    if (!failure) continue;
+    // Node's TAP reporter puts YAML-like metadata between --- and ... for
+    // each failing test. Do not search a fixed window: nested failures can
+    // otherwise borrow their parent or sibling's metadata.
+    const metadata = [];
+    let inDetails = false;
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (!inDetails) {
+        if (/^\s*---\s*$/.test(line)) inDetails = true;
+        else if (line.trim()) break;
+        continue;
+      }
+      if (/^\s*\.\.\.\s*$/.test(line) || /^\s*not ok \d+ - /.test(line)) break;
+      metadata.push(line);
+    }
+    const readField = name => {
+      const position = metadata.findIndex(line => line.trimStart().startsWith(name + ':'));
+      if (position < 0) return null;
+      const value = metadata[position].trimStart().slice(name.length + 1).trim();
+      if (!/^\|[+-]?$/.test(value)) {
+        if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
+          return value.slice(1, -1);
+        }
+        return value;
+      }
+      // Assertion failures usually use "error: |-" followed by indented
+      // human-readable details. Capture useful lines, bounded by shorten().
+      const indent = /^\s*/.exec(metadata[position])[0].length;
+      const content = [];
+      for (let cursor = position + 1; cursor < metadata.length; cursor += 1) {
+        const line = metadata[cursor];
+        if (line.trim() && /^\s*/.exec(line)[0].length <= indent) break;
+        if (line.trim()) content.push(line.trim());
+        if (content.length === 3) break;
+      }
+      return content.join(' ');
+    };
+    const location = /^(.*):(\d+):(\d+)$/.exec(readField('location') ?? '');
+    const error = readField('error');
+    failures.push({
+      offset: failure[1].length,
+      failureType: readField('failureType'),
+      diagnostic: {
+        file: location?.[1] ?? null,
+        line: location ? Number(location[2]) : null,
+        column: location ? Number(location[3]) : null,
+        code: 'NodeTestFailure',
+        message: shorten(error ? failure[2] + ': ' + error : failure[2]),
+      },
+    });
+  }
+  // An outer "subtestsFailed" record only repeats the nested leaf failure.
+  // Retain it if there is no nested record (e.g. truncated TAP output).
+  const diagnostics = failures.filter((failure, index) => {
+    if (failure.failureType !== 'subtestsFailed') return true;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      if (failures[cursor].offset <= failure.offset) break;
+      return false;
+    }
+    return true;
+  }).map(failure => failure.diagnostic);
+  const passed = /^\s*# pass (\d+)/m.exec(text);
+  const failed = /^\s*# fail (\d+)/m.exec(text);
+  const summary = passed && failed ? passed[1] + ' passed, ' + failed[1] + ' failed' : null;
+  return { diagnostics, summary };
+}
+
 function analyze(request, run, root, sandboxRoot = root) {
   const combined = `${run.stdout}\n${run.stderr}`;
   let diagnostics = [];
@@ -464,6 +566,23 @@ function analyze(request, run, root, sandboxRoot = root) {
   } else if (request.kind === 'pytest' || request.profile === 'pytest_all') {
     diagnostics = parsePytest(combined);
     summary = pytestSummary(combined);
+  } else if (request.kind === 'node_test') {
+    ({ diagnostics, summary } = parseNodeTest(combined));
+    // TAP locations originate inside /workspace in Docker, not on the runner.
+    // Render only paths within that sandbox root; never leak host paths.
+    diagnostics = diagnostics.map(item => {
+      if (!item.file) return item;
+      let source = item.file;
+      try {
+        if (source.startsWith('file://')) source = fileURLToPath(source);
+      } catch { return { ...item, file: null }; }
+      const base = path.resolve(sandboxRoot);
+      const relative = path.relative(base, path.isAbsolute(source) ? source : path.resolve(base, source));
+      return {
+        ...item,
+        file: relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? null : relative,
+      };
+    });
   }
   return { diagnostics, summary };
 }

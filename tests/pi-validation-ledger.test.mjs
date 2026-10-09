@@ -523,6 +523,66 @@ test('runCheckRequestForRecord rejects a scope field that does not match the che
   );
 });
 
+test('#635 Node failure recovery replays only node_test and the exact Arkanoid scope', () => {
+  const nodeFailure = focused({
+    kind: 'node_test',
+    scope: { targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] },
+    status: 'fail',
+    run_id: 'node-run',
+    stage: 'implementer',
+  });
+  const wrongFramework = focused({
+    kind: 'pytest',
+    scope: { targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] },
+    status: 'fail',
+    run_id: 'node-run',
+    stage: 'implementer',
+  });
+  assert.deepEqual(runCheckRequestForRecord(nodeFailure), {
+    kind: 'node_test',
+    targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'],
+  });
+  assert.throws(() => runCheckRequestForRecord(wrongFramework), /invalid framework-specific targets/);
+  assert.equal(latestUnresolvedRunCheckFailure([nodeFailure, wrongFramework], { runId: 'node-run', stage: 'implementer' }), nodeFailure);
+  assert.equal(
+    validationScopeCovers('node_test', { targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, { targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }),
+    true,
+  );
+  assert.equal(
+    validationScopeCovers('node_test', { targets: ['tests/other.test.mjs'] }, { targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }),
+    false,
+  );
+  assert.throws(() => runCheckRequestForRecord(focused({
+    kind: 'node_test', scope: { targets: ['tests/test_thing.py'] }, status: 'fail',
+  })), /invalid framework-specific targets/);
+  assert.throws(() => runCheckRequestForRecord(focused({
+    kind: 'node_test', scope: { targets: ['../escape.test.js'] }, status: 'fail',
+  })), /invalid framework-specific targets/);
+
+  const unrelatedPyPass = focused({
+    kind: 'pytest',
+    scope: { targets: ['tests/test_python.py'] },
+    status: 'pass',
+    run_id: 'node-run',
+    stage: 'implementer',
+  });
+  assert.equal(
+    latestUnresolvedRunCheckFailure([nodeFailure, unrelatedPyPass], { runId: 'node-run', stage: 'implementer' }),
+    nodeFailure,
+  );
+  const exactNodePass = focused({
+    kind: 'node_test',
+    scope: { targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] },
+    status: 'pass',
+    run_id: 'node-run',
+    stage: 'implementer',
+  });
+  assert.equal(
+    latestUnresolvedRunCheckFailure([nodeFailure, unrelatedPyPass, exactNodePass], { runId: 'node-run', stage: 'implementer' }),
+    null,
+  );
+});
+
 test('a ledger with an unparseable line is treated as blocked, never as evidence of VERIFIED', () => {
   // All records that DID parse look fully green. Fail-closed means the
   // corrupted flag alone must still force BLOCKED_INFRA: the dropped line
