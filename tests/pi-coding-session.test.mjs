@@ -2003,7 +2003,7 @@ function runtimeScenario(mode) {
           assert.equal(exhausted.block, true);
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
           assert.equal(aborts, 1, 'repeated unavailable one-shot tool exhausts the bounded correction');
-          assert.equal(JSON.parse(fs.readFileSync(runtimeFailure, 'utf8')).failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
+          assert.equal(JSON.parse(fs.readFileSync(runtimeFailure, 'utf8')).failure_code, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED');
           process.exit(0);
         }
 
@@ -2080,8 +2080,8 @@ function runtimeScenario(mode) {
 
           const failure = JSON.parse(fs.readFileSync(runtimeFailure, 'utf8'));
           assert.equal(failure.failure_class, 'model_execution_abort');
-          assert.equal(failure.failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
-          assert.ok(failure.reason.includes('unavailable capability'));
+          assert.equal(failure.failure_code, 'PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED');
+          assert.ok(failure.reason.includes('unadvertised provider tool call'));
           console.log('UNAVAILABLE_CAPABILITY_FAILURE ' + JSON.stringify(failure));
           process.exit(0);
         }
@@ -3020,7 +3020,7 @@ test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover on
 test('an already-completed repeated tool call cannot clear state forcing and still fails closed', () => {
   const logs = runtimeScenario('action-repeat-abort');
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"subagents_enable"/);
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
@@ -3040,9 +3040,9 @@ test('#469 evidence unlock is single-use; stale lifecycle races reset strikes be
   assert.match(logs, /PI_EVIDENCE_PERMIT_CONSUMED .*"tool":"read".*"productiveState":"action_required"/);
   assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"grep"/);
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"need_more_evidence"/);
-  assert.ok((logs.match(/PI_UNAVAILABLE_CAPABILITY_CORRECTION /g) ?? []).length >= 1, 'an unavailable tool gets a bounded correction before abort');
-  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT: unavailable capability repeated after 1 bounded correction turn/);
-  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_UNAVAILABLE_CAPABILITY_ABORT"/);
+  assert.ok((logs.match(/PI_PROVIDER_TOOL_NAME_CORRECTION /g) ?? []).length >= 1, 'a provider tool-name violation gets one bounded correction before abort');
+  assert.match(logs, /PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED /);
+  assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"failure_code":"PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED"/);
   assert.match(logs, /UNAVAILABLE_CAPABILITY_FAILURE .*"worktree_preserved":true/);
   assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
