@@ -30,6 +30,7 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
         'subagent', 'set_response_budget'];
       for (const name of initiallyRegistered) definitions.set(name, { name });
       let active = [...definitions.keys(), 'request_capabilities'];
+      const steers = [];
       const pi = {
         events: { on: () => {}, emit: () => {} },
         registerTool: def => { definitions.set(def.name, def); if (!active.includes(def.name)) active.push(def.name); },
@@ -38,7 +39,7 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
         getActiveTools: () => [...active],
         setActiveTools: names => { active = [...names]; },
         setModel: async () => true,
-        sendUserMessage: async () => {},
+        sendUserMessage: async message => { steers.push(message); },
       };
       runtime(pi);
       assert.ok(definitions.has('request_capabilities'));
@@ -64,10 +65,29 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       assert.ok(names(initial).length < names(raw).length);
       assert.match(initial.tools.at(-1).function.description, /CURRENTLY EXPOSED TOOLS/);
       assert.doesNotMatch(initial.tools.at(-1).function.description, /lsp_find_symbol|searxng_web_search/);
+      const context = { cwd: process.cwd(), model: { maxTokens: 2048 }, abort: () => { throw Error('unexpected abort'); } };
+      const hiddenCall = { toolName: 'lsp_start_server', toolCallId: 'hidden-1', input: {} };
+      const blocked = await handlers.get('tool_call')(hiddenCall, context);
+      assert.equal(blocked.block, true);
+      assert.match(blocked.reason, /intentionally hidden by the Main tool profile/);
+      assert.match(blocked.reason, /request_capabilities.*group=lsp/);
+      assert.doesNotMatch(blocked.reason, /became active/);
+      assert.equal(steers.length, 1);
+      await handlers.get('tool_call')(hiddenCall, context);
+      assert.equal(steers.length, 1, 'repeated hidden call does not add steers or loop strikes');
+      const invalid = await definitions.get('request_capabilities').execute('invalid-grant', {
+        group: 'not-a-group', reason: 'Unknown group must not spend grant slots',
+      });
+      assert.equal(invalid.isError, true);
+      assert.match(invalid.content[0].text, /unknown_group/);
       const grant = await definitions.get('request_capabilities').execute('call-grant', {
         group: 'docs', reason: 'Need to inspect authorized dependency docs',
       });
       assert.match(grant.content[0].text, /NEXT provider request/);
+      const repeated = await definitions.get('request_capabilities').execute('repeat-docs', {
+        group: 'docs', reason: 'Duplicate request is a no-op',
+      });
+      assert.match(repeated.content[0].text, /already approved/);
       assert.ok(!names(initial).includes('searxng_web_search'),
         'the already serialized provider request must not acquire new tools');
       const second = handlers.get('before_provider_request')({ payload: raw });
@@ -75,6 +95,18 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       assert.ok(names(second).includes('context7_query-docs'));
       assert.ok(!names(second).includes('lsp_find_symbol'));
       assert.ok(!names(second).includes('file_history'));
+      const lspGrant = await definitions.get('request_capabilities').execute('grant-lsp', {
+        group: 'lsp', reason: 'Inspect actual language-server relationships',
+      });
+      assert.equal(lspGrant.isError, undefined);
+      const historyGrant = await definitions.get('request_capabilities').execute('grant-history', {
+        group: 'history', reason: 'Inspect authorized historical change intent',
+      });
+      assert.equal(historyGrant.isError, undefined);
+      const full = handlers.get('before_provider_request')({ payload: raw });
+      assert.ok(names(full).includes('lsp_start_server'));
+      assert.ok(names(full).includes('file_history'));
+      assert.ok(!names(full).includes('request_capabilities'), 'three real grants exhaust the budget, not failed/repeat calls');
       const zero = handlers.get('before_provider_request')({ payload: { ...raw, tools: [] } });
       assert.equal(zero.tools, undefined, 'zero-tool request remains closed');
       assert.equal(zero.tool_choice, undefined);
@@ -86,6 +118,9 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.match(result.stdout, /PI_MAIN_TOOL_PROFILE/);
     assert.match(result.stdout, /PI_MAIN_CAPABILITY_ESCALATION/);
+    assert.match(result.stdout, /PI_MAIN_PROFILE_TOOL_HIDDEN/);
+    assert.match(result.stdout, /PI_MAIN_TOOL_PROFILE_FINAL/);
+    assert.match(result.stdout, /"toolSchemaBytesBeforeRaw":\d+/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
