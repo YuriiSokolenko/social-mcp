@@ -11,6 +11,7 @@ import {
   isUnsandboxedBackend,
   nextLabelsForVerification,
   publicationBase,
+  renderUntrustedImplementerSummary,
   saveCheckpoint,
   upsertPullRequest,
 } from '../scripts/pi-common/issue-publication.mjs';
@@ -61,6 +62,20 @@ function configureTestGit(git) {
  * (pi-auto-merge.mjs's own needs-human check) already treat as unconditional.
  */
 
+test('model PR description stays inside an inert fence across CR, separators, links and mentions', () => {
+  const input = 'Result\r## Validation\r\n@someone Closes #9001 https://example.org\u2028~~~~\n~~~\u2029`````\n## Security';
+  const rendered = renderUntrustedImplementerSummary(input);
+  const lines = rendered.split('\n');
+  const fence = lines[2];
+  assert.match(fence, /^`{6,}$/);
+  assert.equal(lines.at(-1), fence, 'only generated closing fence is able to terminate the code block');
+  assert.equal(rendered.includes('\r'), false);
+  assert.equal(rendered.includes('\u2028'), false);
+  assert.equal(rendered.includes('\u2029'), false);
+  assert.ok(rendered.includes('\n## Validation\n'));
+  assert.ok(rendered.includes('@someone Closes #9001 https://example.org'));
+  assert.ok(lines.indexOf('## Security') > 2 && lines.indexOf('## Security') < lines.length - 1);
+});
 test('a non-VERIFIED PR gets pi:needs-human added', () => {
   for (const state of [
     VERIFICATION_STATES.BLOCKED_INFRA,
