@@ -301,7 +301,7 @@ export default function (pi) {
       submission.lastAssistant = { reason, calls };
     });
     pi.on('tool_execution_end', event => {
-      if (event.toolCallId === submission.control?.id) submission.control.executed = !event.isError;
+      if (submission.control && event.toolCallId === submission.control.id) submission.control.executed = !event.isError;
     });
     pi.on('tool_result', event => {
       if (submission.phase === 'submission_pending' && event.toolName === 'submit_result' && event.isError &&
