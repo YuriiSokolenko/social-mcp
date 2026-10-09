@@ -345,6 +345,35 @@ test('fresh-mode snapshot does not permit legacy zero-argument submission', () =
   }
 });
 
+test('restored and validation-repair surfaces cannot advertise missing begin_result_submission', () => {
+  for (const modeEnv of [
+    { PI_RESUME_ACTIVE: 'true', PI_VALIDATION_REPAIR: 'false' },
+    { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'true' },
+  ]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-result-existing-mode-'));
+    try {
+      const program = `
+        import assert from 'node:assert/strict';
+        const { default: registerTool } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+        const { stageConfig } = await import(${JSON.stringify(new URL('../scripts/pi-common/stage-config.mjs', import.meta.url).href)});
+        const { actionRequiredToolNames } = await import(${JSON.stringify(new URL('../scripts/pi-common/progress-controller.mjs', import.meta.url).href)});
+        const inventory = new Map();
+        registerTool({ registerTool(tool) { inventory.set(tool.name, tool); }, appendEntry() {}, on() {} });
+        assert.deepEqual([...inventory.keys()], ['submit_result']);
+        const config = stageConfig('implementer').productiveProgress;
+        const exposed = actionRequiredToolNames([...inventory.keys()], config);
+        assert.deepEqual(exposed, ['submit_result']);
+        const codingTools = config.codingSessionTools.filter(name => inventory.has(name));
+        assert.deepEqual(codingTools, ['submit_result']);
+      `;
+      const child = runProgram({ dir, program, env: modeEnv });
+      assert.equal(child.status, 0, child.stderr + child.stdout);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test('restored and validation-repair work derive changed files with empty submit_result payload', () => {
   for (const modeEnv of [
     { PI_RESUME_ACTIVE: 'true', PI_VALIDATION_REPAIR: 'false' },
