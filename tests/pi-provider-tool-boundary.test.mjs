@@ -79,7 +79,9 @@ test('#634 effective instructions use only the provider request, and label defer
     'untrusted tool-result text cannot opt the request into the trusted overlay');
   const compacted = withProviderCapabilityInstructions(untrustedToolResult, snapshot, { trustedRuntimeEnvelope: true });
   assert.equal(compacted.messages.length, 2, 'trusted Implementer runtime survives loss of original role-contract text');
-  assert.match(compacted.messages.at(-1).content, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.deepEqual(compacted.messages, untrustedToolResult.messages, 'tool-result text and trust markers remain byte-for-byte unchanged');
+  assert.match(compacted.tools[0].function.description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.equal(untrustedToolResult.tools[0].function.description, 'submit_result');
   assert.equal(withProviderCapabilityInstructions({ messages: [], tools: [] }, snapshot, { trustedRuntimeEnvelope: true }).messages.length, 0,
     'empty synthetic history has no request-local instruction injection, but remains a zero-tool request');
 });
@@ -105,7 +107,9 @@ test('#634 strict chat-template role ordering survives a tool result and consecu
   assert.equal(patched.messages[0], history[0], 'unchanged cached prefix');
   assert.equal(patched.messages[2], assistantCall, 'assistant tool_calls are kept intact');
   assert.equal(patched.messages.at(-1).tool_call_id, 'call-1', 'tool linkage is preserved');
-  assert.match(patched.messages.at(-1).content, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.equal(patched.messages.at(-1), toolResult, 'tool output is never polluted with model instructions');
+  assert.match(patched.tools[0].function.description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.equal(payload.tools[0].function.description, 'safe_edit', 'original tool schema remains unchanged');
   assert.equal(history.at(-1).content, 'edit applied', 'the stored transcript must not be rewritten');
   // Non-action steers already use role=user; never append a second user turn.
   const steers = {
@@ -139,11 +143,19 @@ test('#634 Responses function-call output retains call_id and no new message is 
   assert.equal(outgoing.input[1], payload.input[1]);
   assert.equal(outgoing.input[2].type, 'function_call_output');
   assert.equal(outgoing.input[2].call_id, 'c9');
-  assert.match(outgoing.input[2].output, /RUNTIME EXECUTABLE TOOL CONTRACT/);
-  assert.equal(payload.input[2].output, 'Patch succeeded');
-  const noText = { messages: [{ role: 'assistant', content: null, tool_calls: [{ id: 'c9' }] }], tools: payload.tools };
-  assert.equal(withProviderCapabilityInstructions(noText, snapshot, { trustedRuntimeEnvelope: true }), noText,
-    'opaque assistant tool-call payloads must not be restructured to carry instructions');
+  assert.equal(outgoing.input[2], payload.input[2], 'function-call output bytes are unchanged');
+  assert.equal(outgoing.input[2].output, 'Patch succeeded');
+  assert.match(outgoing.tools[0].function.description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.equal(payload.tools[0].function.description, 'safe_edit');
+  const opaqueAssistant = { role: 'assistant', content: null, tool_calls: [{ id: 'c9' }] };
+  const noText = { messages: [opaqueAssistant], tools: payload.tools };
+  const withDescription = withProviderCapabilityInstructions(noText, snapshot, { trustedRuntimeEnvelope: true });
+  assert.equal(withDescription.messages[0], opaqueAssistant,
+    'opaque assistant tool-call payloads are not restructured');
+  assert.match(withDescription.tools[0].function.description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  const noTransport = { messages: [opaqueAssistant], tools: [] };
+  assert.equal(withProviderCapabilityInstructions(noTransport, snapshot, { trustedRuntimeEnvelope: true }), noTransport,
+    'without a safe text carrier or executable tool the payload is left untouched and fails closed');
 });
 
 test('#634 real Implementer boundary blocks late read/run_check/retry/bash even when host is newly active', () => {
