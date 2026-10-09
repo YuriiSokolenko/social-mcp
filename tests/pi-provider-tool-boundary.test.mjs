@@ -353,7 +353,7 @@ test('#671 verification, exact retry, recovery and two-phase terminal routing ne
   assert.match(begin, /Changed work: finish the necessary changes and focused checks, then call begin_result_submission/);
   const terminal = build(['submit_result'], { mode: 'coding', productiveState: 'action_required' });
   assert.match(terminal, /Terminal-only request: call submit_result/);
-  assert.doesNotMatch(terminal, /begin_result_submission/);
+  assert.doesNotMatch(terminal, /begin_result_submission|Isolated coding session|Mutation tools available/);
   const restored = build(['submit_result', 'read', 'safe_edit'], { mode: 'main', resumed: true, productiveState: 'action_required' });
   assert.match(restored, /submit_result with no arguments immediately/);
   assert.doesNotMatch(restored, /Direct inspection:|Mutation tools available/);
