@@ -460,7 +460,7 @@ test('#630 model-supplied files (including a JSON string) never control runtime 
   runSuccessfulSubmit({
     modeEnv: {},
     params,
-    expectedError: /at least one changed file is required/,
+    expectedError: /at least one concrete change is required/,
   });
 });
 
