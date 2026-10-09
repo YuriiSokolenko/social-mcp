@@ -272,6 +272,40 @@ test('#634 Responses flat-format tools preserve shape and append guidance only t
   assert.deepEqual(providerToolNames(payload), ['read', 'submit_result'], 'original flat tool list is untouched');
 });
 
+test('#700 Coding phases advertise only the current wire executors, not the registered inventory', () => {
+  const registeredTools = ['read', 'run_check', 'write', 'edit', 'submit_result'];
+  const phases = [
+    { name: 'mutation-only', state: 'action_required', tools: ['write', 'edit', 'submit_result'] },
+    { name: 'bounded evidence', state: 'evidence_allowed', tools: ['read', 'write', 'submit_result'] },
+    { name: 'verification', state: 'action_required', tools: ['run_check', 'write', 'submit_result'] },
+    { name: 'terminal-only', state: 'action_required', tools: ['submit_result'] },
+  ];
+  for (const phase of phases) {
+    const raw = { messages: [{ role: 'user', content: 'Coding worktree facts only' }],
+      tools: registeredTools.map(tool) };
+    // The trusted agent registry is deliberately broader than the request-local
+    // phase gate. Reconciliation must never reintroduce its hidden entries.
+    const filtered = reconcileProviderToolSurface(raw, { activeTools: phase.tools }).payload;
+    const audits = [];
+    const outgoing = withProviderCapabilityInstructions(filtered, {
+      mode: 'coding',
+      productiveState: phase.state,
+      executableTools: registeredTools, // deliberately stale snapshot
+      liveActiveTools: registeredTools,
+      verificationState: phase.name === 'verification' ? 'available' : 'not_yet_available',
+    }, { trustedRuntimeEnvelope: true, onCatalogAudit: audit => audits.push(audit) });
+    assert.deepEqual(providerToolNames(outgoing), phase.tools, phase.name);
+    assert.deepEqual(audits.at(-1).schemaNames, phase.tools, phase.name + ' schema audit');
+    assert.deepEqual(audits.at(-1).guidanceNames, phase.tools, phase.name + ' guidance audit');
+    const guidance = outgoing.tools.at(-1).function.description;
+    assert.ok(guidance.includes('CURRENTLY EXPOSED TOOLS (authoritative): ' + phase.tools.join(', ')),
+      phase.name + ' contract must equal actual serialized schema names');
+    if (!phase.tools.includes('read')) assert.doesNotMatch(guidance, /read for known-path source text/);
+    if (!phase.tools.includes('run_check')) assert.doesNotMatch(guidance, /Use focused run_check/);
+    assert.deepEqual(providerToolNames(raw), registeredTools, 'phase filtering does not mutate the host inventory');
+  }
+});
+
 test('#671 request-local routing uses final serialized definitions for Main, fallback and Coding Session', () => {
   const history = [
     { role: 'system', content: 'Stable invariants: protected paths and no external writes' },
