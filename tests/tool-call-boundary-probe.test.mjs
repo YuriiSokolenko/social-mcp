@@ -84,8 +84,8 @@ test('#681 synthetic Planner research history includes completed begin and retai
   const short = plannerSyntheticMessages('short');
   const research = plannerSyntheticMessages('research');
   assert.ok(short.length < research.length);
-  assert.equal(research.filter(m => m.role === 'tool').length, 25);
-  assert.equal(research.filter(m => m.role === 'assistant' && m.tool_calls?.[0]?.function?.name === 'read').length, 24);
+  assert.equal(research.filter(m => m.role === 'tool').length, 17);
+  assert.equal(research.filter(m => m.role === 'assistant' && m.tool_calls?.[0]?.function?.name === 'read').length, 16);
   assert.equal(research.at(-2).tool_call_id, 'synthetic_begin_submission');
   assert.equal(research.at(-1).role, 'user');
   assert.match(research.at(-1).content, /complete actionable plan/);
