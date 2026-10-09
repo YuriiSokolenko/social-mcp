@@ -75,7 +75,9 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       assert.doesNotMatch(blocked.reason, /became active/);
       assert.equal(steers.length, 1);
       await handlers.get('tool_call')(hiddenCall, context);
-      assert.equal(steers.length, 1, 'repeated hidden call does not add steers or loop strikes');
+      assert.equal(steers.length, 1, 'duplicate callback for the same call ID must not add a steer or strike');
+      await handlers.get('tool_call')({ ...hiddenCall, toolCallId: 'hidden-2' }, context);
+      assert.equal(steers.length, 1, 'a second unique hidden call gets a deduped request-local steer');
       const invalid = await definitions.get('request_capabilities').execute('invalid-grant', {
         group: 'not-a-group', reason: 'Unknown group must not spend grant slots',
       });
