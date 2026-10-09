@@ -48,25 +48,21 @@ export function reconcileProviderToolSurface(payload, { activeTools = [] } = {})
 }
 
 /**
- * Request-local guidance belongs inside the final existing provider message. Adding a
- * new role=user at the tail of a tool/assistant response can violate strict chat
- * templates (and creates consecutive user turns after runtime steers). A suffix
- * leaves role order, call IDs and the cached request prefix intact. It never
- * changes Pi's saved transcript, only the outgoing cloned provider payload.
+ * Request-local guidance must never introduce a new chat role. Append to the
+ * final existing user/assistant text when possible; do NOT rewrite tool
+ * results (often machine-readable JSON) or linked assistant tool calls. For
+ * those tails, use the description of an already serialized executable tool.
+ * This preserves chat role order, tool-call linkage, tool-result bytes and
+ * Pi's saved transcript; only the outgoing cloned payload is rewritten.
  *
- * Unknown/non-text final message forms are left untouched rather than inventing
- * an extra role or corrupting a linked tool call. The dispatch gate still
- * enforces the serialized tool snapshot regardless of whether text can be added.
+ * If neither a safe text carrier nor a provider tool description exists,
+ * leave the payload unchanged. Dispatch still gates on the request snapshot.
  */
 function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
   if (!message || typeof message !== 'object') return null;
-  if (responses && message.type === 'function_call_output') {
-    return typeof message.output === 'string'
-      ? { ...message, output: message.output + '\n\n' + suffix }
-      : null;
-  }
+  if (responses && message.type === 'function_call_output') return null;
   if (responses && message.type !== 'message') return null;
-  if (message.role !== 'user' && message.role !== 'tool' && message.role !== 'assistant') return null;
+  if (message.role !== 'user' && message.role !== 'assistant') return null;
   // A pending assistant function call without text is not an instruction carrier.
   // Do not invent content on tool-call linkage or replace multimodal parts.
   if (typeof message.content === 'string') {
@@ -78,6 +74,23 @@ function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
   const allowedTypes = responses ? ['input_text', 'output_text'] : ['text', 'input_text'];
   if (!last || !allowedTypes.includes(last.type) || typeof last.text !== 'string') return null;
   return { ...message, content: [...parts.slice(0, -1), { ...last, text: last.text + '\n\n' + suffix }] };
+}
+
+function appendToolDescriptionGuidance(payload, instructions) {
+  const definitions = payload.tools;
+  if (!Array.isArray(definitions)) return payload;
+  const index = definitions.findIndex(tool => {
+    const definition = tool?.function ?? tool;
+    return typeof definition?.name === 'string' && definition.name.length > 0;
+  });
+  if (index < 0) return payload;
+  const current = definitions[index];
+  const nested = current.function && typeof current.function === 'object';
+  const definition = nested ? current.function : current;
+  const description = typeof definition.description === 'string' ? definition.description : '';
+  const patchedDefinition = { ...definition, description: [description, instructions].filter(Boolean).join('\n\n') };
+  const patchedTool = nested ? { ...current, function: patchedDefinition } : patchedDefinition;
+  return { ...payload, tools: [...definitions.slice(0, index), patchedTool, ...definitions.slice(index + 1)] };
 }
 
 export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false } = {}) {
@@ -103,7 +116,7 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
   ].join(' ');
   const index = history.length - 1;
   const patchedLast = appendCapabilitySuffix(history[index], instructions, { responses: hasInput });
-  if (!patchedLast) return payload;
+  if (!patchedLast) return appendToolDescriptionGuidance(payload, instructions);
   return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
 }
 
