@@ -1775,10 +1775,12 @@ export default function (pi) {
     if (!changed) throw new Error(`Failed to apply ${level} response budget`);
   }
 
-  async function applyTokenCap(maxTokens, ctx) {
+  async function applyTokenCap(maxTokens, ctx, { propagateSubagentBudget = true } = {}) {
     if (!ctx.model) throw new Error('No active model is available for response budgeting');
     const cappedModel = { ...ctx.model, maxTokens };
-    process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
+    // #633 transport correction changes only this session's bounded provider
+    // response. Do not enlarge the process-global subagent budget as a side effect.
+    if (propagateSubagentBudget) process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS = String(maxTokens);
     const changed = await pi.setModel(cappedModel);
     if (!changed) throw new Error(`Failed to apply action-required response cap of ${maxTokens} tokens`);
   }
@@ -1805,7 +1807,7 @@ export default function (pi) {
       output_ceiling: providerWireOutputBudget?.ceiling ?? null,
       provider_turns: providerRequestSequence,
       successful_mutation: false,
-      terminal_failure_class: code,
+      terminal_failure_class: runtimeFailureClassForCode(code) ?? 'model_execution_abort',
       ...extra,
       checkpoint: { worktree_preserved: true },
     };
@@ -3851,7 +3853,8 @@ export default function (pi) {
     const truncatedText = resultText(event.result);
     recordCodingTransportError(event.toolName, event.isError, truncatedText, event.toolCallId, 'tool_execution_end');
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text: truncatedText });
-    if (truncated && !truncationGuidedCalls.has(event.toolCallId)) {
+    if (truncated && !incompleteCodingToolError({ toolName: event.toolName, isError: event.isError, text: truncatedText }) &&
+        !truncationGuidedCalls.has(event.toolCallId)) {
       truncationGuidedCalls.add(event.toolCallId);
       console.log(`PI_TOOL_CALL_TRUNCATED ${JSON.stringify({ stage, ...truncated, source: 'tool_execution_end' })}`);
       await pi.sendUserMessage(`RUNTIME: ${truncationGuidance(event.toolName)}`, { deliverAs: 'steer' });
@@ -4271,7 +4274,7 @@ export default function (pi) {
     const text = resultText(event);
     recordCodingTransportError(event.toolName, event.isError, text, event.toolCallId, 'tool_result');
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
-    if (!truncated) return undefined;
+    if (!truncated || incompleteCodingToolError({ toolName: event.toolName, isError: event.isError, text })) return undefined;
     if (event.toolCallId) {
       if (truncationGuidedCalls.has(event.toolCallId)) return undefined;
       truncationGuidedCalls.add(event.toolCallId);
@@ -4571,7 +4574,7 @@ export default function (pi) {
           controller.grantTruncatedCodingToolBudget()) {
         mode = 'elevated';
         controller.activateLargeMutationBudget();
-        await applyTokenCap(controller.largeMutationBudgetMaxTokens, ctx);
+        await applyTokenCap(controller.largeMutationBudgetMaxTokens, ctx, { propagateSubagentBudget: false });
         appliedActionCap = controller.largeMutationBudgetMaxTokens;
         largeMutationActionRetryCount = 0;
       }
