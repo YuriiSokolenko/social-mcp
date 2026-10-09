@@ -2255,9 +2255,7 @@ export default function (pi) {
       if (codingToolTransportRecovery && !codingToolTransportRecovery.issued) {
         const correction = codingToolTransportRecovery;
         const executable = providerToolNames(patched);
-        const needed = correction.mode === 'elevated'
-          ? correction.requestedBudget
-          : correction.originalCeiling;
+        const needed = correction.requestedBudget;
         const allowedBudget = providerWireOutputBudget.verified &&
           providerWireOutputBudget.ceiling >= needed;
         if (!executable.includes(correction.tool) || !allowedBudget) {
@@ -4516,7 +4514,8 @@ export default function (pi) {
       );
     }
 
-    const outputTokens = Number(event.message?.usage?.output || 0);
+    const observedOutputTokens = event.message?.usage?.output;
+    const outputTokens = Number(observedOutputTokens || 0);
     if (codingSession && !codingFirstResponseLogged) {
       codingFirstResponseLogged = true;
       codingSessionLog('first_response', { side: 'fork', sessionId: codingSession.sessionId, outputTokens, attemptedTool: actionTurnAttemptedTool });
@@ -4537,7 +4536,7 @@ export default function (pi) {
     const incompleteTransport = verifiedCodingToolTruncation({
       candidates: codingToolTransportErrors,
       requestBudget: providerWireOutputBudget,
-      outputTokens,
+      outputTokens: observedOutputTokens == null ? null : outputTokens,
       stopReason: event.message?.stopReason,
     });
     if (incompleteTransport && productiveState === 'action_required' && !repairRequest) {
@@ -4554,10 +4553,11 @@ export default function (pi) {
         provider_turns: providerRequestSequence,
         successful_mutation: false,
       }));
-      if (codingToolTransportRecoveryUsed || existing || controller.largeMutationBudgetActive()) {
+      if (codingToolTransportRecoveryUsed || existing ||
+          codingToolTransportRecoveryCount >= CODING_TOOL_TRANSPORT_RECOVERY_LIMIT) {
         abortCodingTransportRecovery(
           ctx, 'PI_CODING_TOOL_TRUNCATION_REPEATED',
-          'coding tool transport was truncated again; bounded recovery is exhausted',
+          'coding tool transport recovery is already in flight or the per-session incident limit is exhausted',
           { tool: incompleteTransport.toolName, incomplete_tool_transport: true,
             requested_budget: existing?.requestedBudget ?? appliedActionCap,
             effective_budget: providerWireOutputBudget.ceiling,
@@ -4568,7 +4568,13 @@ export default function (pi) {
       // Selection comes from the last provider request, not the complete live
       // registry. A deferred tool is never advertised as executable.
       const surface = providerCapabilitySnapshot?.executableTools ?? [];
-      const chosen = codingTruncationCorrectionTool(incompleteTransport.toolName, surface);
+      const existingElevatedBudget = controller.largeMutationBudgetActive();
+      // A model-requested 16k response can itself truncate. Do not fail simply
+      // because that grant is active. Reconcile it by falling back to a short
+      // handoff (if exposed), otherwise a bounded split of the direct mutation.
+      const chosen = existingElevatedBudget && surface.includes('begin_coding_session')
+        ? { tool: 'begin_coding_session', mode: 'handoff' }
+        : codingTruncationCorrectionTool(incompleteTransport.toolName, surface);
       if (!chosen) {
         abortCodingTransportRecovery(
           ctx, 'PI_CODING_TOOL_RECOVERY_CAPABILITY_UNAVAILABLE',
@@ -4578,7 +4584,14 @@ export default function (pi) {
         );
         return undefined;
       }
-      const availableLargeBudget = controller.largeMutationBudgetState === 'idle' &&
+      if (existingElevatedBudget) {
+        controller.resetLargeMutationBudget();
+        elevatedScopePreludeUsed = false;
+        largeMutationActionRetryCount = 0;
+        syncActionToolSurface(productiveState);
+      }
+      const availableLargeBudget = !existingElevatedBudget &&
+        controller.largeMutationBudgetState === 'idle' &&
         Number.isSafeInteger(controller.largeMutationBudgetMaxTokens) &&
         controller.largeMutationBudgetMaxTokens > incompleteTransport.ceiling;
       let mode = chosen.mode === 'handoff' ? 'handoff' : 'split';
@@ -4590,13 +4603,28 @@ export default function (pi) {
         appliedActionCap = controller.largeMutationBudgetMaxTokens;
         largeMutationActionRetryCount = 0;
       }
+      // The correction is strictly one provider request (plus one existing
+      // accepted scope prelude). Further unrelated incidents are allowed only
+      // after successful mutation, with a finite total session cap.
+      const smallCap = Number(config.productiveProgress?.actionResponseMaxTokens ?? controller.budgets.short);
+      if (mode !== 'elevated' && existingElevatedBudget) {
+        if (!Number.isSafeInteger(smallCap) || smallCap < 1) {
+          abortCodingTransportRecovery(ctx, 'PI_CODING_TOOL_RECOVERY_WIRE_BUDGET_UNVERIFIED',
+            'no safe small coding correction ceiling is configured',
+            { incomplete_tool_transport: true });
+          return undefined;
+        }
+        await applyTokenCap(smallCap, ctx, { propagateSubagentBudget: false });
+        appliedActionCap = smallCap;
+      }
+      codingToolTransportRecoveryCount += 1;
       codingToolTransportRecoveryUsed = true;
       codingToolTransportRecovery = {
-        request: null, tool: chosen.tool, mode,
+        request: null, issued: false, tool: chosen.tool, mode,
         originalCeiling: incompleteTransport.ceiling,
         requestedBudget: mode === 'elevated'
           ? controller.largeMutationBudgetMaxTokens
-          : incompleteTransport.ceiling,
+          : (existingElevatedBudget ? smallCap : incompleteTransport.ceiling),
       };
       actionRequiredProseOnlyTurns = 0;
       ceilingWithoutToolTurns = 0;
@@ -4605,7 +4633,7 @@ export default function (pi) {
         ? `Call ${chosen.tool} with a short, valid handoff (max ${CODING_SESSION_HANDOFF_MAX_LENGTH} chars) to continue safe writes in the isolated coding session.`
         : mode === 'elevated'
           ? `Call ${chosen.tool} with complete path and content under the verified ${controller.largeMutationBudgetMaxTokens}-token elevated ceiling; accept_mutation_scope is the only permitted prelude when needed.`
-          : `Call ${chosen.tool} with a SMALL complete edit/write under ${incompleteTransport.ceiling} tokens. For new files create a minimal skeleton, then add sections with separate edit/safe_edit calls. Include the required path.`;
+          : `Call ${chosen.tool} with a SMALL complete edit/write under ${codingToolTransportRecovery.requestedBudget} tokens. For new files create a minimal skeleton, then add sections with separate edit/safe_edit calls. Include the required path.`;
       console.warn('PI_CODING_TOOL_TRANSPORT_RECOVERY ' + JSON.stringify({
         stage, tool: chosen.tool, selected_correction: mode,
         requested_budget: codingToolTransportRecovery.requestedBudget,
@@ -4621,7 +4649,8 @@ export default function (pi) {
       return undefined;
     }
 
-    if (codingToolTransportRecovery &&
+    if (codingToolTransportRecovery?.issued === true &&
+        Number.isSafeInteger(codingToolTransportRecovery.request) &&
         codingToolTransportRecovery.request === providerCapabilitySnapshot?.request) {
       if (controller.turnMadeProgress || elevatedTurnSuccessfulFinishTool) {
         console.log('PI_CODING_TOOL_TRANSPORT_RECOVERY_RESULT ' + JSON.stringify({
@@ -4632,6 +4661,7 @@ export default function (pi) {
           successful_mutation: true, terminal_failure_class: null,
         }));
         codingToolTransportRecovery = null;
+        codingToolTransportRecoveryUsed = false;
       } else if (!elevatedTurnSuccessfulScopePrelude) {
         abortCodingTransportRecovery(
           ctx, 'PI_CODING_TOOL_CORRECTION_FAILED',
@@ -4643,6 +4673,7 @@ export default function (pi) {
         // A successful scope-only prelude may preserve the one-shot elevated
         // grant for exactly one following mutation, as in the existing policy.
         codingToolTransportRecovery.request = null;
+        codingToolTransportRecovery.issued = false;
       }
     }
 
