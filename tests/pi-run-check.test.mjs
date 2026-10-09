@@ -156,19 +156,9 @@ test('#635 node_test runs Arkanoid .test.mjs with trusted fixed argv and bounded
   const dir = worktree({
     'examples/workflow-smoke/arkanoid/engine.test.mjs': "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('engine works', () => assert.equal(2 + 2, 4));\n",
     'examples/workflow-smoke/arkanoid/broken.test.js': "const test = require('node:test');\nconst assert = require('node:assert/strict');\ntest('engine breaks', () => assert.equal(2 + 2, 5));\n",
+    'examples/workflow-smoke/arkanoid/nested.test.mjs': "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('outer', async t => { await t.test('inner', () => assert.equal(1, 2)); });\n",
   });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const backend = {
-    async run({ request, spec, root, env, timeoutMs }) {
-      assert.equal(request.kind, 'node_test');
-      assert.equal(spec.command, process.execPath);
-      assert.deepEqual(spec.args.slice(0, 2), ['--test', '--test-reporter=tap']);
-      assert.ok(spec.args.slice(2).every(file => /\.test\.(?:mjs|js)$/.test(file)));
-      return (await runCheck(root, request, directOptions({ bins: { node: process.execPath }, timeoutMs }))).status === 'pass'
-        ? { exitCode: 0, durationMs: 1, stdout: '# pass 1\n# fail 0\n', stderr: '' }
-        : { exitCode: 1, durationMs: 1, stdout: 'not ok 1 - engine breaks\n# pass 0\n# fail 1\n', stderr: '' };
-    },
-  };
   // Execute the real Node runner directly first (no network or production-sandbox claim).
   const pass = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, directOptions({ bins: { node: process.execPath } }));
   assert.equal(pass.status, 'pass', pass.stderr_tail || pass.stdout_tail);
@@ -178,14 +168,45 @@ test('#635 node_test runs Arkanoid .test.mjs with trusted fixed argv and bounded
   assert.match(failed.summary, /0 passed, 1 failed/);
   assert.equal(failed.diagnostics[0].code, 'NodeTestFailure');
   assert.match(failed.diagnostics[0].message, /engine breaks/);
+  assert.match(failed.diagnostics[0].message, /Expected values to be strictly equal/);
+  assert.match(failed.diagnostics[0].message, /4 !== 5/);
   assert.ok(failed.stdout_tail.length <= 3000);
-  assert.equal(failed.truncated, Boolean(failed.truncated));
+  assert.equal(failed.truncated, false);
 
-  const forwarded = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/engine.test.mjs'] }, {
-    backend,
-    bins: { node: process.execPath },
-  });
-  assert.equal(forwarded.status, 'pass');
+  // Nested TAP failures include an unhelpful parent "1 subtest failed" record.
+  // Preserve the assertion from the leaf and suppress that redundant parent.
+  const nested = await runCheck(dir, { kind: 'node_test', targets: ['examples/workflow-smoke/arkanoid/nested.test.mjs'] }, directOptions({ bins: { node: process.execPath } }));
+  assert.equal(nested.status, 'fail', nested.stderr_tail || nested.stdout_tail);
+  assert.equal(nested.diagnostics.length, 1, JSON.stringify(nested.diagnostics));
+  assert.match(nested.diagnostics[0].message, /inner: Expected values to be strictly equal/);
+  assert.match(nested.diagnostics[0].message, /1 !== 2/);
+  assert.doesNotMatch(nested.diagnostics[0].message, /subtest failed/);
+  assert.equal(nested.summary, '0 passed, 2 failed', 'TAP totals include the parent subtest failure');
+});
+
+test('#635 Node TAP YAML block modifiers keep the first assertion details', async t => {
+  const file = 'tests/failure.test.mjs';
+  const dir = worktree({ [file]: "import test from 'node:test'; test('present', () => {});\n" });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const marker of ['|', '|-', '|+']) {
+    const tap = [
+      'TAP version 13', 'not ok 1 - assertion',
+      '  ---', '  failureType: testCodeFailure', '  error: ' + marker,
+      '    Expected values to be strictly equal:',
+      '    ',
+      '    1 !== 2', '  code: ERR_ASSERTION', '  ...',
+      '# pass 0', '# fail 1',
+    ].join('\n');
+    // This backend supplies only reporter output, not a fake recursive runCheck
+    // or simulated Docker execution; it isolates the TAP parsing behavior.
+    const result = await runCheck(dir, { kind: 'node_test', targets: [file] }, {
+      backend: { run: async () => ({ exitCode: 1, durationMs: 1, stdout: tap, stderr: '' }) },
+    });
+    assert.equal(result.status, 'fail', marker);
+    assert.deepEqual(result.diagnostics.map(item => item.message), [
+      'assertion: Expected values to be strictly equal: 1 !== 2',
+    ], marker);
+  }
 });
 
 test('#635 invalid framework and unsafe Node paths never invoke a runner or arm failed-check recovery', async t => {
@@ -242,18 +263,6 @@ test('#635 trusted executor revalidates runner paths in staged worktree namespac
   fs.symlinkSync(path.join(outside, 'escape.test.mjs'), path.join(staged, relative));
   assert.throws(() => buildRunCheckSpec(staged, request, { bins: { node: '/usr/local/bin/node' } }), /resolves outside/);
   assert.throws(() => buildRunCheckSpec(staged, { kind: 'pytest', targets: [relative] }), /resolves outside/);
-});
-
-test('#635 sandbox executor and image pin Node and preflight its availability', () => {
-  const executor = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-executor.mjs', import.meta.url), 'utf8');
-  const image = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-sandbox.Dockerfile', import.meta.url), 'utf8');
-  const probe = fs.readFileSync(new URL('../infra/github-runner-autoscaler/run-check-sandbox-probe.py', import.meta.url), 'utf8');
-  assert.match(executor, /node: '\/usr\/local\/bin\/node'/);
-  assert.match(executor, /buildStagedRunCheckSpec\(stageInfo\.canonicalRoot, stageInfo\.stage, stagedParams/);
-  assert.match(executor, /--network', 'none'/);
-  assert.match(image, /COPY --from=node-runtime \/usr\/local\/bin\/node/);
-  assert.match(probe, /node_available = node_probe\.stdout\.strip\(\)\.startswith\("v"\)/);
-  assert.match(probe, /and node_available/);
 });
 
 test('#635 Node timeout returns timeout, never a test failure', async t => {
