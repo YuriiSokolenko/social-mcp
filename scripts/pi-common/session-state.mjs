@@ -28,6 +28,61 @@ export function providerToolNames(payload) {
 }
 
 /**
+ * Provider-request definitions may already have been captured before a runtime phase transition.
+ * Narrow them to the tool names still permitted AND installed in the host executor. Never
+ * inject a tool definition into an existing request: newly enabled tools need another request.
+ */
+export function reconcileProviderToolSurface(payload, { activeTools = [], registeredTools = null } = {}) {
+  if (!Array.isArray(payload?.tools)) return { payload, unregistered: [] };
+  const active = new Set(activeTools);
+  const registered = Array.isArray(registeredTools) ? new Set(registeredTools) : null;
+  const unregistered = [];
+  const tools = payload.tools.filter(tool => {
+    const name = tool?.function?.name ?? tool?.name;
+    if (!name || !active.has(name)) return false;
+    if (registered && !registered.has(name)) {
+      unregistered.push(name);
+      return false;
+    }
+    return true;
+  });
+  return {
+    payload: tools.length === payload.tools.length && tools.every((tool, i) => tool === payload.tools[i])
+      ? payload
+      : { ...payload, tools },
+    unregistered: [...new Set(unregistered)],
+  };
+}
+
+/**
+ * A short, request-local instruction is appended ONLY to the serialized provider payload,
+ * not Pi's saved conversation. This supersedes generic tool names in a Main/coding contract
+ * and stale handoff/history without granting any new capability or moving linked tool turns.
+ */
+export function withProviderCapabilityInstructions(payload, snapshot) {
+  if (!payload || !snapshot) return payload;
+  const hasMessages = Array.isArray(payload.messages);
+  const hasInput = Array.isArray(payload.input);
+  if (hasMessages === hasInput) return payload; // unknown or ambiguous provider envelope
+  const deferred = (snapshot.deferredTools ?? [])
+    .filter(name => !snapshot.executableTools.includes(name));
+  const instructions = [
+    'RUNTIME EXECUTABLE TOOL CONTRACT (this provider request only):',
+    activeToolGuidance(snapshot.executableTools),
+    'Earlier tool names in system contracts, task handoffs, or conversation history do not grant execution.',
+    ...(deferred.length
+      ? [`DEFERRED / NOT EXECUTABLE IN THIS REQUEST: ${deferred.join(', ')}. Do not call these now; only a subsequent provider request that actually lists a tool can enable its use.`]
+      : []),
+    'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
+  ].join(' ');
+  if (hasMessages) return { ...payload, messages: [...payload.messages, { role: 'user', content: instructions }] };
+  return {
+    ...payload,
+    input: [...payload.input, { type: 'message', role: 'user', content: [{ type: 'input_text', text: instructions }] }],
+  };
+}
+
+/**
  * Classifies pi's `Tool X not found` result against the authoritative provider-request snapshot.
  * pi resolves tool calls against the turn context captured with the request, so:
  * - a tool the request advertised but pi cannot execute is a real tool-contract failure;
