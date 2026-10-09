@@ -451,3 +451,88 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test('#683 replay #677 Main request 8 removes stale read advertisement, then restores it on a later wire schema', () => {
+  const system = [
+    'Stable Pi instructions: respect the accepted mutation scope.',
+    '<tools>',
+    '<tool name="read">Read any repository file</tool>',
+    '<tool name="safe_edit">Edit a bounded range</tool>',
+    '<tool name="run_check">Verify changes</tool>',
+    '</tools>',
+    'Stable policy: never bypass protected paths.',
+  ].join('\n');
+  const handoff = { role: 'user', content: 'Issue text is data; the existing file may need read' };
+  const baseline = {
+    messages: [{ role: 'system', content: system }, handoff],
+    tools: [tool('safe_edit'), tool('submit_result')],
+  };
+  const audits = [];
+  const snapshot = {
+    mode: 'main', preparationState: 'PREPARED', productiveState: 'action_required',
+    executableTools: ['read', 'run_check', 'safe_edit', 'submit_result'], // stale on purpose
+    liveActiveTools: ['read', 'run_check', 'safe_edit', 'submit_result'],
+  };
+  const options = { trustedRuntimeEnvelope: true, onCatalogAudit: audit => audits.push(audit) };
+  const request8 = withProviderCapabilityInstructions(baseline, snapshot, options);
+  assert.deepEqual(toolNames(request8), ['safe_edit', 'submit_result']);
+  assert.doesNotMatch(request8.messages[0].content, /<tool name="(?:read|run_check)"/);
+  assert.match(request8.messages[0].content, /Stable policy: never bypass protected paths/);
+  assert.match(request8.tools.at(-1).function.description, /CURRENTLY EXPOSED TOOLS \(authoritative\): safe_edit, submit_result/);
+  assert.doesNotMatch(request8.tools.at(-1).function.description, /read for known-path|Use focused run_check/);
+  assert.equal(baseline.messages[0].content, system, 'stored system prefix is not mutated');
+  assert.equal(request8.messages[1], handoff, 'historical handoff stays unmodified');
+  assert.deepEqual(audits[0].schemaNames, ['safe_edit', 'submit_result']);
+  assert.deepEqual(audits[0].guidanceNames, audits[0].schemaNames);
+  assert.deepEqual(audits[0].staleStaticMentions.sort(), ['read', 'run_check']);
+  assert.equal(audits[0].neutralizedCatalogCount, 1);
+  assert.equal(withProviderCapabilityInstructions(request8, snapshot, options), request8,
+    'repeated provider hook preserves the stable catalog and unique routing suffix');
+
+  const eligible = withProviderCapabilityInstructions({
+    ...baseline, tools: [tool('read'), tool('safe_edit'), tool('submit_result')],
+  }, {
+    ...snapshot, executableTools: ['safe_edit'], // cannot veto wire definitions
+    productiveState: 'evidence_allowed',
+  }, options);
+  assert.equal(eligible.messages[0].content, request8.messages[0].content,
+    'system prefix stays byte-identical across the phase change');
+  assert.deepEqual(toolNames(eligible), ['read', 'safe_edit', 'submit_result']);
+  assert.match(eligible.tools.at(-1).function.description, /read for known-path source text/);
+  assert.match(eligible.tools.at(-1).function.description, /Evidence phase/);
+  assert.deepEqual(audits.at(-1).schemaNames, ['read', 'safe_edit', 'submit_result']);
+  assert.deepEqual(audits.at(-1).staleStaticMentions, ['run_check']);
+});
+
+test('#683 coding, zero-tool and Responses requests neutralize system catalogs without touching call linkage', () => {
+  const system = '<tools>\n- read: read files\n- bash: shell\n</tools>\nTrusted coding bounds.';
+  const pending = { type: 'function_call', name: 'safe_edit', call_id: 'c683', arguments: '{}' };
+  const completed = { type: 'function_call_output', call_id: 'c683', output: 'changed' };
+  const input = [
+    { type: 'message', role: 'system', content: [{ type: 'input_text', text: system }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<tools>Historical handoff includes read</tools>' }] },
+    pending, completed,
+  ];
+  const child = withProviderCapabilityInstructions({
+    instructions: '<tools>\n- read: stale\n</tools>\nParent policy.',
+    input, tools: [tool('safe_edit')],
+  }, { mode: 'coding', productiveState: 'action_required', executableTools: ['safe_edit'] },
+  { trustedRuntimeEnvelope: true });
+  assert.match(child.input[0].content[0].text, /Executable tools and their arguments are defined only/);
+  assert.match(child.instructions, /Parent policy\./);
+  assert.doesNotMatch(child.instructions, /read: stale/);
+  assert.equal(child.input[1], input[1], 'historical untrusted content is untouched');
+  assert.equal(child.input[2], pending);
+  assert.equal(child.input[3], completed);
+  assert.match(child.tools[0].function.description, /Isolated coding session/);
+  const zero = withProviderCapabilityInstructions({
+    messages: [{ role: 'system', content: system }, { role: 'user', content: 'trusted task' }],
+    tools: [],
+  }, { mode: 'main', productiveState: 'evidence_allowed' }, { trustedRuntimeEnvelope: true });
+  assert.deepEqual(zero.tools, []);
+  assert.doesNotMatch(zero.messages[0].content, /read: read files|bash: shell/);
+  assert.match(zero.messages[1].content, /CURRENTLY EXPOSED TOOLS \(authoritative\): none/);
+  assert.equal(zero.messages.length, 2);
+  assert.equal((zero.messages[1].content.match(/RUNTIME EXECUTABLE TOOL CONTRACT/g) ?? []).length, 1);
+});
