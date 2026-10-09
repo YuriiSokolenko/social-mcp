@@ -1284,6 +1284,56 @@ function runtimeScenario(mode) {
       } else {
         assert.equal(firstParentRequest, unarmedPayload, 'preparation-phase parent request is unchanged');
       }
+      if (mode === 'action-required-serial') {
+        const payload = () => ({
+          model: 'm', messages: [],
+          tools: active.map(name => ({ type: 'function', function: { name } })),
+        });
+        const wire = () => handlers.get('before_provider_request')({ payload: payload() }, ctx);
+        const named = implementerToolChoiceDecision({ ...payload(), tool_choice: { type: 'function', function: { name: 'write' } } }, { productiveState: 'action_required' });
+        assert.deepEqual(named.toolChoice, { type: 'function', function: { name: 'write' } }, 'preserve named recovery');
+        assert.equal(implementerToolChoiceDecision({ tools: [] }, { productiveState: 'action_required' }).toolChoice, 'none');
+        assert.equal(implementerToolChoiceDecision(payload(), { productiveState: 'evidence_allowed' }).toolChoice, 'auto');
+        assert.equal(implementerToolChoiceDecision({ tools: [{ type: 'function', function: { name: 'read' } }] }, { productiveState: 'action_required' }).payload.tools.length, 1, 'a deferred write cannot be advertised');
+        const first = wire();
+        assert.equal(first.tool_choice, 'required', 'prepared Main starts action-forced');
+        handlers.get('turn_start')({ turnIndex: 0 });
+        const accepted = { toolName: 'subagents_enable', toolCallId: 'successful-control', input: {} };
+        assert.equal(await handlers.get('tool_call')(accepted, ctx), undefined);
+        await handlers.get('tool_execution_end')({
+          ...accepted, isError: false, result: { content: [{ type: 'text', text: 'ok' }] },
+        }, ctx);
+        await handlers.get('turn_end')({ turnIndex: 0, message: { stopReason: 'toolUse', usage: { output: 100 } } }, ctx);
+        const second = wire();
+        assert.equal(second.tool_choice, 'required', 'successful tool did not disarm action_required');
+        handlers.get('turn_start')({ turnIndex: 1 });
+        const failed = { toolName: 'read', toolCallId: 'failed-read', input: { path: 'missing.py' } };
+        assert.equal(await handlers.get('tool_call')(failed, ctx), undefined);
+        await handlers.get('tool_execution_end')({
+          ...failed, isError: true, result: { content: [{ type: 'text', text: 'file unavailable' }] },
+        }, ctx);
+        await handlers.get('turn_end')({ turnIndex: 1, message: { stopReason: 'toolUse', usage: { output: 100 } } }, ctx);
+        const third = wire();
+        assert.equal(third.tool_choice, 'required', 'locally failed tool did not disarm action_required');
+        assert.ok([first, second, third].every(req => req.tools.some(t => t.function.name === 'write')));
+        // A successful provider stop without a tool under required must be diagnosed
+        // but must not be counted as a successful action or an output-ceiling event.
+        handlers.get('turn_start')({ turnIndex: 2 });
+        await handlers.get('turn_end')({ turnIndex: 2, message: {
+          stopReason: 'stop', usage: { output: 100 }, content: [{ type: 'text', text: 'prose' }],
+        } }, ctx);
+        assert.equal(aborts, 0, 'first contract violation receives one retry');
+        assert.equal(wire().tool_choice, 'required', 'second prose attempt also forced');
+        handlers.get('turn_start')({ turnIndex: 3 });
+        await handlers.get('turn_end')({ turnIndex: 3, message: {
+          stopReason: 'stop', usage: { output: 100 }, content: [{ type: 'text', text: 'prose again' }],
+        } }, ctx);
+        assert.equal(aborts, 1, 'second violation triggers the bounded watchdog');
+        assert.equal(JSON.parse(fs.readFileSync(runtimeFailure, 'utf8')).failure_code, 'PI_ACTION_REQUIRED_ABORT');
+        assert.equal(fs.existsSync(resultFile), false, 'no terminal result published');
+        console.log('ACTION_REQUIRED_SERIAL_OK');
+        process.exit(0);
+      }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
       // That deliberately malformed provider probe is NOT the subsequent model
@@ -2846,6 +2896,20 @@ test('#512 one elevated mutation grant permits one scope prelude and repeated sc
   assert.equal((logs.match(/PI_LARGE_MUTATION_ACTION_RETRY /g) ?? []).length, 1, 'only the first blocked repeat gets a retry');
   assert.match(logs, /PI_LARGE_MUTATION_ACTION_RETRY_EXHAUSTED .*"retryLimit":1/);
   assert.match(logs, /SCOPE_PRELUDE_CAP_OK/);
+});
+
+test('#669 per-request Main wire contract survives valid and failed tools and bounds provider stop violations', () => {
+  const logs = runtimeScenario('action-required-serial');
+  const records = logs.split('\n').filter(line => line.startsWith('PI_IMPLEMENTER_PROVIDER_WIRE '))
+    .map(line => JSON.parse(line.slice('PI_IMPLEMENTER_PROVIDER_WIRE '.length)));
+  assert.ok(records.length >= 5);
+  assert.ok(records.every(req => req.productiveState === 'action_required' && req.toolChoice === 'required'));
+  assert.ok(records.every(req => req.executableToolCount === req.executableTools.length));
+  const violations = logs.split('\n').filter(line => line.startsWith('PI_PROVIDER_TOOL_CHOICE_CONTRACT_VIOLATION '))
+    .map(line => JSON.parse(line.slice('PI_PROVIDER_TOOL_CHOICE_CONTRACT_VIOLATION '.length)));
+  assert.equal(violations.length, 2);
+  assert.notEqual(violations[0].request, violations[1].request, 'distinct requests correlated');
+  assert.match(logs, /ACTION_REQUIRED_SERIAL_OK/);
 });
 
 test('first prose-only action-required retry stays forced through a ceiling turn until a real exposed tool', () => {
