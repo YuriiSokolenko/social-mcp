@@ -564,6 +564,11 @@ export default function (pi) {
   let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
+  // Only fresh Main may request optional capabilities. The grant affects the
+  // NEXT serialized request; the in-flight provider snapshot remains immutable.
+  let mainCapabilityRequests = 0;
+  let mainCapabilityGroups = [];
+  let mainToolProfileTelemetry = null;
   // Process-local between-turn obligation. It is consumed by the next real
   // tool-bearing request or discarded when the stage/process ends; it never
   // survives teardown and cannot carry into a new Pi stage.
@@ -2149,6 +2154,36 @@ export default function (pi) {
           }
           tools = tools.filter(tool => permitted.has(tool.function?.name ?? tool.name));
         }
+        // Optional definitions are removed only for fresh Main. Existing
+        // exact recovery / resumed / validation-repair / coding gates win.
+        // Intersect the final phase-approved definitions, never add new ones.
+        const mainToolProfile = filterFreshMainToolProfile({ tools }, {
+          freshMain: !codingSession && !resumedImplementer && !validationRepair &&
+            !terminalRecoveryRequiredTool && !controller.preComplexityActionRequired(),
+          grantedGroups: mainCapabilityGroups,
+        });
+        if (mainToolProfile.profile !== 'phase_owned') {
+          const beforeBytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
+          tools = mainToolProfile.payload.tools.filter(tool =>
+            mainCapabilityRequests < MAX_MAIN_CAPABILITY_ESCALATIONS ||
+            (tool.function?.name ?? tool.name) !== MAIN_CAPABILITY_REQUEST_TOOL
+          );
+          mainToolProfileTelemetry = {
+            profile: mainToolProfile.profile,
+            phase: productiveState,
+            admitted: tools.map(tool => tool.function?.name ?? tool.name),
+            denied: mainToolProfile.deferred,
+            grantedGroups: [...mainCapabilityGroups],
+            escalationAttempts: mainCapabilityRequests,
+            toolSchemaBytesBefore: beforeBytes,
+            toolSchemaBytesAfter: Buffer.byteLength(JSON.stringify(tools), 'utf8'),
+          };
+          console.log('PI_MAIN_TOOL_PROFILE ' + JSON.stringify({
+            stage, request: providerRequestSequence + 1, ...mainToolProfileTelemetry,
+          }));
+        } else {
+          mainToolProfileTelemetry = null;
+        }
         if (
           tools.length !== patched.tools.length ||
           tools.some((tool, index) => tool !== patched.tools[index])
@@ -2577,6 +2612,40 @@ export default function (pi) {
       });
     }
   });
+
+  if (stage === 'implementer' && !codingSession && !resumedImplementer && !validationRepair) {
+    pi.registerTool({
+      name: MAIN_CAPABILITY_REQUEST_TOOL,
+      label: 'Request optional Main capabilities',
+      description: 'Request optional tools for a concrete need: docs, lsp, history, delegation, or extended. At most three requests. A grant never changes the CURRENT provider request or bypasses evidence, mutation, or phase gates. Tools become callable only if a subsequent request actually exposes their schemas. Use normal need_more_evidence for one-off inspection.',
+      parameters: Type.Object({
+        group: Type.Union(MAIN_CAPABILITY_GROUPS.map(group => Type.Literal(group))),
+        reason: Type.String({ minLength: 8, maxLength: 300 }),
+      }),
+      async execute(_toolCallId, params) {
+        mainCapabilityRequests += 1;
+        const grant = mainCapabilityGrant(mainCapabilityGroups, params.group);
+        if (!grant.ok || mainCapabilityRequests > MAX_MAIN_CAPABILITY_ESCALATIONS) {
+          const why = grant.reason ?? 'request_limit';
+          console.warn('PI_MAIN_CAPABILITY_ESCALATION_DENIED ' + JSON.stringify({
+            stage, group: params.group, reason: why, attempts: mainCapabilityRequests,
+          }));
+          return { content: [{ type: 'text', text: 'Optional capability request denied: ' + why + '. Do not invent or bypass missing tools.' }], isError: true };
+        }
+        mainCapabilityGroups = grant.granted;
+        console.log('PI_MAIN_CAPABILITY_ESCALATION ' + JSON.stringify({
+          stage, group: params.group, reason: params.reason, attempts: mainCapabilityRequests,
+          changed: grant.changed, effectiveFrom: 'next_provider_request_only',
+        }));
+        return {
+          content: [{ type: 'text', text: grant.changed
+            ? 'Approved for later requests: ' + params.group + '. Only tools serialized by the NEXT provider request may be called, within normal phase and evidence gates.'
+            : 'Capability group was already approved. Do not repeat this transition.' }],
+          details: { ...grant, effectiveFrom: 'next_provider_request_only' },
+        };
+      },
+    });
+  }
 
   if (controller.requireComplexity && !config.implementationPlannerAgent) {
     pi.registerTool({
@@ -4490,6 +4559,20 @@ export default function (pi) {
         ...(event.message?.usage ? {} : { reason: 'provider_usage_unavailable' }),
       });
       codingProviderRequestStartedAt = null;
+    }
+    if (!codingSession && mainToolProfileTelemetry) {
+      // A provider omitting cache or token counts means unknown, not zero.
+      const usage = event.message?.usage ?? null;
+      console.log('PI_MAIN_TOOL_PROFILE_RESULT ' + JSON.stringify({
+        stage, request: providerCapabilitySnapshot?.request ?? null,
+        profile: mainToolProfileTelemetry.profile,
+        phase: mainToolProfileTelemetry.phase,
+        toolSchemaBytes: mainToolProfileTelemetry.toolSchemaBytesAfter,
+        inputTokens: usage?.input ?? null,
+        cacheReadTokens: usage?.cacheRead ?? null,
+        cacheWriteTokens: usage?.cacheWrite ?? null,
+        stopReason: event.message?.stopReason ?? null,
+      }));
     }
     const status = providerErrorStatus(event.message);
     const repairRequest = codingRepairProviderRequestInFlight;
