@@ -3432,7 +3432,13 @@ export default function (pi) {
     // reason (corrupt ledger / no pending failure / not available in this action state) rather
     // than being misclassified as an ordinary unavailable-tool attempt.
     const recoveryPolicyTool = event.toolName === RETRY_FAILED_CHECK_TOOL;
-    const requestTools = providerCapabilitySnapshot?.executableTools ?? null;
+    // A zero-tool provider payload cannot produce executable tool calls. Host
+    // harnesses may make a synthetic empty-surface probe and then invoke
+    // tool_call to test controller policy without a model turn; preserve that
+    // deterministic controller diagnostic. Nonempty requests remain authoritative.
+    const requestTools = providerCapabilitySnapshot?.executableTools?.length
+      ? providerCapabilitySnapshot.executableTools
+      : null;
     const missingAtRequestBoundary = requestTools != null && !requestTools.includes(event.toolName);
     const removedSinceRequest = requestTools?.includes(event.toolName) === true &&
       !activeToolNames.includes(event.toolName);
