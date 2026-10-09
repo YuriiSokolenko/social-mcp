@@ -109,30 +109,43 @@ function runPatchedDecision({ agentName = 'implementation-planner', messages = v
   readError = null, receipt = null, metadata = null, sessionId = 'coding-632', env = {} } = {}) {
   const patched = patchPiSubagentsSource(upstreamDecisionFixture());
   const executable = patched.replace(/^import \{[^\n]+\} from "node:fs";\nimport \{ createHash \} from "node:crypto";\n/, '');
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-adapter-'));
+  const plannerSidecar = path.join(fixtureDir, 'planner-state.json');
+  const terminalSidecar = path.join(fixtureDir, 'terminal-receipt.json');
+  const metadataSidecar = path.join(fixtureDir, 'implementer-result.json');
   const warnings = [];
-  const ctx = {
-    Buffer, createHash, existsSync: fs.existsSync, statSync: fs.statSync,
-    process: { env: {
-      PI_PLANNER_EVIDENCE_STATE_FILE: '/private/planner-sidecar.json',
-      PI_PLANNER_LIFECYCLE_ID: receiptId,
-      PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID: sessionId,
-      PI_TERMINAL_RESULT_FILE: '/private/terminal-receipt.json',
-      PI_IMPLEMENTER_RESULT_FILE: '/private/implementer-result.json',
-      PI_VALIDATION_RUN_ID: 'run-632', PI_ISSUE: '632',
-      ...env,
-    } },
-    readFileSync: (name) => {
-      if (readError) throw readError;
-      if (name === '/private/terminal-receipt.json') return JSON.stringify(receipt);
-      if (name === '/private/implementer-result.json') return Buffer.from(JSON.stringify(metadata));
-      return JSON.stringify(state);
-    },
-    hasEmptyTerminalAssistantResponse: () => false,
-    formatEmptyTerminalAssistantResponseError: () => 'Missing final text',
-    console: { warn: value => warnings.push(String(value)) },
-  };
-  const runSingleAttempt = vm.runInNewContext(executable + '\nrunSingleAttempt', ctx, { timeout: 1000 });
-  return { result: runSingleAttempt({ name: agentName }, messages, errInfo), warnings };
+  const reads = [];
+  try {
+    fs.writeFileSync(plannerSidecar, JSON.stringify(state));
+    fs.writeFileSync(terminalSidecar, JSON.stringify(receipt));
+    fs.writeFileSync(metadataSidecar, JSON.stringify(metadata));
+    // The pinned adapter sees only this case's env, never the parent process.env.
+    const ctx = {
+      Buffer, createHash, existsSync: fs.existsSync, statSync: fs.statSync,
+      process: { env: {
+        PI_PLANNER_EVIDENCE_STATE_FILE: plannerSidecar,
+        PI_PLANNER_LIFECYCLE_ID: receiptId,
+        PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID: sessionId,
+        PI_TERMINAL_RESULT_FILE: terminalSidecar,
+        PI_IMPLEMENTER_RESULT_FILE: metadataSidecar,
+        PI_VALIDATION_RUN_ID: 'run-632', PI_ISSUE: '632',
+        ...env,
+      } },
+      readFileSync: (name, encoding) => {
+        reads.push(name);
+        if (readError) throw readError;
+        return fs.readFileSync(name, encoding);
+      },
+      hasEmptyTerminalAssistantResponse: () => false,
+      formatEmptyTerminalAssistantResponseError: () => 'Missing final text',
+      console: { warn: value => warnings.push(String(value)) },
+    };
+    const runSingleAttempt = vm.runInNewContext(executable + '\nrunSingleAttempt', ctx, { timeout: 1000 });
+    return { result: runSingleAttempt({ name: agentName }, messages, errInfo),
+      warnings, reads: reads.map(name => path.basename(name)), fixtureDir };
+  } finally {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+  }
 }
 
 test('previous read ENOENT does not fail an accepted terminal submit_plan', () => {
@@ -304,23 +317,37 @@ test('#632 restored/validation-repair uses empty terminal arguments and current 
   env.PI_VALIDATION_REPAIR = 'true';
   receipt.attempt_id = 'validation-repair:1';
   receipt.result_metadata_sha256 = createHash('sha256').update(JSON.stringify(metadata)).digest('hex');
-  const result = runPatchedDecision({
+
+  // Drive the injected version-pinned adapter with the repair environment;
+  // a direct receipt predicate call alone would miss an env handoff regression.
+  const completed = runPatchedDecision({
+    agentName: 'implementer-coding-session', messages, receipt, metadata, env,
+    errInfo: { hasError: false },
+  });
+  assert.equal(completed.result.exitCode, 0);
+  assert.equal(completed.result.error, undefined);
+  assert.deepEqual(completed.warnings, []);
+
+  const deniedPrimary = runPatchedDecision({
     agentName: 'implementer-coding-session', messages, receipt, metadata,
     errInfo: { hasError: false },
   });
-  // The harness fixture supplies a primary-run env; unlike a self-attestation,
-  // a matching sidecar from a different repair attempt must remain rejected.
-  assert.equal(result.result.exitCode, 1);
+  assert.equal(deniedPrimary.result.exitCode, 1);
+  assert.equal(deniedPrimary.result.error, 'Missing final text');
 
-  const accepted = acceptedTerminalImplementerReceipt(
-    messages, receipt, Buffer.from(JSON.stringify(metadata)), env, 'coding-632');
-  assert.equal(accepted, true);
   const wrongAttempt = { ...env, PI_VALIDATION_REPAIR_ATTEMPT: '2' };
-  assert.equal(acceptedTerminalImplementerReceipt(
-    messages, receipt, Buffer.from(JSON.stringify(metadata)), wrongAttempt, 'coding-632'), false);
+  const deniedAttempt = runPatchedDecision({
+    agentName: 'implementer-coding-session', messages, receipt, metadata,
+    env: wrongAttempt, errInfo: { hasError: false },
+  });
+  assert.equal(deniedAttempt.result.exitCode, 1);
+  assert.equal(deniedAttempt.result.error, 'Missing final text');
+
   messages[0].content[0].arguments = { resultText: 'model-generated file names' };
-  assert.equal(acceptedTerminalImplementerReceipt(
-    messages, receipt, Buffer.from(JSON.stringify(metadata)), env, 'coding-632'), false);
+  assert.equal(runPatchedDecision({
+    agentName: 'implementer-coding-session', messages, receipt, metadata, env,
+    errInfo: { hasError: false },
+  }).result.exitCode, 1);
 });
 
 test('#632 blocked outcome needs exact runtime-bound reason, not generic success', () => {
@@ -592,4 +619,144 @@ test('#645 terminal session lease cleans up on throw, abort and timeout, includi
   assert.equal(Object.hasOwn(env, key), false);
   assert.throws(() => acquireImplementerTerminalSession('', env), /non-empty coding terminal session ID/);
   assert.equal(Object.hasOwn(env, key), false);
+});
+
+function assertPatchedImplementerCompleted(label, sample, env, errInfo = { hasError: false }) {
+  const serializedMessages = JSON.stringify(sample.messages);
+  const { result, warnings, reads, fixtureDir } = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...sample, env, errInfo,
+  });
+  assert.equal(result.exitCode, 0, label + ': exit status');
+  assert.equal(result.error, undefined, label + ': no missing-prose or hidden-error fallback');
+  assert.deepEqual(warnings, [], label + ': no sidecar warnings');
+  assert.deepEqual(reads, ['terminal-receipt.json', 'implementer-result.json'],
+    label + ': adapter reads the current-run receipt and metadata');
+  assert.equal(fs.existsSync(fixtureDir), false, label + ': sidecar fixtures removed');
+  assert.equal(JSON.stringify(sample.messages), serializedMessages, label + ': messages unchanged');
+  const assistant = sample.messages.findLast(message => message.role === 'assistant');
+  assert.equal(assistant.stopReason, 'toolUse', label + ': terminal toolUse');
+  assert.equal(assistant.content.some(part => part.type === 'text' && part.text?.trim()), false,
+    label + ': completion did not require synthetic assistant prose');
+}
+
+function assertPatchedImplementerRejected(label, sample, env, errInfo = { hasError: false },
+  expectedCode = 1) {
+  const { result, warnings, fixtureDir } = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...sample, env, errInfo,
+  });
+  assert.equal(result.exitCode, expectedCode, label + ': upstream failure branch');
+  if (expectedCode === 1) assert.equal(result.error, 'Missing final text', label);
+  else assert.match(result.error, /failed/, label);
+  assert.deepEqual(warnings, [], label + ': validation rejection, not sidecar read failure');
+  assert.equal(fs.existsSync(fixtureDir), false, label + ': no leaked fixture files');
+}
+
+test('#644 pinned adapter completes all permitted terminal toolUse modes without assistant prose', () => {
+  const ownedEnvKeys = [
+    'PI_VALIDATION_REPAIR', 'PI_VALIDATION_REPAIR_ATTEMPT',
+    'PI_RESUME_ACTIVE', 'PI_RESUME_PATCH',
+    'PI_TERMINAL_RESULT_FILE', 'PI_IMPLEMENTER_RESULT_FILE',
+    'PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID',
+  ];
+  const ownedEnvSnapshot = () => ownedEnvKeys.map(key => ({
+    key, present: Object.hasOwn(process.env, key), value: process.env[key],
+  }));
+  const beforeEnv = ownedEnvSnapshot();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-modes-644-'));
+  const patch = path.join(dir, 'restored.patch');
+  fs.writeFileSync(patch, 'diff --git a/a b/a\n');
+  try {
+    const fresh = validImplementerEnvelope();
+    assertPatchedImplementerCompleted('fresh resultText', fresh, {});
+
+    const recoverable = validImplementerEnvelope();
+    recoverable.messages.unshift({ role: 'toolResult', toolCallId: 'read-before-submit',
+      toolName: 'read', isError: true, content: [{ type: 'text', text: 'ENOENT' }] });
+    assertPatchedImplementerCompleted('read failure before successful submit', recoverable, {},
+      { hasError: true, errorType: 'read', exitCode: 4 });
+
+    const repair = runtimeOwnedImplementerEnvelope();
+    repair.receipt.attempt_id = 'validation-repair:3';
+    assertPatchedImplementerCompleted('validation repair', repair,
+      { PI_VALIDATION_REPAIR: 'true', PI_VALIDATION_REPAIR_ATTEMPT: '3' });
+
+    assertPatchedImplementerCompleted('explicit resume', runtimeOwnedImplementerEnvelope(),
+      { PI_RESUME_ACTIVE: 'true' });
+    assertPatchedImplementerCompleted('patch-only resume', runtimeOwnedImplementerEnvelope(),
+      { PI_RESUME_PATCH: patch });
+    assertPatchedImplementerCompleted('patch-only resume with undefined flag',
+      runtimeOwnedImplementerEnvelope(), { PI_RESUME_ACTIVE: undefined, PI_RESUME_PATCH: patch });
+
+    const satisfied = runtimeOwnedImplementerEnvelope();
+    satisfied.metadata.outcome = 'already_satisfied';
+    satisfied.metadata.files = [];
+    satisfied.receipt.outcome = 'already_satisfied';
+    satisfied.receipt.result_metadata_sha256 = createHash('sha256')
+      .update(JSON.stringify(satisfied.metadata)).digest('hex');
+    assertPatchedImplementerCompleted('runtime-owned already_satisfied', satisfied,
+      { PI_RESUME_ACTIVE: 'true' });
+    const explicitSatisfied = structuredClone(satisfied);
+    explicitSatisfied.messages[0].content[0].arguments = { already_satisfied: true };
+    assertPatchedImplementerCompleted('fresh explicit already_satisfied', explicitSatisfied, {});
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.deepEqual(ownedEnvSnapshot(), beforeEnv, 'VM case env must not leak into host mode or sidecar variables');
+});
+
+test('#644 identical empty submit envelopes fail closed without their runtime-owned mode', () => {
+  const sample = runtimeOwnedImplementerEnvelope();
+  assertPatchedImplementerRejected('fresh empty changed submission', sample, {});
+  assertPatchedImplementerRejected('unset repair flag despite repair attempt number',
+    sample, { PI_VALIDATION_REPAIR_ATTEMPT: '3' });
+  assertPatchedImplementerRejected('explicit false resume without patch',
+    sample, { PI_RESUME_ACTIVE: 'false' });
+
+  const satisfied = runtimeOwnedImplementerEnvelope();
+  satisfied.metadata.outcome = 'already_satisfied';
+  satisfied.metadata.files = [];
+  satisfied.receipt.outcome = 'already_satisfied';
+  satisfied.receipt.result_metadata_sha256 = createHash('sha256')
+    .update(JSON.stringify(satisfied.metadata)).digest('hex');
+  assertPatchedImplementerRejected('fresh empty already_satisfied', satisfied, {});
+  const repair = runtimeOwnedImplementerEnvelope();
+  repair.receipt.attempt_id = 'validation-repair:3';
+  assertPatchedImplementerRejected('repair sidecar cannot pass as a primary attempt', repair, {});
+});
+
+test('#644 pinned adapter rejects stale receipts, broken hashes and incomplete tool envelopes', () => {
+  const cases = [
+    ['missing receipt', s => { s.receipt = null; }],
+    ['wrong attempt', s => { s.receipt.attempt_id = 'validation-repair:2'; }],
+    ['wrong run', s => { s.receipt.run_id = 'prior-run'; }],
+    ['wrong session', s => { s.receipt.session_id = 'old-session'; }],
+    ['missing metadata hash', s => { delete s.receipt.result_metadata_sha256; }],
+    ['altered metadata hash', s => { s.receipt.result_metadata_sha256 = '0'.repeat(64); }],
+    ['tampered metadata bytes', s => { s.metadata.files.push('src/b.py'); }],
+    ['duplicate submit_result call', s => { s.messages[0].content.push({
+      ...s.messages[0].content[0], id: 'second-submit' }); }],
+    ['duplicate matching tool result', s => { s.messages.push({ ...s.messages[1] }); }],
+    ['missing tool result', s => { s.messages.pop(); }],
+    ['wrong tool result id', s => { s.messages[1].toolCallId = 'previous-call'; }],
+    ['wrong tool result name', s => { s.messages[1].toolName = 'read'; }],
+    ['tool result failed', s => { s.messages[1].isError = true; }],
+    ['truncated transport', s => { s.messages[0].stopReason = 'length'; }],
+    ['assistant provider error', s => { s.messages[0].errorMessage = 'provider timeout'; }],
+    ['unparseable arguments', s => { s.messages[0].content[0].arguments = '{'; }],
+    ['nonterminal assistant message', s => { s.messages.push({
+      role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'done' }] }); }],
+  ];
+  for (const [label, corrupt] of cases) {
+    const sample = runtimeOwnedImplementerEnvelope();
+    corrupt(sample);
+    assertPatchedImplementerRejected(label, sample, { PI_RESUME_ACTIVE: 'true' });
+  }
+  for (const errorType of ['provider', 'abort', 'timeout', 'cancelled', 'transport', 'network']) {
+    const sample = runtimeOwnedImplementerEnvelope();
+    sample.messages.unshift({ role: 'toolResult', toolCallId: 'earlier-read',
+      toolName: 'read', isError: true });
+    assertPatchedImplementerRejected(errorType + ' failure', sample,
+      { PI_RESUME_ACTIVE: 'true' },
+      { hasError: true, errorType, exitCode: 4, details: 'fatal transport error' }, 4);
+  }
 });
