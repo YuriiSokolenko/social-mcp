@@ -102,26 +102,178 @@ function existingRepositoryTarget(cwd, value, { trustedHint = false } = {}) {
   return target;
 }
 
-export function plannerOrbitSeedTargets(issue, { layoutHint = null, cwd = null } = {}) {
+// Bound directory iteration even for very large trees; 256 covers our tests/ layout.
+const ORBIT_NEARBY_MAX_ENTRIES_SCANNED = 256;
+const ORBIT_NEARBY_MAX_SIBLING_DIRECTORIES = 8;
+const ORBIT_NEARBY_MAX_FALLBACK_ATTEMPTS = 16;
+const ORBIT_NEARBY_MAX_ANCESTORS = 8;
+const ORBIT_NEARBY_MAX_FALLBACK_TARGETS = 8;
+const ORBIT_ADDITIVE_ROOTS = new Set([
+  'src', 'tests', 'test', 'examples', 'scripts', 'lib', 'app', 'apps', 'packages', 'docs',
+]);
+
+function insideWorktree(root, target) {
+  return target === root || target.startsWith(root + path.sep);
+}
+
+function missingRepositoryPath(cwd, value, { trustedHint = false } = {}) {
+  const target = sanitizeTarget(value);
+  if (!cwd || !target) return null;
+  const relative = repositoryTargetPath(target);
+  if (!relative.includes('/') || path.posix.normalize(relative) !== relative) return null;
+  const parts = relative.split('/');
+  const filename = parts.at(-1);
+  const extension = path.posix.extname(filename);
+  const fileLike = extension && /^\.[A-Za-z0-9]{1,12}$/.test(extension) && filename !== extension;
+  // An extensionless unknown snippet such as "types/counts" is not an issue path.
+  if (!fileLike && !trustedHint &&
+      (parts.length < 3 || !ORBIT_ADDITIVE_ROOTS.has(parts[0]))) return null;
+
+  const root = canonicalPath(cwd);
+  if (!root) return null;
+  const absolute = path.resolve(root, relative);
+  if (!insideWorktree(root, absolute) || absolute === root) return null;
+  let ancestor = absolute;
+  let traversed = 0;
+  while (ancestor !== root && traversed <= ORBIT_NEARBY_MAX_ANCESTORS) {
+    let exists = false;
+    try {
+      fs.lstatSync(ancestor);
+      exists = true;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return null;
+    }
+    if (exists) {
+      // An existing symlink that is broken or escapes the worktree is never
+      // converted into an advisory query against one of its parents.
+      let real;
+      try { real = fs.realpathSync(ancestor); } catch { return null; }
+      if (!insideWorktree(root, real) || ancestor === absolute ||
+          !fs.statSync(real).isDirectory()) return null;
+      return { relative, extension: fileLike ? extension : null,
+        parent: path.relative(root, ancestor).split(path.sep).join('/') };
+    }
+    ancestor = path.dirname(ancestor);
+    traversed += 1;
+  }
+  // A repository root or an unbounded missing subtree is not useful Orbit context.
+  return { relative, extension: fileLike ? extension : null, parent: null };
+}
+
+function nearbyEntries(directory) {
+  let handle;
+  const entries = [];
+  try {
+    // Reading only a capped prefix avoids materializing arbitrarily large directories.
+    // Sort the sampled candidates so target ranking and tie-breaking stay deterministic.
+    handle = fs.opendirSync(directory);
+    for (let i = 0; i < ORBIT_NEARBY_MAX_ENTRIES_SCANNED; i += 1) {
+      const entry = handle.readSync();
+      if (!entry) break;
+      if (!entry.name.startsWith('.')) entries.push(entry);
+    }
+  } catch {
+    return [];
+  } finally {
+    handle?.closeSync();
+  }
+  return entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+
+function nearbyConventionTarget(cwd, missing) {
+  if (!missing.parent) return null;
+  const root = canonicalPath(cwd);
+  const parentPath = path.resolve(root, missing.parent);
+  const realParent = canonicalPath(parentPath);
+  if (!insideWorktree(root, realParent)) return null;
+  const parentDepth = missing.parent.split('/').length;
+  const expectedName = path.posix.basename(missing.relative);
+  const expectedTest = expectedName.startsWith('test_');
+  const expectedStem = expectedName.replace(/^test_/, '').replace(/\.[^.]+$/, '');
+  const candidates = [];
+  const consider = (relative, nested = false) => {
+    const verified = existingRepositoryTarget(cwd, relative);
+    if (!verified) return;
+    const name = path.posix.basename(relative);
+    const ext = path.posix.extname(name);
+    if (missing.extension
+      ? ext !== missing.extension
+      : !/^\.(?:py|js|mjs|cjs|ts|tsx|kt|java|md)$/.test(ext)) return;
+    const stem = name.replace(/^test_/, '').replace(/\.[^.]+$/, '');
+    const sameTestKind = name.startsWith('test_') === expectedTest;
+    const sharedPrefix = expectedStem && stem && (
+      stem.startsWith(expectedStem.split(/[-_]/)[0]) ||
+      expectedStem.startsWith(stem.split(/[-_]/)[0])
+    );
+    candidates.push({
+      relative,
+      score: (nested ? 0 : 4) + (sameTestKind ? 2 : 0) + (sharedPrefix ? 1 : 0),
+    });
+  };
+
+  const entries = nearbyEntries(parentPath);
+  for (const entry of entries) {
+    if (entry.isFile()) consider(path.posix.join(missing.parent, entry.name));
+  }
+  // One neighboring example/package is enough when a whole new subtree is requested.
+  // Do not traverse children of broad top-level roots or perform a global search.
+  if (parentDepth >= 2) {
+    let scannedDirectories = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (scannedDirectories++ >= ORBIT_NEARBY_MAX_SIBLING_DIRECTORIES) break;
+      const directory = path.posix.join(missing.parent, entry.name);
+      for (const child of nearbyEntries(path.resolve(root, directory))) {
+        if (child.isFile()) consider(path.posix.join(directory, child.name), true);
+      }
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score ||
+    (a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0));
+  return candidates[0]?.relative ?? null;
+}
+
+function selectPlannerOrbitSeedTargets(issue, { layoutHint = null, cwd = null } = {}) {
   const text = `${String(issue?.title ?? '')}\n${String(issue?.body ?? '')}`;
   const targets = [];
   const seen = new Set();
+  let missingCandidates = 0;
+  let fallbackCount = 0;
+  let fallbackAttempts = 0;
   const add = (value, options = {}) => {
-    const target = existingRepositoryTarget(cwd, value, options);
-    if (!target || seen.has(target)) return;
-    seen.add(target);
-    targets.push(target);
+    const existing = existingRepositoryTarget(cwd, value, options);
+    if (existing) {
+      if (!seen.has(existing)) { seen.add(existing); targets.push(existing); }
+      return;
+    }
+    const missing = missingRepositoryPath(cwd, value, options);
+    if (!missing) return;
+    missingCandidates += 1;
+    if (fallbackCount >= ORBIT_NEARBY_MAX_FALLBACK_TARGETS ||
+        fallbackAttempts >= ORBIT_NEARBY_MAX_FALLBACK_ATTEMPTS) return;
+    fallbackAttempts += 1;
+    const contextual = nearbyConventionTarget(cwd, missing);
+    if (!contextual || seen.has(contextual)) return;
+    seen.add(contextual);
+    targets.push(contextual);
+    fallbackCount += 1;
   };
 
-  // Layout hints are already model-free current-worktree observations. For additive work, query
-  // existing convention files/directories before the not-yet-created target paths.
+  // Current-worktree hints remain ahead of issue targets and never change the target
+  // the Implementer is authorized to write. Fallback context is advisory only.
   for (const key of ['sourceConvention', 'sourceDirectory', 'testConvention', 'testDirectory', 'sourceTarget', 'testTarget']) {
     add(layoutHint?.[key], { trustedHint: true });
   }
-
   for (const match of text.matchAll(/\`([^\`\r\n]{1,400})\`/g)) add(match[1]);
-  for (const match of text.matchAll(/\b((?:[A-Za-z0-9_.@+-]+\/)+[A-Za-z0-9_.@+-]+(?::\d+(?:-\d+)?)?)\b/g)) add(match[1]);
-  return targets;
+  // Do not extract a path suffix from an absolute path or URL in unquoted prose.
+  for (const match of text.matchAll(/(?:^|[^\w./:])((?:[A-Za-z0-9_.@+-]+\/)+[A-Za-z0-9_.@+-]+(?::\d+(?:-\d+)?)?)(?![\w./])/gm)) {
+    add(match[1]);
+  }
+  return { targets, missingCandidates };
+}
+
+export function plannerOrbitSeedTargets(issue, options = {}) {
+  return selectPlannerOrbitSeedTargets(issue, options).targets;
 }
 
 function sanitizeFailureDiagnostic(value) {
@@ -329,7 +481,7 @@ export async function buildPlannerOrbitSeed(cwd, issue, {
     ? Math.ceil(timeBudgetMs)
     : PLANNER_ORBIT_SEED_TIME_BUDGET_MS;
   const deadlineAt = startedAt + boundedBudgetMs;
-  const requestedTargets = plannerOrbitSeedTargets(issue, { layoutHint, cwd });
+  const { targets: requestedTargets, missingCandidates } = selectPlannerOrbitSeedTargets(issue, { layoutHint, cwd });
   const initial = await plannerOrbitIndexState(cwd, { execFile: execFileFn, signal, deadlineAt, now });
 
   const attemptedTargets = [];
@@ -370,7 +522,8 @@ export async function buildPlannerOrbitSeed(cwd, issue, {
   };
 
   if (!initial.fresh) return { ...snapshot(), present: false, reason: initial.reason };
-  if (requestedTargets.length === 0) return { ...snapshot(), present: false, reason: 'no_task_targets' };
+  if (requestedTargets.length === 0) return { ...snapshot(), present: false,
+    reason: missingCandidates > 0 ? 'no_relevant_existing_context' : 'no_task_targets' };
 
   for (const target of requestedTargets) {
     const aborted = abortError(signal);
@@ -420,7 +573,8 @@ export async function buildPlannerOrbitSeed(cwd, issue, {
     };
   }
   if (sections.length === 0) {
-    return { ...snapshot(), present: false, reason: 'context_unavailable' };
+    return { ...snapshot(), present: false,
+      reason: queryFailures > (failureCategoryCounts.empty_output ?? 0) ? 'orbit_context_failed' : 'context_unavailable' };
   }
 
   const serialized = serializeSeedSections(sections, maxChars);
