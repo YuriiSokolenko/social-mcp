@@ -699,36 +699,6 @@ test('#652 terminal source patch fails closed when replayed and Docker seed inva
     'runtime restores the image-built patched seed, not an external stale cache');
 });
 
-function assertPatchedImplementerCompleted(label, sample, env, errInfo = { hasError: false }) {
-  const serializedMessages = JSON.stringify(sample.messages);
-  const { result, warnings, reads, fixtureDir } = runPatchedDecision({
-    agentName: 'implementer-coding-session', ...sample, env, errInfo,
-  });
-  assert.equal(result.exitCode, 0, label + ': exit status');
-  assert.equal(result.error, undefined, label + ': no missing-prose or hidden-error fallback');
-  assert.deepEqual(warnings, [], label + ': no sidecar warnings');
-  assert.deepEqual(reads, ['terminal-receipt.json', 'implementer-result.json'],
-    label + ': adapter reads the current-run receipt and metadata');
-  assert.equal(fs.existsSync(fixtureDir), false, label + ': sidecar fixtures removed');
-  assert.equal(JSON.stringify(sample.messages), serializedMessages, label + ': messages unchanged');
-  const assistant = sample.messages.findLast(message => message.role === 'assistant');
-  assert.equal(assistant.stopReason, 'toolUse', label + ': terminal toolUse');
-  assert.equal(assistant.content.some(part => part.type === 'text' && part.text?.trim()), false,
-    label + ': completion did not require synthetic assistant prose');
-}
-
-function assertPatchedImplementerRejected(label, sample, env, errInfo = { hasError: false },
-  expectedCode = 1) {
-  const { result, warnings, fixtureDir } = runPatchedDecision({
-    agentName: 'implementer-coding-session', ...sample, env, errInfo,
-  });
-  assert.equal(result.exitCode, expectedCode, label + ': upstream failure branch');
-  if (expectedCode === 1) assert.equal(result.error, 'Missing final text', label);
-  else assert.match(result.error, /failed/, label);
-  assert.deepEqual(warnings, [], label + ': validation rejection, not sidecar read failure');
-  assert.equal(fs.existsSync(fixtureDir), false, label + ': no leaked fixture files');
-}
-
 function assertTerminalResultHasNoProse(result, label) {
   // These are the pinned upstream SingleResult output-projection fields,
   // obtained from the patched adapter execution, not from input messages.
