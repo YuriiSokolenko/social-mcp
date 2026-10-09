@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { ruffArgs } from './ruff-spec.mjs';
 import { duplicatePackageRootDiagnostics } from './package-root-check.mjs';
@@ -517,6 +518,21 @@ function analyze(request, run, root, sandboxRoot = root) {
     summary = pytestSummary(combined);
   } else if (request.kind === 'node_test') {
     ({ diagnostics, summary } = parseNodeTest(combined));
+    // TAP locations originate inside /workspace in Docker, not on the runner.
+    // Render only paths within that sandbox root; never leak host paths.
+    diagnostics = diagnostics.map(item => {
+      if (!item.file) return item;
+      let source = item.file;
+      try {
+        if (source.startsWith('file://')) source = fileURLToPath(source);
+      } catch { return { ...item, file: null }; }
+      const base = path.resolve(sandboxRoot);
+      const relative = path.relative(base, path.isAbsolute(source) ? source : path.resolve(base, source));
+      return {
+        ...item,
+        file: relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? null : relative,
+      };
+    });
   }
   return { diagnostics, summary };
 }
