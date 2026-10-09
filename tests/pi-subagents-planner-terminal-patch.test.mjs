@@ -99,6 +99,10 @@ function upstreamDecisionFixture() {
     '      ? errInfo.errorType + " failed (exit " + errInfo.exitCode + "): " + errInfo.details',
     '      : errInfo.errorType + " failed with exit code " + errInfo.exitCode;',
     '  }',
+    // The pinned upstream result projection uses these fields after the output
+    // gate. Keep this fixture's final-output seam observable by assertions.
+    '  result.outputState = finalText.trim() ? "present" : "absent";',
+    '  result.finalOutput = finalText;',
     '  return result;',
     '}',
   ].join('\n');
@@ -106,21 +110,45 @@ function upstreamDecisionFixture() {
 
 function runPatchedDecision({ agentName = 'implementation-planner', messages = validMessages(),
   state = validState(), errInfo = { hasError: true, exitCode: 4, errorType: 'read', details: 'ENOENT' },
-  readError = null, receipt = null, metadata = null, sessionId = 'coding-632', env = {} } = {}) {
-  const patched = patchPiSubagentsSource(upstreamDecisionFixture());
-  const executable = patched.replace(/^import \{[^\n]+\} from "node:fs";\nimport \{ createHash \} from "node:crypto";\n/, '');
+  readError = null, receipt = null, metadata = null, sessionId = 'coding-632', env = {},
+  fixtureEvents = null, beforeExecution = null, providerLoop = false,
+  mutatePatchedSource = null } = {}) {
+  // These test-only probes observe the *generated* adapter's decision, not a
+  // separately mocked predicate. Do not expose sidecar contents in diagnostics.
+  const canonicalPatched = patchPiSubagentsSource(upstreamDecisionFixture());
+  const patched = mutatePatchedSource ? mutatePatchedSource(canonicalPatched) : canonicalPatched;
+  const decisionAnchor = 'const acceptedTerminalImplementer = trustedImplementerTerminalToolUse(messages, agent.name, errInfo);';
+  const envAnchor = '  const env = process.env;';
+  assert.equal(patched.split(decisionAnchor).length, 2, 'pinned adapter decision anchor');
+  assert.equal(patched.split(envAnchor).length, 2, 'pinned adapter env anchor');
+  const instrumented = patched
+    .replace(decisionAnchor, decisionAnchor + '\nrecordAdapterDecision(agent.name, acceptedTerminalImplementer);')
+    .replace(envAnchor, envAnchor + '\n  recordAdapterEnv(env);');
+  const executable = instrumented.replace(/^import \{[^\n]+\} from "node:fs";\nimport \{ createHash \} from "node:crypto";\n/, '');
   const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-adapter-'));
   const plannerSidecar = path.join(fixtureDir, 'planner-state.json');
   const terminalSidecar = path.join(fixtureDir, 'terminal-receipt.json');
   const metadataSidecar = path.join(fixtureDir, 'implementer-result.json');
   const warnings = [];
   const reads = [];
+  const adapterDecisions = [];
+  const envObservations = [];
+  const providerCalls = [];
   try {
     fs.writeFileSync(plannerSidecar, JSON.stringify(state));
     fs.writeFileSync(terminalSidecar, JSON.stringify(receipt));
     fs.writeFileSync(metadataSidecar, JSON.stringify(metadata));
+    fixtureEvents?.push({ phase: 'prepared', fixtureDir,
+      files: fs.readdirSync(fixtureDir).sort() });
     // The pinned adapter sees only this case's env, never the parent process.env.
     const ctx = {
+      recordAdapterDecision: (agent, accepted) => adapterDecisions.push({ agent, accepted }),
+      recordAdapterEnv: current => envObservations.push({
+        resumeActivePresent: Object.hasOwn(current, 'PI_RESUME_ACTIVE'),
+        resumeActiveValue: current.PI_RESUME_ACTIVE,
+        resumePatchPresent: Object.hasOwn(current, 'PI_RESUME_PATCH'),
+        resumePatchSet: Boolean(current.PI_RESUME_PATCH),
+      }),
       Buffer, createHash, existsSync: fs.existsSync, statSync: fs.statSync,
       process: { env: {
         PI_PLANNER_EVIDENCE_STATE_FILE: plannerSidecar,
@@ -141,10 +169,23 @@ function runPatchedDecision({ agentName = 'implementation-planner', messages = v
       console: { warn: value => warnings.push(String(value)) },
     };
     const runSingleAttempt = vm.runInNewContext(executable + '\nrunSingleAttempt', ctx, { timeout: 1000 });
-    return { result: runSingleAttempt({ name: agentName }, messages, errInfo),
-      warnings, reads: reads.map(name => path.basename(name)), fixtureDir };
+    beforeExecution?.(fixtureDir);
+    // Test-only provider-request seam. If the pinned foreground gate rejects a
+    // terminal toolUse, a caller would request another turn. This is not an
+    // inference test or a replacement for the production provider loop.
+    let result;
+    for (let index = 0; index < (providerLoop ? 2 : 1); index++) {
+      if (providerLoop) providerCalls.push({ request: index + 1 });
+      result = runSingleAttempt({ name: agentName }, messages, errInfo);
+      if (result.exitCode === 0) break;
+    }
+    return { result, warnings, reads: reads.map(name => path.basename(name)),
+      fixtureDir, adapterDecisions, envObservations, providerCalls };
   } finally {
+    const filesBeforeCleanup = fs.existsSync(fixtureDir) ? fs.readdirSync(fixtureDir).sort() : [];
     fs.rmSync(fixtureDir, { recursive: true, force: true });
+    fixtureEvents?.push({ phase: 'removed', fixtureDir,
+      filesBeforeCleanup, existsAfter: fs.existsSync(fixtureDir) });
   }
 }
 
@@ -688,6 +729,51 @@ function assertPatchedImplementerRejected(label, sample, env, errInfo = { hasErr
   assert.equal(fs.existsSync(fixtureDir), false, label + ': no leaked fixture files');
 }
 
+function assertTerminalResultHasNoProse(result, label) {
+  // These are the pinned upstream SingleResult output-projection fields,
+  // obtained from the patched adapter execution, not from input messages.
+  assert.equal(result.finalOutput, '', label + ': adapter did not synthesize final prose');
+  assert.equal(result.outputState, 'absent', label + ': no synthetic output marked present');
+}
+
+function assertPatchedImplementerCompleted(label, sample, env, errInfo = { hasError: false }) {
+  const serializedMessages = JSON.stringify(sample.messages);
+  const { result, warnings, reads, fixtureDir, adapterDecisions, providerCalls } = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...sample, env, errInfo, providerLoop: true,
+  });
+  assert.equal(adapterDecisions.length, 1, label + ': one adapter decision');
+  assert.equal(adapterDecisions[0].accepted, true, label + ': generated adapter accepted receipt');
+  assert.deepEqual(providerCalls, [{ request: 1 }],
+    label + ': no provider retry after terminal toolUse');
+  assert.equal(result.exitCode, 0, label + ': exit status');
+  assert.equal(result.error, undefined, label + ': no missing-prose or hidden-error fallback');
+  assertTerminalResultHasNoProse(result, label);
+  assert.deepEqual(warnings, [], label + ': no sidecar warnings');
+  assert.deepEqual(reads, ['terminal-receipt.json', 'implementer-result.json'],
+    label + ': adapter reads the current-run receipt and metadata');
+  assert.equal(fs.existsSync(fixtureDir), false, label + ': sidecar fixtures removed');
+  assert.equal(JSON.stringify(sample.messages), serializedMessages, label + ': messages unchanged');
+  const assistant = sample.messages.findLast(message => message.role === 'assistant');
+  assert.equal(assistant.stopReason, 'toolUse', label + ': terminal toolUse');
+  assert.equal(assistant.content.some(part => part.type === 'text' && part.text?.trim()), false,
+    label + ': original assistant toolUse contains no prose');
+}
+
+function assertPatchedImplementerRejected(label, sample, env, errInfo = { hasError: false },
+  expectedCode = 1) {
+  const { result, warnings, fixtureDir, adapterDecisions } = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...sample, env, errInfo,
+  });
+  assert.equal(adapterDecisions.length, 1, label + ': adapter guard evaluated');
+  assert.equal(adapterDecisions[0].accepted, false,
+    label + ': generated adapter rejected receipt');
+  assert.equal(result.exitCode, expectedCode, label + ': upstream failure branch');
+  if (expectedCode === 1) assert.equal(result.error, 'Missing final text', label);
+  else assert.match(result.error, /failed/, label);
+  assert.deepEqual(warnings, [], label + ': validation rejection, not sidecar read failure');
+  assert.equal(fs.existsSync(fixtureDir), false, label + ': no leaked fixture files');
+}
+
 test('#644 pinned adapter completes all permitted terminal toolUse modes without assistant prose', () => {
   const ownedEnvKeys = [
     'PI_VALIDATION_REPAIR', 'PI_VALIDATION_REPAIR_ATTEMPT',
@@ -761,39 +847,292 @@ test('#644 identical empty submit envelopes fail closed without their runtime-ow
   assertPatchedImplementerRejected('repair sidecar cannot pass as a primary attempt', repair, {});
 });
 
-test('#644 pinned adapter rejects stale receipts, broken hashes and incomplete tool envelopes', () => {
+// A valid neighbor makes each negative check specific: the only change between
+// the two executions is the one named by the case. Both decisions come from the
+// generated pi-subagents@0.76.1 adapter, not a standalone receipt predicate.
+function assertPairedAdapterRefusal(label, corrupt, {
+  sampleFactory = runtimeOwnedImplementerEnvelope,
+  env = { PI_RESUME_ACTIVE: 'true' },
+  errInfo = { hasError: false },
+  agentName = 'implementer-coding-session',
+  mutatePatchedSource = null,
+} = {}) {
+  const makeCase = () => ({
+    agentName, ...sampleFactory(), env: { ...env }, errInfo: { ...errInfo },
+    mutatePatchedSource,
+  });
+  const control = makeCase();
+  const allowed = runPatchedDecision({ ...control, providerLoop: true });
+  assert.equal(allowed.result.exitCode, 0, label + ': single-variable positive control');
+  assert.deepEqual(allowed.adapterDecisions, [{ agent: agentName, accepted: true }],
+    label + ': generated adapter accepts the control');
+  assert.equal(allowed.providerCalls.length, 1, label + ': control needed one request');
+
+  const invalid = makeCase();
+  corrupt(invalid);
+  assert.notDeepEqual(invalid, control, label + ': case actually changes a condition');
+  const refused = runPatchedDecision({ ...invalid, providerLoop: true });
+  assert.deepEqual(refused.adapterDecisions.map(({ accepted }) => accepted), [false, false],
+    label + ': generated adapter denies this invalid condition on both calls');
+  assert.equal(refused.adapterDecisions.length, 2, label + ': rejection triggers retry seam');
+  assert.equal(refused.result.exitCode, invalid.errInfo.hasError ? (invalid.errInfo.exitCode ?? 1) : 1,
+    label + ': upstream fallback, not adapter acceptance');
+  assert.equal(refused.providerCalls.length, 2, label + ': retry would be required');
+  assert.deepEqual(refused.warnings, [], label + ': not a sidecar read exception');
+  assert.equal(fs.existsSync(allowed.fixtureDir), false, label + ': control fixture removed');
+  assert.equal(fs.existsSync(refused.fixtureDir), false, label + ': invalid fixture removed');
+}
+
+test('#654 generated adapter negative guards have valid one-property controls', () => {
   const cases = [
-    ['missing receipt', s => { s.receipt = null; }],
-    ['wrong attempt', s => { s.receipt.attempt_id = 'validation-repair:2'; }],
     ['wrong run', s => { s.receipt.run_id = 'prior-run'; }],
+    ['wrong issue', s => { s.receipt.issue = 'old-issue'; }],
+    ['wrong attempt', s => { s.receipt.attempt_id = 'validation-repair:2'; }],
     ['wrong session', s => { s.receipt.session_id = 'old-session'; }],
-    ['missing metadata hash', s => { delete s.receipt.result_metadata_sha256; }],
-    ['altered metadata hash', s => { s.receipt.result_metadata_sha256 = '0'.repeat(64); }],
+    ['missing receipt', s => { s.receipt = null; }],
+    ['missing metadata digest', s => { delete s.receipt.result_metadata_sha256; }],
+    ['altered metadata digest', s => { s.receipt.result_metadata_sha256 = '0'.repeat(64); }],
     ['tampered metadata bytes', s => { s.metadata.files.push('src/b.py'); }],
+    ['missing candidate digest', s => { s.receipt.candidate_revision.digest = ''; }],
+    ['incorrect candidate base', s => { s.receipt.candidate_revision.base_commit = 'bad'; }],
+    ['unauthorized changed file', s => {
+      s.metadata.files = ['src/other.py'];
+      // Preserve a valid digest: refusal must reach the accepted-scope guard.
+      s.receipt.result_metadata_sha256 = createHash('sha256')
+        .update(JSON.stringify(s.metadata)).digest('hex');
+    }],
     ['duplicate submit_result call', s => { s.messages[0].content.push({
       ...s.messages[0].content[0], id: 'second-submit' }); }],
-    ['duplicate matching tool result', s => { s.messages.push({ ...s.messages[1] }); }],
+    ['duplicate matching result', s => { s.messages.push({ ...s.messages[1] }); }],
     ['missing tool result', s => { s.messages.pop(); }],
     ['wrong tool result id', s => { s.messages[1].toolCallId = 'previous-call'; }],
     ['wrong tool result name', s => { s.messages[1].toolName = 'read'; }],
-    ['tool result failed', s => { s.messages[1].isError = true; }],
+    ['failed submit_result', s => { s.messages[1].isError = true; }],
     ['truncated transport', s => { s.messages[0].stopReason = 'length'; }],
     ['assistant provider error', s => { s.messages[0].errorMessage = 'provider timeout'; }],
-    ['unparseable arguments', s => { s.messages[0].content[0].arguments = '{'; }],
+    ['unparseable tool arguments', s => { s.messages[0].content[0].arguments = '{'; }],
+    ['untrusted empty-mode arguments', s => {
+      s.messages[0].content[0].arguments = { resultText: 'not runtime-bound' };
+    }],
     ['nonterminal assistant message', s => { s.messages.push({
       role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'done' }] }); }],
+    ['wrong agent', s => { s.agentName = 'unrelated-coding-agent'; }],
+    ['missing terminal session env', s => {
+      s.env.PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID = '';
+    }],
+    ['wrong environment mode', s => { s.env.PI_RESUME_ACTIVE = 'false'; }],
   ];
-  for (const [label, corrupt] of cases) {
-    const sample = runtimeOwnedImplementerEnvelope();
-    corrupt(sample);
-    assertPatchedImplementerRejected(label, sample, { PI_RESUME_ACTIVE: 'true' });
-  }
-  for (const errorType of ['provider', 'abort', 'timeout', 'cancelled', 'transport', 'network']) {
-    const sample = runtimeOwnedImplementerEnvelope();
-    sample.messages.unshift({ role: 'toolResult', toolCallId: 'earlier-read',
+  for (const [label, corrupt] of cases) assertPairedAdapterRefusal(label, corrupt);
+
+  // The fresh resultText mode is a distinct contract from runtime-owned empty
+  // arguments, so also validate its text-to-metadata binding via the adapter.
+  assertPairedAdapterRefusal('fresh resultText mismatch', s => {
+    s.messages[0].content[0].arguments.resultText = 'foreign model claim';
+  }, { sampleFactory: validImplementerEnvelope, env: {} });
+
+  const repairSample = () => {
+    const s = runtimeOwnedImplementerEnvelope();
+    s.receipt.attempt_id = 'validation-repair:3';
+    return s;
+  };
+  assertPairedAdapterRefusal('validation repair attempt mismatch',
+    s => { s.env.PI_VALIDATION_REPAIR_ATTEMPT = '4'; }, {
+      sampleFactory: repairSample,
+      env: { PI_VALIDATION_REPAIR: 'true', PI_VALIDATION_REPAIR_ATTEMPT: '3' },
+    });
+
+  const earlierRead = () => {
+    const s = runtimeOwnedImplementerEnvelope();
+    s.messages.unshift({ role: 'toolResult', toolCallId: 'read-before-submit',
       toolName: 'read', isError: true });
-    assertPatchedImplementerRejected(errorType + ' failure', sample,
-      { PI_RESUME_ACTIVE: 'true' },
-      { hasError: true, errorType, exitCode: 4, details: 'fatal transport error' }, 4);
+    return s;
+  };
+  for (const errorType of ['provider', 'abort', 'timeout', 'cancelled', 'transport', 'network']) {
+    assertPairedAdapterRefusal(errorType + ' fatal error',
+      s => { s.errInfo.errorType = errorType; }, {
+        sampleFactory: earlierRead,
+        errInfo: { hasError: true, errorType: 'read', exitCode: 4, details: 'failure' },
+      });
   }
+});
+
+test('#654 successive VM cases isolate unset, undefined and conflicting mode flags', () => {
+  const watched = [
+    'PI_RESUME_ACTIVE', 'PI_RESUME_PATCH', 'PI_VALIDATION_REPAIR',
+    'PI_TERMINAL_RESULT_FILE', 'PI_IMPLEMENTER_RESULT_FILE',
+    'PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID',
+  ];
+  const hostSnapshot = () => watched.map(key => ({
+    key, own: Object.hasOwn(process.env, key), value: process.env[key],
+  }));
+  const hostBefore = hostSnapshot();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-mode-isolation-654-'));
+  const patch = path.join(dir, 'resume.patch');
+  const visited = new Set();
+  fs.writeFileSync(patch, 'diff --git a/a b/a\n');
+  try {
+    const cases = [
+      ['explicit true', { PI_RESUME_ACTIVE: 'true' }, true, true, 'true'],
+      ['explicit false even with patch', { PI_RESUME_ACTIVE: 'false', PI_RESUME_PATCH: patch }, false, true, 'false'],
+      ['undefined with patch', { PI_RESUME_ACTIVE: undefined, PI_RESUME_PATCH: patch }, true, true, undefined],
+      ['unset mode with patch', { PI_RESUME_PATCH: patch }, true, false, undefined],
+      ['empty flag suppresses patch', { PI_RESUME_ACTIVE: '', PI_RESUME_PATCH: patch }, false, true, ''],
+      ['unset with no patch', {}, false, false, undefined],
+      ['explicit true after rejections', { PI_RESUME_ACTIVE: 'true' }, true, true, 'true'],
+    ];
+    for (const [label, env, accepted, own, value] of cases) {
+      const fixtureEvents = [];
+      const result = runPatchedDecision({
+        agentName: 'implementer-coding-session', ...runtimeOwnedImplementerEnvelope(),
+        env, errInfo: { hasError: false }, fixtureEvents,
+      });
+      assert.deepEqual(result.adapterDecisions.map(item => item.accepted), [accepted],
+        label + ': observed guard verdict');
+      assert.equal(result.result.exitCode, accepted ? 0 : 1, label);
+      assert.equal(result.envObservations.length, 1, label + ': adapter read current env');
+      assert.equal(result.envObservations[0].resumeActivePresent, own, label + ': own flag');
+      assert.equal(result.envObservations[0].resumeActiveValue, value, label + ': flag value');
+      assert.equal(result.envObservations[0].resumePatchPresent,
+        Object.hasOwn(env, 'PI_RESUME_PATCH'), label + ': patch key presence');
+      assert.equal(fixtureEvents.length, 2, label + ': lifecycle events');
+      assert.equal(fixtureEvents[0].phase, 'prepared', label);
+      assert.deepEqual(fixtureEvents[0].files,
+        ['implementer-result.json', 'planner-state.json', 'terminal-receipt.json'], label);
+      assert.equal(fixtureEvents[1].phase, 'removed', label);
+      assert.deepEqual(fixtureEvents[1].filesBeforeCleanup, fixtureEvents[0].files, label);
+      assert.equal(fixtureEvents[1].existsAfter, false, label + ': removed by helper');
+      assert.equal(fs.existsSync(result.fixtureDir), false, label + ': no sidecar leak');
+      assert.equal(visited.has(result.fixtureDir), false, label + ': fresh directory per case');
+      visited.add(result.fixtureDir);
+      assert.deepEqual(hostSnapshot(), hostBefore, label + ': host env never modified');
+    }
+
+    for (const [label, options, error] of [
+      ['thrown before adapter execution', {
+        beforeExecution: () => { throw new Error('test-only-execution-failure'); },
+      }, /test-only-execution-failure/],
+      ['sidecar read throws', {
+        readError: new Error('private-sidecar-data'),
+      }, null],
+    ]) {
+      const fixtureEvents = [];
+      const input = { agentName: 'implementer-coding-session',
+        ...runtimeOwnedImplementerEnvelope(), env: { PI_RESUME_ACTIVE: 'true' },
+        errInfo: { hasError: false }, fixtureEvents, ...options };
+      if (error) assert.throws(() => runPatchedDecision(input), error, label);
+      else {
+        const out = runPatchedDecision(input);
+        assert.equal(out.result.exitCode, 1, label);
+        assert.deepEqual(out.adapterDecisions.map(item => item.accepted), [false], label);
+        assert.equal(out.warnings.length, 1, label);
+        assert.doesNotMatch(out.warnings[0], /private-sidecar-data/, label);
+      }
+      assert.equal(fixtureEvents.length, 2, label + ': cleanup even on failure');
+      assert.equal(fixtureEvents[0].phase, 'prepared', label);
+      assert.equal(fixtureEvents[1].phase, 'removed', label);
+      assert.deepEqual(fixtureEvents[1].filesBeforeCleanup, fixtureEvents[0].files, label);
+      assert.equal(fixtureEvents[1].existsAfter, false, label + ': no leaked sidecar');
+      assert.equal(fs.existsSync(fixtureEvents[0].fixtureDir), false, label);
+      assert.equal(visited.has(fixtureEvents[0].fixtureDir), false, label);
+      visited.add(fixtureEvents[0].fixtureDir);
+      assert.deepEqual(hostSnapshot(), hostBefore, label + ': host env retained on failure');
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    assert.equal(fs.existsSync(dir), false, 'outer fixture removed');
+    assert.deepEqual(hostSnapshot(), hostBefore, 'host env unchanged, even on failed fixture');
+  }
+});
+
+test('#654 provider-call seam checks accepted terminal modes and rejects a control', () => {
+  const accepted = [
+    ['fresh resultText', validImplementerEnvelope(), {}],
+    ['repair empty args', (() => {
+      const s = runtimeOwnedImplementerEnvelope();
+      s.receipt.attempt_id = 'validation-repair:1';
+      return s;
+    })(), { PI_VALIDATION_REPAIR: 'true' }],
+    ['explicit resume empty args', runtimeOwnedImplementerEnvelope(), { PI_RESUME_ACTIVE: 'true' }],
+    ['fresh already_satisfied', (() => {
+      const s = runtimeOwnedImplementerEnvelope();
+      s.metadata.outcome = s.receipt.outcome = 'already_satisfied';
+      s.metadata.files = [];
+      s.messages[0].content[0].arguments = { already_satisfied: true };
+      s.receipt.result_metadata_sha256 = createHash('sha256')
+        .update(JSON.stringify(s.metadata)).digest('hex');
+      return s;
+    })(), {}],
+    ['runtime-owned already_satisfied', (() => {
+      const s = runtimeOwnedImplementerEnvelope();
+      s.metadata.outcome = s.receipt.outcome = 'already_satisfied';
+      s.metadata.files = [];
+      s.receipt.result_metadata_sha256 = createHash('sha256')
+        .update(JSON.stringify(s.metadata)).digest('hex');
+      return s;
+    })(), { PI_RESUME_ACTIVE: 'true' }],
+  ];
+  for (const [label, sample, env] of accepted) {
+    const output = runPatchedDecision({
+      agentName: 'implementer-coding-session', ...sample, env, providerLoop: true,
+      errInfo: { hasError: false },
+    });
+    assert.equal(output.result.exitCode, 0, label);
+    assert.deepEqual(output.providerCalls, [{ request: 1 }], label + ': exactly one provider turn');
+    assert.deepEqual(output.adapterDecisions.map(item => item.accepted), [true], label);
+    assertTerminalResultHasNoProse(output.result, label);
+  }
+  const bad = runtimeOwnedImplementerEnvelope();
+  const refused = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...bad, env: {},
+    errInfo: { hasError: false }, providerLoop: true,
+  });
+  assert.equal(refused.result.exitCode, 1);
+  assert.deepEqual(refused.providerCalls, [{ request: 1 }, { request: 2 }],
+    'negative control demonstrates that the provider-request seam observes a retry');
+  assert.deepEqual(refused.adapterDecisions.map(item => item.accepted), [false, false]);
+});
+
+function replaceUniqueAdapterFragment(source, before, after) {
+  assert.equal(source.split(before).length, 2, 'mutation must target exactly one generated guard');
+  return source.replace(before, after);
+}
+
+test('#654 mutation check: disabled receipt guards turn paired negative assertions red', () => {
+  const mutants = [
+    ['run binding', 'receipt.run_id !== run',
+      s => { s.receipt.run_id = 'foreign-run'; }],
+    ['metadata digest', "receipt.result_metadata_sha256 !== createHash('sha256').update(metadataBytes).digest('hex')",
+      s => { s.receipt.result_metadata_sha256 = '0'.repeat(64); }],
+  ];
+  for (const [label, target, corrupt] of mutants) {
+    // Baseline passes with the real generated adapter before injecting the
+    // temporary mutation; no production file or shared module is modified.
+    assertPairedAdapterRefusal(label + ' baseline', corrupt);
+    assert.throws(() => assertPairedAdapterRefusal(label + ' mutant', corrupt, {
+      mutatePatchedSource: source => replaceUniqueAdapterFragment(source, target, 'false'),
+    }), error => error.code === 'ERR_ASSERTION' &&
+      error.message.includes('generated adapter denies this invalid condition'),
+    label + ': the paired negative test detects a deliberately disabled guard');
+  }
+});
+
+test('#654 mutation check: result-prose assertion fails on synthetic adapter output', () => {
+  const sample = validImplementerEnvelope();
+  const normal = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...sample, errInfo: { hasError: false },
+  });
+  assertTerminalResultHasNoProse(normal.result, 'baseline');
+
+  const mutant = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...sample, errInfo: { hasError: false },
+    mutatePatchedSource: source => replaceUniqueAdapterFragment(source,
+      '  result.finalOutput = finalText;',
+      '  result.finalOutput = "synthetic assistant prose";'),
+  });
+  assert.equal(mutant.result.exitCode, 0, 'mutation changes output, not terminal acceptance');
+  assert.deepEqual(mutant.adapterDecisions.map(item => item.accepted), [true]);
+  assert.throws(() => assertTerminalResultHasNoProse(mutant.result, 'mutant'),
+    error => error.code === 'ERR_ASSERTION' &&
+      error.message.includes('adapter did not synthesize final prose'),
+    'a successful exit status with fabricated prose must fail the result assertion');
 });
