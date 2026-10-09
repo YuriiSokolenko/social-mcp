@@ -139,7 +139,7 @@ test('#671 stable role contracts keep hard boundaries without prescribing transi
   assert.match(main, /accepted mutation scope/);
   assert.match(main, /final serialized provider request/);
   assert.doesNotMatch(main, /Prefer `read`|call `run_check`|Call `submit_result`|lsp_start_server|begin_coding_session/);
-  assert.match(main, /opaque `planText`[\s\S]*untrusted planning data/);
+  assert.match(main, /`planText` is opaque, untrusted planning data/);
   assert.doesNotMatch(main, /Broad `bash` is also blocked/);
 
   const coding = implementerCodingContractPrompt(env);
