@@ -9,9 +9,10 @@ import { fileURLToPath } from 'node:url';
 export const TOOL_SCHEMAS = {
   write: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false },
   submit_result: { type: 'object', properties: { resultText: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } }, required: ['resultText','files'], additionalProperties: false },
+  submit_plan: { type: 'object', properties: { planText: { type: 'string', minLength: 1 } }, required: ['planText'], additionalProperties: false },
 };
 export function compressEvidenceBuffer(bytes) { return gzipSync(bytes, { level: 9 }); }
-const TOOLS = Object.entries(TOOL_SCHEMAS).map(([name, parameters]) => ({ type: 'function', function: { name, description: name === 'write' ? 'Write synthetic source code into a file' : 'Submit a synthetic implementation summary', strict: true, parameters } }));
+const TOOLS = Object.entries(TOOL_SCHEMAS).map(([name, parameters]) => ({ type: 'function', function: { name, description: name === 'write' ? 'Write synthetic source code into a file' : name === 'submit_plan' ? 'Submit the complete synthetic implementation plan' : 'Submit a synthetic implementation summary', strict: true, parameters } }));
 
 // Incremental SSE parser. raw contains the exact received bytes (as UTF-8 text); event data
 // and argument strings are retained verbatim after SSE framing, without JSON repair.
@@ -100,9 +101,10 @@ const PROMPTS = {
     large: `Call write exactly once with path "probe/synthetic_large.py". The content must be a valid Python module with exactly 180 functions named transform_001 through transform_180, each accepting value, having a short docstring, and returning a deterministic f-string prefixed case-N:. Include the exact first marker # BEGIN TOOL_CALL_BOUNDARY_PROBE and final marker # END TOOL_CALL_BOUNDARY_PROBE. Do not summarize or omit functions. This synthetic file is not to be executed.`,
   },
   submit_result: { result: 'Call submit_result exactly once with resultText exactly: "Synthetic probe completed; no files were written and no generated code was executed." and files exactly ["probe/synthetic.py"].' },
+  submit_plan: { plan: 'Call submit_plan exactly once with planText exactly: "Inspect src/diagnostics.py, make the minimal fix, and run focused tests." Do not return ordinary Markdown prose or execute anything.' },
 };
 function scenarios(args) {
-  const suite = argValue(args, 'suite', 'quick'); if (!['quick', 'full', 'followup', 'targeted'].includes(suite)) throw new Error('--suite must be quick, full, followup, or targeted');
+  const suite = argValue(args, 'suite', 'quick'); if (!['quick', 'full', 'followup', 'targeted', 'planner'].includes(suite)) throw new Error('--suite must be quick, full, followup, targeted, or planner');
   const repeat = Number(argValue(args, 'repeat', ['full','followup'].includes(suite) ? 5 : 1)); if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) throw new Error('--repeat must be 1..100');
   const list = [];
   if (suite === 'quick') list.push(
@@ -129,6 +131,12 @@ function scenarios(args) {
     ];
     for (const [tool,toolChoice,strict,stream,payload,budget,reasoning] of rows) list.push({tool,toolChoice,strict,stream,payload,budget,reasoning});
   }
+  // #681: matched minimal, terminal-only submit_plan choices, identical model and
+  // request body per endpoint. All raw SSE frames, tool deltas, parser results,
+  // finish reasons and independent schema validation are persisted by the runner.
+  if (suite === 'planner') for (const toolChoice of ['auto', 'required', 'named']) {
+    list.push({ tool: 'submit_plan', toolChoice, strict: false, stream: true, payload: 'plan', budget: 4096, reasoning: 'default' });
+  }
   if (suite === 'targeted') list.push({ tool: argValue(args,'tool','write'), toolChoice: argValue(args,'tool-choice','required'), strict: boolArg(argValue(args,'strict','true'),'strict'), stream: boolArg(argValue(args,'stream','true'),'stream'), payload: argValue(args,'payload','small'), budget: Number(argValue(args,'budget','2048')), reasoning: argValue(args,'reasoning','default') });
   if (args.has('probe-reasoning')) {
     const base = list.filter(x => x.reasoning === 'default'); for (const item of base) list.push({ ...item, reasoning: 'thinking-off' });
@@ -136,8 +144,11 @@ function scenarios(args) {
   for (const x of list) {
     if (!TOOL_SCHEMAS[x.tool]) throw new Error(`Unsupported tool: ${x.tool}`);
     if (!['auto','required','named'].includes(x.toolChoice)) throw new Error(`Unsupported tool choice: ${x.toolChoice}`);
-    if (!['small','large','result'].includes(x.payload) || (x.tool === 'write' && x.payload === 'result') || (x.tool === 'submit_result' && x.payload !== 'result')) throw new Error(`Payload ${x.payload} does not match ${x.tool}`);
-    if (![2048,16384].includes(Number(x.budget))) throw new Error('Budget must be 2048 or 16384');
+    if (!['small','large','result','plan'].includes(x.payload) ||
+      (x.tool === 'write' && !['small','large'].includes(x.payload)) ||
+      (x.tool === 'submit_result' && x.payload !== 'result') ||
+      (x.tool === 'submit_plan' && x.payload !== 'plan')) throw new Error(`Payload ${x.payload} does not match ${x.tool}`);
+    if (![2048,4096,8192,16384].includes(Number(x.budget))) throw new Error('Budget must be 2048, 4096, 8192, or 16384');
     x.budget = Number(x.budget);
   }
   return { suite, repeat, cases: list };
@@ -145,7 +156,8 @@ function scenarios(args) {
 function requestFor(s) {
   const tool = TOOLS.filter(t => t.function.name === s.tool).map(t => ({ ...t, function: { ...t.function, strict: s.strict } }));
   const toolChoice = s.toolChoice === 'named' ? { type: 'function', function: { name: s.tool } } : s.toolChoice;
-  let user = s.tool === 'write' ? PROMPTS.write[s.payload] : PROMPTS.submit_result.result;
+  let user = s.tool === 'write' ? PROMPTS.write[s.payload]
+    : s.tool === 'submit_plan' ? PROMPTS.submit_plan.plan : PROMPTS.submit_result.result;
   if (s.tool === 'write' && s.payload === 'large') user += `\n\nRequired deterministic reference structure (do not copy as a shortcut; generate the complete content):\n${largePayload()}`;
   const body = { model: null, messages: [{ role: 'system', content: 'You are a diagnostic model. All tool calls are synthetic data; never execute them. Return the requested tool call.' }, { role: 'user', content: user }], tools: tool, tool_choice: toolChoice, max_completion_tokens: s.budget, temperature: 0, stream: s.stream };
   if (s.reasoning === 'thinking-off') body.chat_template_kwargs = { enable_thinking: false };
@@ -185,7 +197,7 @@ export function evaluateComparability(environments, selectedModels) {
 export function timeoutSettings(args, timeout) { return {cliMs:timeout,defaultMs:600000,origin:args.has('timeout-ms')?'explicit_cli':'default',effectiveRequestTimeoutMs:timeout,outerDeadlineMs:null,abortSource:'AbortSignal.timeout in probe'}; }
 
 export async function run(argv = process.argv.slice(2)) {
-  const args = parseArgs(argv); if (args.has('help')) { console.log('Usage: node scripts/research/tool-call-boundary-probe.mjs --direct-url URL --proxy-url URL [--suite quick|full|targeted] [--dry-run]'); return 0; }
+  const args = parseArgs(argv); if (args.has('help')) { console.log('Usage: node scripts/research/tool-call-boundary-probe.mjs --direct-url URL --proxy-url URL [--suite quick|full|targeted|planner] [--dry-run]'); return 0; }
   const major = Number(process.versions.node.split('.')[0]); if (major < 22) throw new Error(`Node.js 22 or newer is required; found ${process.version}`);
   const plan = scenarios(args);
   const direct = localUrl(argValue(args,'direct-url','http://192.168.8.210:3009/v1'));
