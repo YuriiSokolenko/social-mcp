@@ -164,6 +164,54 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
       });
       assert.equal(directStale.isError, true);
       assert.match(directStale.content[0].text, /no-op limit reached/);
+      // Pi's own "Tool X not found" may be delivered through either or both
+      // executor callbacks, independently of the normal tool_call gate.
+      const fallbackHandlers = new Map();
+      const fallbackDefinitions = new Map();
+      const fallbackSteers = [];
+      let fallbackActive = [...initiallyRegistered];
+      const fallbackPi = {
+        ...pi,
+        registerTool: def => {
+          fallbackDefinitions.set(def.name, def);
+          if (!fallbackActive.includes(def.name)) fallbackActive.push(def.name);
+        },
+        on: (name, fn) => fallbackHandlers.set(name, fn),
+        getAllTools: () => [...fallbackDefinitions.values()],
+        getActiveTools: () => [...fallbackActive],
+        setActiveTools: selected => { fallbackActive = [...selected]; },
+        sendUserMessage: async message => { fallbackSteers.push(message); },
+      };
+      let fallbackAborts = 0;
+      const fallbackCtx = { ...context, abort: async () => { fallbackAborts += 1; } };
+      runtime(fallbackPi);
+      const fallbackRaw = {
+        ...raw,
+        tools: [...new Set([...initiallyRegistered, ...fallbackDefinitions.keys()])].map(name => ({
+          type: 'function', function: { name, description: name, parameters: { type: 'object' } },
+        })),
+      };
+      const fbWire = fallbackHandlers.get('before_provider_request')({ payload: fallbackRaw });
+      assert.ok(!names(fbWire).includes('lsp_start_server'));
+      const missing = id => ({
+        toolName: 'lsp_start_server', toolCallId: id, isError: true,
+        result: { content: [{ type: 'text', text: 'Tool lsp_start_server not found' }] },
+      });
+      await fallbackHandlers.get('tool_execution_end')(missing('fb-1'), fallbackCtx);
+      const duplicateResult = await fallbackHandlers.get('tool_result')(missing('fb-1'), fallbackCtx);
+      assert.equal(duplicateResult.isError, true);
+      assert.match(duplicateResult.content[0].text, /request_capabilities.*group=lsp/);
+      assert.equal(fallbackAborts, 0, 'two hooks for one call must spend one attempt');
+      assert.equal(fallbackSteers.length, 1);
+      await fallbackHandlers.get('tool_call')({
+        toolName: 'lsp_start_server', toolCallId: 'fb-2', input: {},
+      }, fallbackCtx);
+      await fallbackHandlers.get('tool_result')(missing('fb-2'), fallbackCtx);
+      await fallbackHandlers.get('tool_execution_end')(missing('fb-3'), fallbackCtx);
+      assert.equal(fallbackAborts, 0, 'mixed hooks with three unique calls permit correction');
+      const fourthMissing = await fallbackHandlers.get('tool_result')(missing('fb-4'), fallbackCtx);
+      assert.equal(fallbackAborts, 1, 'fourth unique hidden call through fallback must abort');
+      assert.match(fourthMissing.content[0].text, /preserve the worktree/i);
     `;
     const result = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', loader, '--input-type=module', '-e', script], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 20000,
@@ -177,6 +225,13 @@ test('#684 real fresh Main provider hook filters first schema and defers grants 
     assert.match(result.stdout, /"toolSchemaBytesBeforeRaw":\d+/);
     assert.match(result.stdout + result.stderr, /PI_MAIN_PROFILE_HIDDEN_ABORT/);
     assert.match(result.stdout + result.stderr, /PI_MAIN_CAPABILITY_NOOP_LIMIT/);
+    const hiddenRecords = result.stderr.split('\n')
+      .filter(line => line.includes('PI_MAIN_PROFILE_TOOL_HIDDEN '))
+      .map(line => JSON.parse(line.split('PI_MAIN_PROFILE_TOOL_HIDDEN ')[1]));
+    const fallbackRecords = hiddenRecords.filter(record => record.source === 'missing_executor');
+    assert.deepEqual(fallbackRecords.map(record => record.count), [1, 3, 4],
+      'the fallback and normal tool_call paths share a count without duplicates');
+    assert.equal(hiddenRecords.filter(record => record.source === 'tool_call' && record.count === 2).length >= 1, true);
     const finalLogs = result.stdout.split('\n').filter(line => line.includes('PI_MAIN_TOOL_PROFILE_FINAL '));
     assert.ok(finalLogs.length > 0);
     for (const log of finalLogs) {
