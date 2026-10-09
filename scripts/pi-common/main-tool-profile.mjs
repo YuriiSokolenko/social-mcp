@@ -6,6 +6,9 @@ export const MAIN_CAPABILITY_GROUPS = Object.freeze([
   'docs', 'lsp', 'history', 'delegation', 'extended',
 ]);
 export const MAX_MAIN_CAPABILITY_ESCALATIONS = 3;
+// Distinct from successful grants and from the generic unavailable-tool budget.
+export const MAX_MAIN_CAPABILITY_NOOPS = 3;
+export const MAX_MAIN_PROFILE_HIDDEN_CORRECTIONS = 3;
 
 // Required implementation, safety, exact recovery and terminal capabilities.
 // Do not use task-text heuristics to remove these: a new file and an existing
