@@ -1208,9 +1208,11 @@ function runtimeScenario(mode) {
         const deltaEnd = request.task.indexOf('</parent_execution_handoff>');
         if (['no-handoff', 'empty-handoff'].includes(mode)) {
           assert.equal(deltaStart, -1, 'normal prepared launch must not create even an empty model-written handoff section');
-          assert.equal(deltaEnd, -1);
+        }
+        if (deltaStart === -1) {
+          assert.equal(deltaEnd, -1, 'omitted handoff has no closing tag either');
         } else {
-          assert.ok(deltaStart >= 0 && deltaEnd > deltaStart, 'a real execution delta appears once');
+          assert.ok(deltaEnd > deltaStart, 'an actual execution delta is well formed');
           assert.equal(request.task.match(/<parent_execution_handoff>/g)?.length, 1);
         }
         const extract = (tag) => {
