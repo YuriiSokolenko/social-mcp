@@ -412,6 +412,23 @@ test('#632 completed coding child terminal toolUse needs no final assistant pros
   assert.deepEqual(warnings, []);
 });
 
+test('#665 #662 parseable tool arguments with stop do not bypass pinned adapter admission', () => {
+  const valid = validImplementerEnvelope();
+  assert.equal(acceptedTerminalImplementerReceipt(
+    valid.messages, valid.receipt, Buffer.from(JSON.stringify(valid.metadata)),
+    valid.env, 'coding-632', { hasError: false }), true);
+  const stop = validImplementerEnvelope();
+  stop.messages[0].stopReason = 'stop';
+  assert.equal(acceptedTerminalImplementerReceipt(
+    stop.messages, stop.receipt, Buffer.from(JSON.stringify(stop.metadata)),
+    stop.env, 'coding-632', { hasError: false }), false);
+  const result = runPatchedDecision({
+    agentName: 'implementer-coding-session', ...stop, errInfo: { hasError: false },
+  }).result;
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.error, 'Missing final text');
+});
+
 test('#632 adapter rejects stale/foreign/tampered receipt and incomplete terminal transport', () => {
   const cases = [
     ['foreign run', ({receipt}) => { receipt.run_id = 'other'; }],
