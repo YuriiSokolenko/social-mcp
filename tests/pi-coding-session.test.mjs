@@ -2463,7 +2463,7 @@ function runtimeScenario(mode) {
         assert.match(tools.get('begin_coding_session').description, /Preparation fallback: no Planner planText is available/);
       }
       if (mode === 'restored') {
-        assert.match(tools.get('begin_coding_session').description, /Restored\/validation-repair work is terminal-only/);
+        assert.ok(tools.get('begin_coding_session').description.includes('Restored/validation-repair work is terminal-only'));
       }
       const launchArgs = mode === 'no-handoff'
         ? { reason: 'Start prepared implementation' }
