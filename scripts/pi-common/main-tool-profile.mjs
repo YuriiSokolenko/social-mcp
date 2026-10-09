@@ -24,7 +24,7 @@ export function optionalMainToolGroup(name) {
   if (typeof name !== 'string' || !name) return 'extended';
   if (/^(?:lsp_|mcp__.*(?:lsp|language_server))/i.test(name)) return 'lsp';
   if (/(?:searx|context7|web_search|web_fetch|fetch_url|search_web|docs_|documentation|mcp__.*(?:search|fetch|browser))/i.test(name)) return 'docs';
-  if (/(?:git_history|git_log|git_show|git_blame|git_diff|git_commit|git_branch|commit_history|revision_history)/i.test(name)) return 'history';
+  if (/(?:git_history|git_log|git_show|git_blame|git_diff|git_commit|git_branch|commit_history|revision_history|blame_context|commit_story|file_history|search_commits|file_contributors)/i.test(name)) return 'history';
   if (/(?:subagent|delegate|delegation|spawn_agent|parallel_agent)/i.test(name)) return 'delegation';
   return 'extended';
 }
