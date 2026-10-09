@@ -26,7 +26,7 @@ import {
 import { implementerCodingContractPrompt, stageConfig } from './pi-common/stage-config.mjs';
 import { assertMainPromptComposition, mainPromptRequestMetadata } from './pi-common/main-prompt-observability.mjs';
 import { applicableRuntimeActionSteer, compactRuntimeActionSteers } from './pi-common/runtime-steering.mjs';
-import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
+import { activeToolGuidance, capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, mergeNewlyActiveTools, providerToolNames, reconcileProviderToolSurface, withProviderCapabilityInstructions } from './pi-common/session-state.mjs';
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
@@ -2120,8 +2120,8 @@ export default function (pi) {
           })}`);
         }
         if (terminalRecoveryRequiredTool) {
-          const selected = tools.filter(tool =>
-            controllerToolName(tool.function?.name ?? tool.name) === terminalRecoveryRequiredTool
+          const selected = constrainTerminalRecoveryTools(
+            tools, terminalRecoveryRequiredTool, controllerToolName
           );
           // Exact recovery is the only permissible route. A missing/deferred
           // definition must leave an empty wire surface, never restore the
