@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PREPARATION_FALLBACK_EVIDENCE_BUDGET, ProgressController, actionRequiredToolNames } from '../scripts/pi-common/progress-controller.mjs';
-import { capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, mergeNewlyActiveTools, providerToolNames, withProviderCapabilityInstructions } from '../scripts/pi-common/session-state.mjs';
+import { capabilitySnapshotGuidance, classifyMissingExecutor, constrainTerminalRecoveryTools, implementerRequestPhaseSnapshot, mergeNewlyActiveTools, providerToolNames, withProviderCapabilityInstructions } from '../scripts/pi-common/session-state.mjs';
 import { stageConfig } from '../scripts/pi-common/stage-config.mjs';
+import { readScript } from './helpers/resolved-source.mjs';
 
 const LSP = { server_id: 'python', workspace_root: '/work/tree' };
 
@@ -200,13 +201,13 @@ test('restored checkpoint remains terminal-only even if inspection and edit tool
     tools: [nestedTool('read'), flatTool('write'), nestedTool('submit_result')],
     tool_choice: 'required',
   };
-  const first = guidanceFor(payload, { resumed: true, repairAuthorized: false, preparationState: 'PREPARED' });
+  const first = guidanceFor(payload, implementerRequestPhaseSnapshot({ resumed: true, preparationState: 'PREPARED' }));
   assert.match(outboundGuidance(first), /terminal-only state: call submit_result with no arguments immediately/);
   assert.doesNotMatch(outboundGuidance(first), /Mutation tools available|Direct inspection|Prepared fresh Main|begin_result_submission/);
   assert.equal(first.tool_choice, payload.tool_choice);
   assert.deepEqual(first.messages, payload.messages, 'no system or user messages injected');
   assert.deepEqual(providerToolNames(first), providerToolNames(payload));
-  assert.strictEqual(guidanceFor(first, { resumed: true, repairAuthorized: false }), first, 'idempotent repeated hook');
+  assert.strictEqual(guidanceFor(first, implementerRequestPhaseSnapshot({ resumed: true })), first, 'idempotent repeated hook');
 });
 
 test('restored integration failure routes exclusively through its exact recovery tool', () => {
@@ -214,15 +215,15 @@ test('restored integration failure routes exclusively through its exact recovery
   const selected = constrainTerminalRecoveryTools(tools, 'recover_worktree');
   assert.deepEqual(providerToolNames({ tools: selected }), ['recover_worktree']);
   const payload = { messages: [{ role: 'user', content: 'restored' }], tools: selected, tool_choice: 'required' };
-  const outgoing = guidanceFor(payload, {
-    resumed: true, terminalRecoveryRequiredTool: 'recover_worktree', repairAuthorized: true,
-  });
+  const outgoing = guidanceFor(payload, implementerRequestPhaseSnapshot({
+    resumed: true, terminalRecoveryRequiredTool: 'recover_worktree',
+  }));
   assert.match(outboundGuidance(outgoing), /use recover_worktree only for the current exact obligation/);
   assert.doesNotMatch(outboundGuidance(outgoing), /call submit_result|Mutation tools available|Direct inspection|Use run_check/);
   assert.equal(outgoing.tool_choice, 'required');
-  assert.strictEqual(guidanceFor(outgoing, {
-    resumed: true, terminalRecoveryRequiredTool: 'recover_worktree', repairAuthorized: true,
-  }), outgoing);
+  assert.strictEqual(guidanceFor(outgoing, implementerRequestPhaseSnapshot({
+    resumed: true, terminalRecoveryRequiredTool: 'recover_worktree',
+  })), outgoing);
 });
 
 test('deferred terminal recovery fails closed without alternative edit, inspection or terminal tools', () => {
@@ -232,7 +233,9 @@ test('deferred terminal recovery fails closed without alternative edit, inspecti
   let missingCarrier = null;
   const payload = { messages: [{ role: 'user', content: 'recovery' }], tools: selected };
   const snapshot = {
-    resumed: true, terminalRecoveryRequiredTool: 'retry_last_failed_check',
+    ...implementerRequestPhaseSnapshot({
+      resumed: true, terminalRecoveryRequiredTool: 'retry_last_failed_check',
+    }),
     explainDeferred: true, deferredTools: ['retry_last_failed_check'],
     executableTools: [],
   };
@@ -256,7 +259,7 @@ test('validation-repair uses only serialized targeted edits, diagnostics and per
     tools: [flatTool('read'), nestedTool('safe_edit'), flatTool('retry_last_failed_check'), nestedTool('run_check'), flatTool('submit_result')],
     tool_choice: 'auto',
   };
-  const snapshot = { validationRepair: true, repairAuthorized: true };
+  const snapshot = implementerRequestPhaseSnapshot({ validationRepair: true });
   const outgoing = guidanceFor(payload, snapshot);
   const contract = outboundGuidance(outgoing);
   assert.match(contract, /Trusted targeted repair/);
@@ -276,7 +279,7 @@ test('validation-repair without a serialized submit_result explains missing term
     messages: [{ role: 'user', content: 'targeted validation diagnostics' }],
     tools: [nestedTool('write'), flatTool('run_check')],
   };
-  const outgoing = guidanceFor(payload, { validationRepair: true, repairAuthorized: true });
+  const outgoing = guidanceFor(payload, implementerRequestPhaseSnapshot({ validationRepair: true }));
   assert.match(outboundGuidance(outgoing), /Targeted mutation tools available: write/);
   assert.match(outboundGuidance(outgoing), /terminal action submit_result is unavailable in this request/);
   assert.doesNotMatch(outboundGuidance(outgoing), /call submit_result with no arguments|Call submit_result|begin_result_submission|repo_search/);
@@ -292,14 +295,14 @@ test('resumed missing submit_result preserves phase status with existing carrier
     messages: [{ role: 'user', content: 'restored work' }],
     tools: [flatTool('read')],
   };
-  const outgoing = guidanceFor(payload, { resumed: true });
+  const outgoing = guidanceFor(payload, implementerRequestPhaseSnapshot({ resumed: true }));
   assert.equal(outgoing.messages, payload.messages);
   assert.match(outboundGuidance(outgoing), /terminal action submit_result is unavailable in this request/);
   assert.doesNotMatch(outboundGuidance(outgoing), /call submit_result with no arguments|Direct inspection/);
 });
 
 test('zero-tool text carrier is safe; zero-tool linked tail has no new carrier', () => {
-  const snapshot = { resumed: true, executableTools: [] };
+  const snapshot = { ...implementerRequestPhaseSnapshot({ resumed: true }), executableTools: [] };
   const safe = { messages: [{ role: 'user', content: 'restored' }], tools: [] };
   const updated = withProviderCapabilityInstructions(safe, snapshot, { trustedRuntimeEnvelope: true });
   assert.equal(updated.messages.length, 1);
@@ -315,6 +318,87 @@ test('zero-tool text carrier is safe; zero-tool linked tail has no new carrier',
   });
   assert.strictEqual(absent, linked, 'no safe suffix on tool output or new role');
   assert.deepEqual(failures, ['no_safe_text_or_tool_carrier']);
+});
+
+test('trusted runtime snapshot never promotes resumed or coding repair into Main repair authority', () => {
+  const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
+  assert.match(runtime, /\.\.\.implementerRequestPhaseSnapshot\(\{/);
+  assert.match(runtime, /codingSession: Boolean\(codingSession\)/);
+  assert.match(runtime, /resumed: resumedImplementer/);
+  assert.match(runtime, /validationRepair,/);
+  assert.match(runtime, /codingRepair: Boolean\(codingSession && codingRepairWindowActive\(\)\)/);
+  assert.match(runtime, /terminalRecoveryRequiredTool,/);
+
+  const restored = implementerRequestPhaseSnapshot({ resumed: true, codingRepair: true });
+  assert.equal(restored.mode, 'main');
+  assert.equal(restored.repairAuthorized, false);
+  assert.equal(restored.codingRepair, false);
+  const restoredWithValidation = implementerRequestPhaseSnapshot({ resumed: true, validationRepair: true });
+  assert.equal(restoredWithValidation.repairAuthorized, false, 'restored checkpoint takes priority');
+
+  const validation = implementerRequestPhaseSnapshot({ validationRepair: true });
+  assert.equal(validation.repairAuthorized, true);
+  assert.equal(validation.mode, 'main');
+
+  const child = implementerRequestPhaseSnapshot({ codingSession: true, codingRepair: true });
+  assert.equal(child.mode, 'coding');
+  assert.equal(child.codingRepair, true);
+  assert.equal(child.repairAuthorized, false, 'child repair may not become a Main permission');
+  assert.equal(implementerRequestPhaseSnapshot({ codingSession: true, validationRepair: true }).repairAuthorized, false);
+});
+
+test('coding repair window keeps isolated-session boundary and never borrows Main repair hints', () => {
+  const payload = {
+    messages: [{ role: 'user', content: 'compact coding handoff' }],
+    tools: [nestedTool('read'), flatTool('safe_edit'), nestedTool('submit_result')],
+    tool_choice: 'required',
+  };
+  const phase = implementerRequestPhaseSnapshot({ codingSession: true, codingRepair: true });
+  const result = guidanceFor(payload, phase);
+  assert.match(outboundGuidance(result), /Isolated coding session: the parent tool inventory and navigation policy are not executable here/);
+  assert.match(outboundGuidance(result), /Mutation tools available: safe_edit/);
+  assert.doesNotMatch(outboundGuidance(result), /Trusted targeted repair|Prepared fresh Main|Terminal-only state: call/);
+  assert.deepEqual(result.messages, payload.messages);
+  assert.equal(result.tool_choice, 'required');
+  assert.strictEqual(guidanceFor(result, phase), result);
+});
+
+test('validation-repair with submit_result alone submits immediately with no implied repair', () => {
+  for (const tools of [[nestedTool('submit_result')], [flatTool('submit_result')]]) {
+    const payload = { messages: [{ role: 'user', content: 'validation repair' }], tools, tool_choice: 'required' };
+    const phase = implementerRequestPhaseSnapshot({ validationRepair: true });
+    assert.equal(phase.repairAuthorized, true);
+    const result = guidanceFor(payload, phase);
+    assert.match(outboundGuidance(result), /terminal-only state: call submit_result with no arguments immediately/);
+    assert.doesNotMatch(outboundGuidance(result), /Trusted targeted repair|After completing the authorized targeted repair|Targeted mutation tools available|begin_result_submission/);
+    assert.deepEqual(result.messages, payload.messages);
+    assert.deepEqual(providerToolNames(result), ['submit_result']);
+    assert.equal(result.tool_choice, 'required');
+    assert.strictEqual(guidanceFor(result, phase), result);
+  }
+});
+
+test('resumed Main cannot get generic repair permission without an exact runtime obligation', () => {
+  const payload = {
+    messages: [{ role: 'user', content: 'restored work' }],
+    tools: [nestedTool('read'), flatTool('write'), nestedTool('submit_result')],
+  };
+  const resumed = implementerRequestPhaseSnapshot({ resumed: true });
+  const generic = guidanceFor(payload, resumed);
+  assert.match(outboundGuidance(generic), /terminal-only state: call submit_result/);
+  assert.doesNotMatch(outboundGuidance(generic), /Trusted targeted repair|Mutation tools available|Direct inspection/);
+  // A concrete controller-selected recovery obligation is the sole exception.
+  const exact = implementerRequestPhaseSnapshot({
+    resumed: true, terminalRecoveryRequiredTool: 'recover_worktree',
+  });
+  assert.equal(exact.repairAuthorized, false);
+  const selected = constrainTerminalRecoveryTools(
+    [...payload.tools, flatTool('recover_worktree')], exact.terminalRecoveryRequiredTool,
+  );
+  assert.deepEqual(providerToolNames({ tools: selected }), ['recover_worktree']);
+  const outgoing = guidanceFor({ ...payload, tools: selected }, exact);
+  assert.match(outboundGuidance(outgoing), /use recover_worktree only for the current exact obligation/);
+  assert.doesNotMatch(outboundGuidance(outgoing), /call submit_result|Targeted mutation tools available/);
 });
 
 test('Main static command boundary prohibits grep/find/ls bypass without prescribing invocations', () => {
