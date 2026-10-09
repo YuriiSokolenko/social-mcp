@@ -105,7 +105,7 @@ function appendToolDescriptionGuidance(payload, instructions) {
   return { ...payload, tools: [...definitions.slice(0, index), patchedTool, ...definitions.slice(index + 1)] };
 }
 
-export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false } = {}) {
+export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false, onMissingCarrier = null } = {}) {
   if (!payload || !snapshot || !trustedRuntimeEnvelope) return payload;
   const hasMessages = Array.isArray(payload.messages);
   const hasInput = Array.isArray(payload.input);
@@ -114,7 +114,7 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
   // This also survives compaction that removes the original role overlay.
   const key = hasMessages ? 'messages' : 'input';
   const history = payload[key];
-  if (history.length === 0) return payload;
+  if (history.length === 0) return payload; // no real conversation envelope to update
   const deferred = (snapshot.deferredTools ?? [])
     .filter(name => !snapshot.executableTools.includes(name));
   const instructions = [
@@ -129,11 +129,18 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
   if (Array.isArray(payload.tools) && payload.tools.length > 0) {
     // Always prefer the same tool-description carrier on every tool-bearing
     // request, regardless of whether the final turn is user, assistant or tool.
-    return appendToolDescriptionGuidance(payload, instructions);
+    const updated = appendToolDescriptionGuidance(payload, instructions);
+    if (updated === payload && providerToolNames(payload).length === 0) {
+      onMissingCarrier?.('no_serialized_tool_definition');
+    }
+    return updated;
   }
   const index = history.length - 1;
   const patchedLast = appendCapabilitySuffix(history[index], instructions, { responses: hasInput });
-  if (!patchedLast) return payload;
+  if (!patchedLast) {
+    onMissingCarrier?.('no_safe_text_or_tool_carrier');
+    return payload;
+  }
   return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
 }
 
