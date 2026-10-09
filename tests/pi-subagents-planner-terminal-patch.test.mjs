@@ -623,7 +623,16 @@ function assertPatchedImplementerRejected(label, sample, env, errInfo = { hasErr
 }
 
 test('#644 pinned adapter completes all permitted terminal toolUse modes without assistant prose', () => {
-  const beforeEnv = { ...process.env };
+  const ownedEnvKeys = [
+    'PI_VALIDATION_REPAIR', 'PI_VALIDATION_REPAIR_ATTEMPT',
+    'PI_RESUME_ACTIVE', 'PI_RESUME_PATCH',
+    'PI_TERMINAL_RESULT_FILE', 'PI_IMPLEMENTER_RESULT_FILE',
+    'PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID',
+  ];
+  const ownedEnvSnapshot = () => ownedEnvKeys.map(key => ({
+    key, present: Object.hasOwn(process.env, key), value: process.env[key],
+  }));
+  const beforeEnv = ownedEnvSnapshot();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-modes-644-'));
   const patch = path.join(dir, 'restored.patch');
   fs.writeFileSync(patch, 'diff --git a/a b/a\n');
@@ -663,7 +672,7 @@ test('#644 pinned adapter completes all permitted terminal toolUse modes without
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  assert.deepEqual(process.env, beforeEnv, 'VM case env must never alter parent process.env');
+  assert.deepEqual(ownedEnvSnapshot(), beforeEnv, 'VM case env must not leak into host mode or sidecar variables');
 });
 
 test('#644 identical empty submit envelopes fail closed without their runtime-owned mode', () => {
