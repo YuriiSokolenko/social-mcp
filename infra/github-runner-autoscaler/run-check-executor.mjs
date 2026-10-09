@@ -301,7 +301,7 @@ async function runSandbox({ runnerName, root, operation, params, requestedEnv, t
       : params;
     // Preflight must exercise the same absolute runner-root translation and
     // staged path validation used for real focused checks.
-    const validation = buildStagedRunCheckSpec(stageInfo.canonicalRoot, stageInfo.stage, stagedParams, { bins: { python: '/usr/local/bin/python3', ruff: '/usr/local/bin/ruff', pytest: '/usr/local/bin/pytest' }, env: { PATH: FIXED_PATH } });
+    const validation = buildStagedRunCheckSpec(stageInfo.canonicalRoot, stageInfo.stage, stagedParams, { bins: { python: '/usr/local/bin/python3', ruff: '/usr/local/bin/ruff', pytest: '/usr/local/bin/pytest', node: '/usr/local/bin/node' }, env: { PATH: FIXED_PATH } });
     const built = operation === 'preflight'
       ? { spec: { command: '/usr/local/bin/python3', args: ['/usr/local/lib/run-check-sandbox-probe.py', 'worktree'] } }
       : validation;
