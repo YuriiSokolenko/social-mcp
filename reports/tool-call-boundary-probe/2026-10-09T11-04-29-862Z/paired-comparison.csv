@@ -1,0 +1,5 @@
+pairKey,scenario,directStatus,proxyStatus,directValid,proxyValid,validityDifference,directLatencyMs,proxyLatencyMs,latencyDifferenceMs
+"case1-r1","1","200","200","true","true","0","11350","11484","134"
+"case2-r1","2","200","200","false","false","0","119917","119945","28"
+"case3-r1","3","200","200","true","false","-1","434839","456313","21474"
+"case4-r1","4","200","200","true","true","0","6268","5703","-565"

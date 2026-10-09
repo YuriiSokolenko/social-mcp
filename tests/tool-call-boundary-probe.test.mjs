@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SseToolCallParser, classifyToolResponse, validateToolCall } from '../scripts/research/tool-call-boundary-probe.mjs';
+import { gunzipSync } from 'node:zlib';
+import { SseToolCallParser, classifyToolResponse, compressEvidenceBuffer, evaluateComparability, pairComparisonRecords, timeoutSettings, validateToolCall } from '../scripts/research/tool-call-boundary-probe.mjs';
 
 const frame = payload => `data: ${JSON.stringify(payload)}\n\n`;
 
@@ -38,7 +39,7 @@ test('malformed and missing-closing-brace arguments remain malformed, never beco
 test('valid JSON with absent required fields is a schema error with explicit missing fields', () => {
   const result=validateToolCall({name:'write',arguments:'{"content":"x"}'});
   assert.equal(result.status,'schema_error'); assert.deepEqual(result.missing,['path']);
-  assert.deepEqual(validateToolCall({name:'submit_result',arguments:'{}'}).missing,['resultText']);
+  assert.deepEqual(validateToolCall({name:'submit_result',arguments:'{}'}).missing,['resultText','files']);
 });
 
 test('empty deltas and unexpected finish reasons do not invent a tool call', () => {
@@ -52,14 +53,56 @@ test('JSON parseable wrong tool names are classified independently', () => {
 
 test('both tool schemas accept their required string fields', () => {
   assert.equal(validateToolCall({name:'write',arguments:'{"path":"p.py","content":"print(1)"}'}).status,'valid');
-  assert.equal(validateToolCall({name:'submit_result',arguments:'{"resultText":"done"}'}).status,'valid');
+  assert.equal(validateToolCall({name:'submit_result',arguments:'{"resultText":"done","files":["a.py"]}'}).status,'valid');
+});
+
+test('submit_result files must be an array of strings, not JSON encoded text', () => {
+  assert.equal(validateToolCall({name:'submit_result',arguments:'{"resultText":"done","files":["a.py"]}'}).status,'valid');
+  assert.equal(validateToolCall({name:'submit_result',arguments:'{"resultText":"done","files":"[\\"a.py\\"]"}'}).status,'schema_error');
+  assert.equal(validateToolCall({name:'submit_result',arguments:'{"resultText":"done","files":[1]}'}).status,'schema_error');
 });
 
 test('transport interruption outranks partial malformed JSON and is not a tool-choice violation', () => {
   const outcome=classifyToolResponse({toolChoice:'required'}, {transportError:'timeout',missingDone:true,choices:[]}, [], [], {status:200}, false, 'proxy');
-  assert.equal(outcome.category,'PROXY'); assert.equal(outcome.requiredViolation,false);
+  assert.equal(outcome.category,'TRANSPORT_ERROR'); assert.equal(outcome.requiredViolation,false);
   const partial=classifyToolResponse({toolChoice:'required'}, {transportError:'timeout',missingDone:true,choices:[]}, [{name:'write'}], [{status:'malformed_json'}], {status:200}, false, 'proxy');
-  assert.equal(partial.category,'PROXY'); assert.equal(partial.requiredViolation,false);
+  assert.equal(partial.category,'TRANSPORT_ERROR'); assert.equal(partial.requiredViolation,false);
+});
+
+test('client interruption is never classified as proven output truncation, even at token budget', () => {
+  const outcome=classifyToolResponse({toolChoice:'required',budget:2048},{transportError:'timeout',missingDone:true,usage:{completion_tokens:2048},choices:[]},[],[],{status:200},true,'direct');
+  assert.equal(outcome.category,'TRANSPORT_ERROR'); assert.equal(outcome.tokenCeilingReached,false);
+});
+
+test('unreachable direct endpoint makes the run NOT_COMPARABLE', () => {
+  const result=evaluateComparability([{name:'direct',models:{error:'fetch failed'},modelIds:[]},{name:'proxy',models:{status:200},modelIds:['Qwen']}],{direct:'Qwen',proxy:'Qwen'});
+  assert.equal(result.comparable,false); assert.match(result.reasons.join(' '),/direct \/v1\/models unavailable/);
+});
+
+test('different model IDs make the run NOT_COMPARABLE', () => {
+  const result=evaluateComparability([{name:'direct',models:{status:200},modelIds:['Qwen-A']},{name:'proxy',models:{status:200},modelIds:['Qwen-B']}],{direct:'Qwen-A',proxy:'Qwen-B'});
+  assert.equal(result.comparable,false); assert.match(result.reasons.join(' '),/model IDs differ/);
+});
+
+test('timeout metadata distinguishes the 600 second default from a CLI override', () => {
+  assert.equal(timeoutSettings(new Map(),600000).origin,'default');
+  assert.equal(timeoutSettings(new Map([['timeout-ms','900000']]),900000).effectiveRequestTimeoutMs,900000);
+  assert.equal(timeoutSettings(new Map([['timeout-ms','900000']]),900000).origin,'explicit_cli');
+});
+
+test('paired comparison joins by scenario/repetition and preserves absent attempts', () => {
+  const result=pairComparisonRecords([
+    {pairKey:'case1-r1',caseIndex:1,repeat:1,endpointName:'direct',httpStatus:200,validation:[{status:'valid'}],latencyMs:20},
+    {pairKey:'case1-r1',caseIndex:1,repeat:1,endpointName:'proxy',httpStatus:200,validation:[{status:'schema_error'}],latencyMs:30},
+    {pairKey:'case1-r2',caseIndex:1,repeat:2,endpointName:'direct',httpStatus:null,validation:[],outcome:{category:'TRANSPORT_ERROR'}},
+  ]);
+  assert.equal(result.length,2); assert.equal(result[0].validityDifference,-1); assert.equal(result[0].latencyDifferenceMs,10);
+  assert.equal(result[1].bothAttempted,false); assert.equal(result[1].proxy.category,'NOT_ATTEMPTED');
+});
+
+test('gzip evidence preserves every raw response byte', () => {
+  const raw=Buffer.from('data: {"choices":[]}\r\n\r\ndata: [DONE]\n\n');
+  assert.deepEqual(gunzipSync(compressEvidenceBuffer(raw)),raw);
 });
 
 test('required is a violation only for a successful response that omits a tool call', () => {
