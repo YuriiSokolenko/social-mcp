@@ -158,6 +158,56 @@ test('#634 Responses function-call output retains call_id and no new message is 
     'without a safe text carrier or executable tool the payload is left untouched and fails closed');
 });
 
+test('#634 assistant text with pending tool_calls or legacy function_call is never modified', () => {
+  const snapshot = { executableTools: ['safe_edit', 'submit_result'], deferredTools: ['read'] };
+  const variants = [
+    { role: 'assistant', content: 'I will now write the file', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'safe_edit', arguments: '{}' } }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'I will write' }], tool_calls: [{ id: 'call-2', type: 'function', function: { name: 'safe_edit', arguments: '{}' } }] },
+    { role: 'assistant', content: 'legacy call', function_call: { name: 'safe_edit', arguments: '{}' } },
+  ];
+  for (const linked of variants) {
+    const original = JSON.stringify(linked);
+    const firstTool = tool('safe_edit');
+    const lastTool = tool('submit_result');
+    const payload = { messages: [{ role: 'user', content: 'Implement task' }, linked], tools: [firstTool, lastTool] };
+    const outgoing = withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope: true });
+    assert.equal(outgoing.messages.length, payload.messages.length);
+    assert.equal(outgoing.messages.at(-1), linked, 'linked assistant message must not be rewritten');
+    assert.equal(JSON.stringify(outgoing.messages.at(-1)), original);
+    assert.equal(outgoing.tools[0], firstTool, 'earlier schema prefix must remain unchanged');
+    assert.match(outgoing.tools[1].function.description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+    assert.equal(lastTool.function.description, 'submit_result', 'the input provider tool schema is immutable');
+  }
+});
+
+test('#634 Responses flat-format tools preserve shape and append guidance only to the last description', () => {
+  const first = { type: 'function', name: 'read', description: 'Read a known file', parameters: { type: 'object', properties: {} } };
+  const last = { type: 'function', name: 'submit_result', description: 'Finish task', parameters: { type: 'object', properties: {} } };
+  const payload = {
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Task' }] },
+      { type: 'function_call', name: 'read', call_id: 'flat-1', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'flat-1', output: '{"ok":true}' },
+    ],
+    tools: [first, last],
+  };
+  const snapshot = { executableTools: ['read', 'submit_result'], deferredTools: ['bash'] };
+  const outgoing = withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope: true });
+  assert.deepEqual(outgoing.input, payload.input, 'Responses conversation and tool output stay byte-exact');
+  assert.equal(outgoing.tools.length, 2);
+  assert.equal(outgoing.tools[0], first, 'early flat schema preserved for prompt cache');
+  assert.equal(outgoing.tools[1].type, 'function');
+  assert.equal(outgoing.tools[1].name, 'submit_result');
+  assert.deepEqual(outgoing.tools[1].parameters, last.parameters);
+  assert.match(outgoing.tools[1].description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.match(outgoing.tools[1].description, /DEFERRED \/ NOT EXECUTABLE IN THIS REQUEST: bash/);
+  assert.equal(last.description, 'Finish task');
+  assert.deepEqual(providerToolNames(outgoing), ['read', 'submit_result']);
+  const reconciled = reconcileProviderToolSurface(outgoing, { activeTools: ['submit_result'] });
+  assert.deepEqual(providerToolNames(reconciled.payload), ['submit_result']);
+  assert.deepEqual(providerToolNames(payload), ['read', 'submit_result'], 'original flat tool list is untouched');
+});
+
 test('#634 real Implementer boundary blocks late read/run_check/retry/bash even when host is newly active', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-provider-surface-'));
   try {
