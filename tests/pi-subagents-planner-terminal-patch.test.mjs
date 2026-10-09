@@ -203,17 +203,83 @@ test('pinned pi-subagents source patch preserves both real control-flow failure 
   assert.throws(() => patchPiSubagentsSource(source.replace('else if (errInfo.hasError)', 'else if (false)')), /source drift/);
 });
 
-test('runner build applies pinned patch before saving Pi package seed', () => {
-  const dockerfile = fs.readFileSync('infra/github-runner-autoscaler/worker.Dockerfile','utf8');
-  assert.match(dockerfile, /ARG PI_SUBAGENTS_VERSION=0\.76\.1/);
-  const install = dockerfile.indexOf('pi install --no-approve "npm:pi-subagents@');
-  const patch = dockerfile.indexOf('node /home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs');
-  const helperCopy = dockerfile.indexOf('COPY --chown=1001:1001 scripts/pi-common/restored-work.mjs /home/runner/build-tools/scripts/pi-common/restored-work.mjs');
-  const patchCopy = dockerfile.indexOf('COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs /home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs');
-  assert.ok(helperCopy >= 0 && helperCopy < patch && patchCopy >= 0 && patchCopy < patch);
-  const seed = dockerfile.indexOf('cp -a \/home\/runner\/\.pi\/agent\/npm \/opt\/pi-package-seed/');
-  assert.ok(install >= 0 && install < patch && patch < seed);
-  assert.match(dockerfile, /node --check \/home\/runner\/\.pi\/agent\/npm\/node_modules\/pi-subagents\/src\/runs\/foreground\/execution\.js/);
+function assertPatchedPiPackageSeed(dockerfile) {
+  assert.match(dockerfile, /^\s*ARG\s+PI_SUBAGENTS_VERSION\s*=\s*0\.76\.1\s*$/m);
+  // Parse logical Dockerfile instructions, not their exact indentation/quote formatting.
+  const instructions = dockerfile.replace(/\\\r?\n\s*/g, ' ')
+    .split(/\r?\n/)
+    .map(line => line.trim().replace(/['"]/g, '').replace(/\s+/g, ' ')
+      .replace(/(^|\s)\.\//g, '$1'))
+    .filter(line => line && !line.startsWith('#'));
+  const seedRuns = instructions.map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^RUN\b/i.test(line) && /pi-subagents@/.test(line));
+  assert.equal(seedRuns.length, 1, 'one install RUN must build the patched Pi seed');
+  const { line: seedRun, index: runIndex } = seedRuns[0];
+  const operations = seedRun.replace(/^RUN\s+/i, '').split(/\s*&&\s*/);
+  const orderedSteps = [
+    ['pinned package install', /^pi\s+install\s+--no-approve\s+npm:pi-subagents@\$\{PI_SUBAGENTS_VERSION\}$/],
+    ['source patch', /^node\s+\/home\/runner\/build-tools\/infra\/github-runner-autoscaler\/patch-pi-subagents-planner-terminal\.mjs\s+\/home\/runner\/\.pi\/agent\/npm\/node_modules\/pi-subagents\/?$/],
+    ['syntax check', /^node\s+--check\s+\/home\/runner\/\.pi\/agent\/npm\/node_modules\/pi-subagents\/src\/runs\/foreground\/execution\.js$/],
+    ['patched seed copy', /^cp\s+-a\s+\/home\/runner\/\.pi\/agent\/npm\/?\s+\/opt\/pi-package-seed\/?$/],
+  ];
+  const positions = orderedSteps.map(([label, pattern]) => {
+    const matches = operations.flatMap((operation, index) => pattern.test(operation) ? [index] : []);
+    assert.equal(matches.length, 1, 'expected exactly one ' + label + ' in the seed RUN');
+    return matches[0];
+  });
+  assert.ok(positions.every((position, index) => !index || positions[index - 1] < position),
+    'install, patch, syntax check and seed copy must execute in order');
+
+  const copies = [
+    ['source patch', 'infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs',
+      '/home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs'],
+    ['shared restored-work helper', 'scripts/pi-common/restored-work.mjs',
+      '/home/runner/build-tools/scripts/pi-common/restored-work.mjs'],
+  ];
+  for (const [label, source, target] of copies) {
+    const matches = instructions.flatMap((line, index) => {
+      if (!/^COPY\b/i.test(line)) return [];
+      const tokens = line.split(/\s+/);
+      return tokens.includes(source) && tokens.includes(target) ? [index] : [];
+    });
+    assert.equal(matches.length, 1, 'expected exactly one COPY for ' + label);
+    assert.ok(matches[0] < runIndex, label + ' must be copied before cached seed RUN');
+  }
+}
+
+test('runner build applies pinned patch and shared helper before saving Pi package seed', () => {
+  const dockerfile = fs.readFileSync('infra/github-runner-autoscaler/worker.Dockerfile', 'utf8');
+  assertPatchedPiPackageSeed(dockerfile);
+
+  const reformatted = dockerfile
+    .replace(/^(COPY\s+--chown=\S+\s+)(\S+)\s+(\S+)$/gm, '$1"./$2"   "$3"')
+    .replace(/pi install --no-approve "npm:pi-subagents@/g, "pi   install --no-approve 'npm:pi-subagents@")
+    .replace(/(PI_SUBAGENTS_VERSION)\}"/g, "$1}'")
+    .replace(/node --check /g, 'node  --check  ');
+  assertPatchedPiPackageSeed(reformatted);
+
+  const patchInvocation = dockerfile.match(/node\s+\/home\/runner\/build-tools\/infra\/github-runner-autoscaler\/patch-pi-subagents-planner-terminal\.mjs\s+\/home\/runner\/\.pi\/agent\/npm\/node_modules\/pi-subagents/)?.[0];
+  const seedCopyInvocation = dockerfile.match(/cp\s+-a\s+\/home\/runner\/\.pi\/agent\/npm\s+\/opt\/pi-package-seed\//)?.[0];
+  assert.ok(patchInvocation && seedCopyInvocation, 'fixture contains both patch and seed commands');
+  // Swap only the commands, preserving Docker's shell continuation syntax.
+  const reorderedSeed = dockerfile.replace(patchInvocation, '__PATCH_COMMAND__')
+    .replace(seedCopyInvocation, patchInvocation)
+    .replace('__PATCH_COMMAND__', seedCopyInvocation);
+  const variants = [
+    ['missing patch COPY', dockerfile.replace(/^COPY[^\n]*patch-pi-subagents-planner-terminal\.mjs[^\n]*\n/m, '')],
+    ['missing helper COPY', dockerfile.replace(/^COPY[^\n]*restored-work\.mjs[^\n]*\n/m, '')],
+    ['missing source patch', dockerfile.replace(/^\s*&&\s+node\s+\S*patch-pi-subagents-planner-terminal\.mjs[^\n]*\n/m, '')],
+    ['missing syntax check', dockerfile.replace(/^\s*&&\s+node\s+--check[^\n]*\n/m, '')],
+    ['missing seed copy', dockerfile.replace(/^\s*&&\s+cp\s+-a[^\n]*\n/m, '')],
+    ['stale seed before patch', reorderedSeed],
+    ['helper copied too late', dockerfile.replace(
+      /^(COPY[^\n]*restored-work\.mjs[^\n]*\n)/m, '',
+    ) + '\nCOPY scripts/pi-common/restored-work.mjs /home/runner/build-tools/scripts/pi-common/restored-work.mjs\n'],
+  ];
+  for (const [name, variant] of variants) {
+    assert.notEqual(variant, dockerfile, name + ' mutation must alter the Dockerfile');
+    assert.throws(() => assertPatchedPiPackageSeed(variant), { name: 'AssertionError' }, name);
+  }
 });
 
 function validImplementerEnvelope() {

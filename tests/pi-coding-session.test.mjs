@@ -312,6 +312,12 @@ function runtimeScenario(mode) {
       const steers = [];
       const sessionRequests = [];
       const heldTerminalRequests = [];
+      // Resolved from the actual delegation request event, not execute() timing.
+      const terminalRequestBarriers = [0, 1].map(() => {
+        let release;
+        const promise = new Promise(resolve => { release = resolve; });
+        return { promise, release };
+      });
       const registrations = [];
       const registered = new Map();
       let aborts = 0;
@@ -1199,8 +1205,12 @@ function runtimeScenario(mode) {
         if (mode === 'fallback') assert.doesNotMatch(request.task, /Planner fact marker/);
         else assert.equal(request.task.match(/Planner fact marker/g)?.length, 1, 'prepared repository facts are handed off exactly once');
         assert.doesNotMatch(request.task, /## Startup|Available delegated agents|Repository access routing|PARENT_TRANSCRIPT_ONLY_MARKER/);
-        sessionRequests.push({ task: request.task, maxTokens: process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, spec: JSON.parse(process.env.PI_CODING_SESSION) });
-        if (mode.startsWith('terminal-binding-')) { heldTerminalRequests.push(request); return; }
+        sessionRequests.push({ requestId: request.requestId, task: request.task, maxTokens: process.env.PI_SUBAGENT_RESPONSE_MAX_TOKENS, spec: JSON.parse(process.env.PI_CODING_SESSION) });
+        if (mode.startsWith('terminal-binding-')) {
+          heldTerminalRequests.push(request);
+          terminalRequestBarriers[heldTerminalRequests.length - 1]?.release(request);
+          return;
+        }
         if (mode === 'cancel') { signal.abort(); return; }
         await runFork(request);
       });
@@ -2017,21 +2027,33 @@ function runtimeScenario(mode) {
         else delete process.env[key];
         const expectedPrevious = process.env[key];
         const originalSetTimeout = globalThis.setTimeout;
+        let deadlineTimersIntercepted = 0;
+        let deadlineCallbackInvoked = false;
+        let unrelatedTimerFired = false;
+        let unrelatedTimer = null;
         const executions = [];
         const executeCoding = (callId, controller) => {
-          const running = tools.get('begin_coding_session').execute(
+          const invoke = () => tools.get('begin_coding_session').execute(
             callId, { reason: 'Verify terminal session lifetime' }, controller.signal, null, ctx,
           );
+          // Exercise an asynchronous launch boundary in the overlap scenario:
+          // neither request observation nor lease assertions may rely on execute()
+          // delegating synchronously.
+          const running = mode === 'terminal-binding-overlap'
+            ? Promise.resolve().then(invoke) : invoke();
           executions.push(running);
           return running;
         };
         function completeWithBoundReceipt(request) {
+          assert.ok(request, 'a real delegation request is required for the terminal receipt');
+          const recorded = sessionRequests.find(entry => entry.requestId === request.requestId);
+          assert.ok(recorded, 'the receipt must match this emitted delegation request');
           writeImplementerResult(resultFile, {
             title: 'Already satisfied', summary: 'No repository change needed',
             outcome: 'already_satisfied', changes: [], files: [],
           });
           const receipt = createSuccessfulTerminalReceipt({ cwd, resultFile, env: process.env });
-          assert.equal(receipt.session_id, request && JSON.parse(process.env.PI_CODING_SESSION).sessionId);
+          assert.equal(receipt.session_id, recorded.spec.sessionId, 'receipt belongs to this specific request');
           assert.equal(receipt.session_id, process.env[key], 'receipt belongs to active lease');
           writeTerminalReceiptFile(terminal, receipt);
           respond(request, { status: 'completed', result: { kind: 'text', value: 'submitted' }, usage: { output: 4 } });
@@ -2039,13 +2061,32 @@ function runtimeScenario(mode) {
         }
         try {
           const controller = new AbortController();
-          // For the deadline case, shorten only the real delegation timer in this
-          // isolated child process. Its callback, cleanup and error are unmodified.
+          // Only accelerate the known Implementer delegation deadline (90 minutes
+          // plus the structured-subagent 5-second grace); keep all other timers intact.
+          // The production callback still owns timeout rejection and cleanup.
           if (mode === 'terminal-binding-timeout') {
-            globalThis.setTimeout = (callback, ms, ...args) =>
-              originalSetTimeout(callback, ms > 5000 ? 5 : ms, ...args);
+            const deadlineDelayMs = 5400000 + 5000;
+            globalThis.setTimeout = (callback, ms, ...args) => {
+              if (ms === deadlineDelayMs && typeof callback === 'function'
+                  && String(callback).includes('did not return within')
+                  && String(callback).includes('timed_out')) {
+                deadlineTimersIntercepted++;
+                return originalSetTimeout((...timerArgs) => {
+                  deadlineCallbackInvoked = true;
+                  callback(...timerArgs);
+                }, 5, ...args);
+              }
+              return originalSetTimeout(callback, ms, ...args);
+            };
+            unrelatedTimer = setTimeout(() => {
+              unrelatedTimerFired = true;
+            }, deadlineDelayMs + 1000);
           }
           const first = executeCoding('first', controller);
+          if (mode === 'terminal-binding-overlap') {
+            assert.equal(heldTerminalRequests.length, 0, 'launch intentionally crosses a microtask boundary');
+          }
+          await terminalRequestBarriers[0].promise;
           assert.equal(heldTerminalRequests.length, 1, 'first registered execute launched one delegation');
           const bound = sessionRequests[0].spec.sessionId;
           assert.equal(process.env[key], bound, 'active ID bound before delegation');
@@ -2079,11 +2120,15 @@ function runtimeScenario(mode) {
             await assert.rejects(first, /delegation was aborted/, 'real AbortSignal rejects pending delegation');
           } else {
             await assert.rejects(first, /did not return within/, 'real delegation deadline rejects pending call');
+            assert.equal(deadlineTimersIntercepted, 1, 'only the expected delegation deadline is accelerated');
+            assert.equal(deadlineCallbackInvoked, true, 'production deadline callback actually ran');
+            assert.equal(unrelatedTimerFired, false, 'unrelated long timer was not accelerated');
           }
           assert.equal(process.env[key], expectedPrevious, 'completed/failed path restores exact prior binding');
           assert.equal(Object.hasOwn(process.env, key), mode === 'terminal-binding-overlap');
           globalThis.setTimeout = originalSetTimeout;
           const second = executeCoding('independent', new AbortController());
+          await terminalRequestBarriers[1].promise;
           assert.equal(heldTerminalRequests.length, 2, 'a later independent fork is permitted');
           assert.equal(process.env[key], sessionRequests[1].spec.sessionId);
           assert.notEqual(sessionRequests[1].spec.sessionId, bound);
@@ -2096,6 +2141,7 @@ function runtimeScenario(mode) {
           console.log('TERMINAL_BINDING_' + mode.toUpperCase().replaceAll('-', '_') + '_OK');
         } finally {
           globalThis.setTimeout = originalSetTimeout;
+          if (unrelatedTimer) clearTimeout(unrelatedTimer);
           // Teardown unblocks all pending requests even when an assertion fails.
           for (const request of heldTerminalRequests) {
             respond(request, { status: 'completed', result: { kind: 'text', value: 'teardown' }, usage: { output: 1 } });
