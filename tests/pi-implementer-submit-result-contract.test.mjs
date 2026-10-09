@@ -249,6 +249,83 @@ test('text-only result submission advertises no model-owned publication metadata
   }
 });
 
+test('fresh submission uses a new submit-only provider request and one truncation-only 8192 retry', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-phase-'));
+  try {
+    const program = `
+      import assert from 'node:assert/strict';
+      const { default: register } = await import(${JSON.stringify(RESULT_TOOL_URL)});
+      const tools = new Map();
+      const hooks = new Map();
+      const caps = [];
+      const steers = [];
+      const visible = [];
+      let aborts = 0;
+      const ctx = { cwd: process.cwd(), model: { maxTokens: 2048, contextWindow: 262144 }, abort() { aborts++; } };
+      const pi = {
+        registerTool(value) { tools.set(value.name, value); },
+        appendEntry() {},
+        on(name, fn) { hooks.set(name, [...(hooks.get(name) ?? []), fn]); },
+        getActiveTools() { return [...visible]; },
+        setActiveTools(names) { visible.splice(0, visible.length, ...names); },
+        async setModel(model) { caps.push(model.maxTokens); ctx.model = model; return true; },
+        async sendUserMessage(text) { steers.push(text); },
+      };
+      const emit = async (name, event) => {
+        let output;
+        for (const fn of hooks.get(name) ?? []) {
+          const result = await fn(event, ctx);
+          if (result?.block) return result;
+          if (result !== undefined) output = result;
+        }
+        return output;
+      };
+      register(pi);
+      assert.deepEqual([...tools.keys()].sort(), ['begin_result_submission', 'submit_result']);
+      assert.equal(await emit('tool_call', { toolName: 'submit_result', toolCallId: 'early', input: { resultText: 'Too early' } }).then(x => x?.block), true);
+      const begin = { toolName: 'begin_result_submission', toolCallId: 'begin', input: {} };
+      assert.equal(await emit('tool_call', begin), undefined);
+      await tools.get('begin_result_submission').execute('begin', {});
+      await emit('tool_execution_end', { ...begin, isError: false });
+      await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
+        content: [{ type: 'toolCall', id: 'begin', name: 'begin_result_submission' }] } });
+      await emit('turn_end', { message: { stopReason: 'toolUse' } });
+      assert.deepEqual(caps, [4096]);
+      assert.deepEqual(visible, ['submit_result']);
+      assert.equal(steers.length, 1);
+      const outgoing = await emit('before_provider_request', { payload: {
+        max_completion_tokens: 4096, tools: ['read', 'write', 'submit_result'].map(name => ({ function: { name } }))
+      } });
+      assert.deepEqual(outgoing.tools.map(tool => tool.function.name), ['submit_result']);
+      assert.equal(outgoing.tool_choice, 'auto');
+      assert.equal((await emit('tool_call', { toolName: 'write', toolCallId: 'late', input: {} })).block, true);
+      await emit('message_end', { message: { role: 'assistant', stopReason: 'length',
+        usage: { inputTokens: 500 }, content: [] } });
+      await emit('turn_end', { message: { stopReason: 'length' } });
+      assert.deepEqual(caps, [4096, 8192]);
+      const retry = await emit('before_provider_request', { payload: {
+        max_completion_tokens: 8192, tools: ['read', 'submit_result'].map(name => ({ function: { name } }))
+      } });
+      assert.deepEqual(retry.tools.map(tool => tool.function.name), ['submit_result']);
+      const fullResult = 'Complete implementation and tests. '.repeat(500);
+      const submit = { toolName: 'submit_result', toolCallId: 'finished', input: { resultText: fullResult } };
+      assert.equal(await emit('tool_call', submit), undefined);
+      await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse',
+        content: [{ type: 'toolCall', id: submit.toolCallId, name: 'submit_result' }] } });
+      // The Git terminal executor has a separate fixture; here simulate its successful receipt.
+      await emit('tool_execution_end', { ...submit, isError: false });
+      await emit('turn_end', { message: { stopReason: 'toolUse' } });
+      assert.equal(aborts, 0);
+      assert.equal((await emit('tool_call', { toolName: 'read', toolCallId: 'after', input: {} })).block, true);
+      assert.equal(caps.length, 2, 'a completed submit never uses additional budgets');
+    `;
+    const child = runProgram({ dir, program, env: { PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' } });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('fresh-mode snapshot does not permit legacy zero-argument submission', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-submit-mode-snapshot-'));
   try {
