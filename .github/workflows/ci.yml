@@ -61,6 +61,9 @@ jobs:
           PI_TYPEBOX_PACKAGE_ROOT: ${{ runner.temp }}/pi-typebox-contract
         run: node --test tests/ci/pi-implementer-typebox-schema-contract.test.mjs
 
+      - name: Focused Implementer terminal adapter regression
+        run: node --test tests/pi-subagents-planner-terminal-patch.test.mjs
+
       - name: Agent workflow checks
         run: node --test tests/*.test.mjs
 
