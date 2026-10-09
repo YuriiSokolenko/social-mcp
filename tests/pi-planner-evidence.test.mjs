@@ -745,7 +745,8 @@ test('missing serialized submit_plan and wrong tool name fail closed without a r
   assert.equal(protocolState(h).phase, 'failed');
   assert.equal(protocolState(h).failureKind, 'planner_submission_tool_unavailable');
   assert.equal(protocolState(h).submissionReceipt, undefined);
-  assert.ok(h.logs().some(line => line.includes('PI_PLANNER_PROVIDER_WIRE_BLOCKED')));
+  assert.ok(h.logs().some(line => line.includes('PI_PLANNER_PHASE') &&
+    line.includes('"to":"failed"')), 'durable failed phase must be logged without exposing the original tools');
 
   const other = extensionHarness(t);
   await plannerTurn(other, 'begin_plan_submission');
