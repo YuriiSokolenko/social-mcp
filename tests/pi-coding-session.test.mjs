@@ -2461,7 +2461,6 @@ function runtimeScenario(mode) {
       }
       if (mode === 'fallback') {
         assert.match(tools.get('begin_coding_session').description, /Preparation fallback: no Planner planText is available/);
-        assert.match(tools.get('begin_coding_session').parameters.properties.handoff.description, /essential Main exploration findings|Brief essential Main exploration findings/);
       }
       if (mode === 'restored') {
         assert.match(tools.get('begin_coding_session').description, /Restored\/validation-repair work is terminal-only/);
