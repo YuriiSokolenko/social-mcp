@@ -1,0 +1,58 @@
+/* Layout for the Arkanoid smoke. No external fonts, frameworks or CDN links. */
+
+:root {
+  color-scheme: dark light;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0d12;
+  color: #e8eaf0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: min(92vw, 720px);
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+#game {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  background: #10131a;
+  border: 1px solid #2a2f3a;
+  border-radius: 4px;
+  touch-action: none;
+}
+
+@media (orientation: portrait) {
+  .shell {
+    width: 100vw;
+  }
+
+  #game {
+    aspect-ratio: 1 / 1;
+  }
+}
