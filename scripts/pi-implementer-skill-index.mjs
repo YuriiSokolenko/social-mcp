@@ -116,6 +116,9 @@ function relevantSkillNames(entries, taskText, limit = 5) {
  */
 export function curateImplementerSkillPrompt(systemPrompt, { taskText = '', maxFeatured = 5 } = {}) {
   if (typeof systemPrompt !== 'string') return systemPrompt;
+  // Never re-curate an already curated prompt: its omitted entries live in
+  // the discovery index, not in <available_skills> (phase transitions are safe).
+  if (systemPrompt.includes('<skill_discovery_index>')) return systemPrompt;
   const sections = [...systemPrompt.matchAll(SKILLS_SECTION_RE)];
   if (sections.length !== 1) return systemPrompt;
   const oldSection = sections[0][0];
