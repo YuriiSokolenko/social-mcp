@@ -28,29 +28,22 @@ export function providerToolNames(payload) {
 }
 
 /**
- * Provider-request definitions may already have been captured before a runtime phase transition.
- * Narrow them to the tool names still permitted AND installed in the host executor. Never
- * inject a tool definition into an existing request: newly enabled tools need another request.
+ * Pi's serialized tool definitions have already been captured from the executor registry.
+ * Intersect those definitions with the current phase's exposed tools; getAllTools() may
+ * report a narrower inventory in delegated coding sessions and must not veto a definition.
+ * Never inject a newly active tool into an already assembled provider request.
  */
-export function reconcileProviderToolSurface(payload, { activeTools = [], registeredTools = null } = {}) {
-  if (!Array.isArray(payload?.tools)) return { payload, unregistered: [] };
+export function reconcileProviderToolSurface(payload, { activeTools = [] } = {}) {
+  if (!Array.isArray(payload?.tools)) return { payload };
   const active = new Set(activeTools);
-  const registered = Array.isArray(registeredTools) ? new Set(registeredTools) : null;
-  const unregistered = [];
   const tools = payload.tools.filter(tool => {
     const name = tool?.function?.name ?? tool?.name;
-    if (!name || !active.has(name)) return false;
-    if (registered && !registered.has(name)) {
-      unregistered.push(name);
-      return false;
-    }
-    return true;
+    return typeof name === 'string' && active.has(name);
   });
   return {
     payload: tools.length === payload.tools.length && tools.every((tool, i) => tool === payload.tools[i])
       ? payload
       : { ...payload, tools },
-    unregistered: [...new Set(unregistered)],
   };
 }
 
@@ -59,24 +52,16 @@ export function reconcileProviderToolSurface(payload, { activeTools = [], regist
  * not Pi's saved conversation. This supersedes generic tool names in a Main/coding contract
  * and stale handoff/history without granting any new capability or moving linked tool turns.
  */
-export function withProviderCapabilityInstructions(payload, snapshot) {
-  if (!payload || !snapshot) return payload;
+export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false } = {}) {
+  if (!payload || !snapshot || !trustedRuntimeEnvelope) return payload;
   const hasMessages = Array.isArray(payload.messages);
   const hasInput = Array.isArray(payload.input);
   if (hasMessages === hasInput) return payload; // unknown or ambiguous provider envelope
-  // Real Main and coding requests contain the authoritative role overlay once.
-  // Synthetic / recovery envelope fragments without any contract must be
-  // forwarded unmodified (including object identity) for Pi's retry/replay path.
+  // Trust comes from the caller (the installed Implementer runtime), NOT an
+  // arbitrary substring in model/tool-result history. This also survives
+  // history compaction that removes the original role overlay.
   const history = hasMessages ? payload.messages : payload.input;
-  const isTrustedRuntimeEnvelope = history.some(message => {
-    const parts = typeof message?.content === 'string'
-      ? [message.content]
-      : Array.isArray(message?.content)
-        ? message.content.map(part => part?.text).filter(text => typeof text === 'string')
-        : [];
-    return parts.some(text => text.includes('<role_contract ') || text.includes('<coding_role_contract '));
-  });
-  if (!isTrustedRuntimeEnvelope) return payload;
+  if (history.length === 0) return payload; // incomplete synthetic/replay envelope
   const deferred = (snapshot.deferredTools ?? [])
     .filter(name => !snapshot.executableTools.includes(name));
   const instructions = [
