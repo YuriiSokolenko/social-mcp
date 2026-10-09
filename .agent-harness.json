@@ -38,6 +38,20 @@
   "agents": {
     "promptsDir": "agents"
   },
+  "model": {
+    "provider": "hp-laguna",
+    "baseUrl": "http://192.168.8.184:4001/v1",
+    "choices": {
+      "laguna": {
+        "id": "laguna-s-2.1-gguf",
+        "label": "Laguna S 2.1"
+      },
+      "qwen": {
+        "id": "Qwen3.8-Flash-Next-NVFP4",
+        "label": "Qwen 3.8 Flash Next NVFP4"
+      }
+    }
+  },
   "workspace": {
     "cleanDirectories": [
       ".pytest_cache",
@@ -116,6 +130,13 @@
         ]
       }
     },
+    "ciRepairableSteps": [
+      "Ruff",
+      "Pytest",
+      "Harness Python checks",
+      "Agent workflow checks",
+      "Runner autoscaler checks"
+    ],
     "packageRoots": {
       "canonicalRoots": [
         "src"

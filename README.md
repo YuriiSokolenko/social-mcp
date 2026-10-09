@@ -167,9 +167,13 @@ Splitting components into separate services can be done later if needed.
 
 ## CI and local checks
 
-`ci.yml` runs on pull requests targeting `dev`, on pushes to `dev`, and on manual dispatch, using N150 self-hosted `general` runners (same-repository PRs only). It runs Ruff, pytest, Node CI/control-plane contract tests, and runner-autoscaler checks. A separate N150 `general` Docker job builds the image, starts Compose with a unique project name and a temporary encryption key, tests the running HTTP service, and removes its volume and containers even when a check fails. A completed same-repository PR CI run wakes Merge Gate through `ci-terminal-wake.yml` on the dedicated `control` runner, and Merge Gate merges only a PR whose current HEAD has green PR CI. A green `dev` CI run wakes Merge Gate using the dedicated `control` runner for the next eligible reviewed PR; a red run stops that merge sequence. Pi product agents run their own pre-publication product checks on trusted self-hosted N150 runners, but CI on the actual merged `dev` commit is the integration truth. No Meta or TikTok credentials are needed.
+`ci.yml` runs on pull requests targeting `dev`, on pushes to `dev`, and on manual dispatch, using N150 self-hosted `general` runners (same-repository PRs only). No Meta or TikTok credentials are needed. Its jobs are split along the [harness extraction boundary](docs/agent-harness/EXTRACTION.md), so either half can be removed without editing the other.
 
-To run the same checks locally with Python 3.12, Node.js and Docker Compose:
+### Product checks
+
+The `test` job runs Ruff and pytest. The `docker` job builds the image, starts Compose with a unique project name and a temporary encryption key, tests the running HTTP service, and removes its volume and containers even when a check fails.
+
+To run the same checks locally with Python 3.12 and Docker Compose:
 
 ```bash
 python3.12 -m venv .venv
@@ -177,8 +181,6 @@ python3.12 -m venv .venv
 python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
 ruff check .
 pytest
-node --test tests/*.test.mjs
-bash tests/test_runner_autoscaler.sh
 
 export TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 docker compose up --build --wait
@@ -189,6 +191,15 @@ docker compose down --volumes --remove-orphans
 
 See [Docker deployment on N150](docs/deploy.md) for production deployment, the persistent token storage strategy, and how secrets are kept out of the image and repository.
 
+### Agent harness checks
+
+The `harness` job runs the Node control-plane contract tests, the harness Python checks and the runner-autoscaler checks without installing the product package. The `harness-images` job builds and smoke-tests the runner images. A completed same-repository PR CI run wakes Merge Gate through `ci-terminal-wake.yml` on the dedicated `control` runner, and Merge Gate merges only a PR whose current HEAD has green PR CI. A green `dev` CI run wakes Merge Gate for the next eligible reviewed PR; a red run stops that merge sequence. Pi product agents run their own pre-publication product checks, but CI on the actual merged `dev` commit is the integration truth. See [Workflow and CI](docs/CI_RULES.md).
+
+```bash
+node --test tests/*.test.mjs
+pytest --noconftest -p no:cacheprovider tests/test_run_check_sandbox_exec.py tests/n150_docker_upgrade tests/workflow_smoke tests/ci/test_workflow_integrity.py
+bash tests/test_runner_autoscaler.sh
+```
 
 ## Development phases
 

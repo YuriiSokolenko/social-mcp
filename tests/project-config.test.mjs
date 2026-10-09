@@ -37,6 +37,18 @@ test('legacy v1 config without blocked label remains loadable', () => {
   assert.equal(config.labels.blocked, undefined);
 });
 
+test('model endpoint and catalog are project data validated strictly', () => {
+  assert.equal(projectConfig().model.choices.qwen.id, 'Qwen3.8-Flash-Next-NVFP4');
+  const noModel = raw(); delete noModel.model;
+  assert.equal(validateConfig(noModel).model, null);
+  const badUrl = raw(); badUrl.model.baseUrl = 'file:///etc/passwd';
+  assert.throws(() => validateConfig(badUrl), /model\.baseUrl/);
+  const empty = raw(); empty.model.choices = {};
+  assert.throws(() => validateConfig(empty), /model\.choices/);
+  const extra = raw(); extra.model.choices.qwen.host = 'nano';
+  assert.throws(() => validateConfig(extra), /model\.choices\.qwen\.host/);
+});
+
 test('commands are fixed argv, never shell strings', () => {
   const bad = raw(); bad.checks.final[1] = { name: 'x', command: 'git', args: ['diff'], shell: 'rm -rf /' };
   assert.throws(() => validateConfig(bad));

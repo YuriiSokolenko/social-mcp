@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 
-import { DEFAULT_MODEL_BASE_URL, TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV, TRUSTED_ACCEPTANCE_TARGETS_ENV, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { defaultModelBaseUrl, TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV, TRUSTED_ACCEPTANCE_TARGETS_ENV, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
 import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scripts/pi-common/pi-stage-backend.mjs';
@@ -383,7 +383,7 @@ test('model endpoint defaults to the shared Open Responses server on port 4001',
     PI_MODEL: 'model-x',
   });
 
-  assert.equal(spec.model.baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(spec.model.baseUrl, defaultModelBaseUrl());
   assert.equal(new URL(spec.model.baseUrl).hostname, '192.168.8.184');
   assert.equal(new URL(spec.model.baseUrl).port, '4001');
 });
@@ -411,14 +411,14 @@ test('Pi hp-laguna provider config is forced to the same stage endpoint', (t) =>
 
   forcePiProviderBaseUrl({
     provider: 'hp-laguna',
-    baseUrl: DEFAULT_MODEL_BASE_URL,
+    baseUrl: defaultModelBaseUrl(),
   }, { HOME: home });
 
   const config = JSON.parse(readFileSync(modelsFile, 'utf8'));
-  assert.equal(config.providers['hp-laguna'].baseUrl, DEFAULT_MODEL_BASE_URL);
-  assert.equal(config.providers['hp-laguna'].models[0].baseUrl, DEFAULT_MODEL_BASE_URL);
-  assert.equal(config.providers['hp-laguna'].models[1].baseUrl, DEFAULT_MODEL_BASE_URL);
-  assert.equal(config.providers['hp-laguna'].modelOverrides['laguna-s-2.1-gguf'].baseUrl, DEFAULT_MODEL_BASE_URL);
+  assert.equal(config.providers['hp-laguna'].baseUrl, defaultModelBaseUrl());
+  assert.equal(config.providers['hp-laguna'].models[0].baseUrl, defaultModelBaseUrl());
+  assert.equal(config.providers['hp-laguna'].models[1].baseUrl, defaultModelBaseUrl());
+  assert.equal(config.providers['hp-laguna'].modelOverrides['laguna-s-2.1-gguf'].baseUrl, defaultModelBaseUrl());
   assert.equal(config.providers.other.baseUrl, 'http://example.invalid/v1');
 });
 

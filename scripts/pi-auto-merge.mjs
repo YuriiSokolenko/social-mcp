@@ -3,17 +3,13 @@ import { pathToFileURL } from 'node:url';
 import { githubClient } from './pi-common/github-api.mjs';
 import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
 import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, withoutReviewLabels, withReviewVerdict } from './pi-common/pr-labels.mjs';
-import { baseBranch, parseIssueBranch, workflowFile } from './pi-common/project-config.mjs';
+import { baseBranch, parseIssueBranch, projectConfig, workflowFile } from './pi-common/project-config.mjs';
 import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
 const { api, raw, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
 
-export const PRODUCT_CI_STEPS = new Set([
-  'Ruff',
-  'Pytest',
-  'Agent workflow checks',
-  'Runner autoscaler checks',
-]);
+/** CI step names whose failure PR Fix may repair (`.agent-harness.json` checks.ciRepairableSteps). */
+export const productCiSteps = () => new Set(projectConfig().checks.ciRepairableSteps);
 
 export function infraRetryEndpoint(run) {
   return run?.conclusion === 'failure' ? 'rerun-failed-jobs' : 'rerun';
@@ -38,7 +34,7 @@ export function allowedFiles(files, changedCount) {
 
 export function failedProductCiSteps(jobs) {
   return jobs.flatMap(job => job.steps ?? [])
-    .filter(step => step?.conclusion === 'failure' && PRODUCT_CI_STEPS.has(step.name))
+    .filter(step => step?.conclusion === 'failure' && productCiSteps().has(step.name))
     .map(step => step.name);
 }
 

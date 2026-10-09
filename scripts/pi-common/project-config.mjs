@@ -32,7 +32,7 @@ const LABEL_ROLES = Object.freeze([...REQUIRED_LABEL_ROLES, ...OPTIONAL_LABEL_RO
 // wiring (the caller workflows live in the project repository), not harness names.
 const WORKFLOW_ROLES = Object.freeze(['dispatcher', 'architect', 'implementer', 'reviewer', 'repair', 'ci', 'mergeGate', 'triage']);
 const TOP_LEVEL = new Set([
-  'version', 'git', 'labels', 'workflows', 'automation', 'agents', 'controlPlane', 'checks', 'environment', 'workspace',
+  'version', 'git', 'labels', 'workflows', 'automation', 'agents', 'controlPlane', 'checks', 'environment', 'workspace', 'model',
 ]);
 
 class ConfigError extends Error {
@@ -101,6 +101,32 @@ function command(value, where) {
   return Object.freeze({ name, command: string(value.command, `${where}.command`), args: Object.freeze(args) });
 }
 
+/**
+ * Model endpoint and catalog. This is infrastructure wiring (which host serves which
+ * model), so it is data owned by the consuming repository, never a harness literal.
+ * Optional at parse time so unrelated fixtures stay small; `modelConfig()` fails closed.
+ */
+function modelSettings(value) {
+  if (value === undefined) return null;
+  object(value, 'model');
+  rejectUnknown(value, ['provider', 'baseUrl', 'choices'], 'model');
+  const baseUrl = string(value.baseUrl, 'model.baseUrl');
+  let parsed;
+  try { parsed = new URL(baseUrl); } catch { parsed = null; }
+  if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) throw new ConfigError('model.baseUrl must be an http(s) URL');
+  const choices = object(value.choices, 'model.choices');
+  if (!Object.keys(choices).length) throw new ConfigError('model.choices must name at least one model');
+  return Object.freeze({
+    provider: string(value.provider, 'model.provider'),
+    baseUrl,
+    choices: Object.freeze(Object.fromEntries(Object.entries(choices).map(([name, entry]) => {
+      object(entry, `model.choices.${name}`);
+      rejectUnknown(entry, ['id', 'label'], `model.choices.${name}`);
+      return [name, Object.freeze({ id: string(entry.id, `model.choices.${name}.id`), label: string(entry.label, `model.choices.${name}.label`) })];
+    }))),
+  });
+}
+
 function commandList(value, where) {
   if (!Array.isArray(value)) throw new ConfigError(`${where} must be an array`);
   return Object.freeze(value.map((item, index) => command(item, `${where}[${index}]`)));
@@ -157,7 +183,7 @@ export function validateConfig(raw, options = {}) {
   });
 
   const checks = object(raw.checks ?? {}, 'checks');
-  rejectUnknown(checks, ['final', 'profiles', 'packageRoots'], 'checks');
+  rejectUnknown(checks, ['final', 'profiles', 'packageRoots', 'ciRepairableSteps'], 'checks');
   const packageRoots = object(checks.packageRoots ?? {}, 'checks.packageRoots');
   rejectUnknown(packageRoots, ['canonicalRoots', 'allowDuplicatePackages'], 'checks.packageRoots');
   const profiles = {};
@@ -198,6 +224,8 @@ export function validateConfig(raw, options = {}) {
     checks: Object.freeze({
       final: checks.final === undefined ? Object.freeze([]) : commandList(checks.final, 'checks.final'),
       profiles: Object.freeze(profiles),
+      // CI step names whose failure is a code failure PR Fix may repair; anything else is infrastructure.
+      ciRepairableSteps: Object.freeze(stringList(checks.ciRepairableSteps, 'checks.ciRepairableSteps', { optional: true })),
       packageRoots: Object.freeze({
         canonicalRoots: Object.freeze(relativeDirectoryList(packageRoots.canonicalRoots, 'checks.packageRoots.canonicalRoots', {
           optional: true,
@@ -206,6 +234,7 @@ export function validateConfig(raw, options = {}) {
         allowDuplicatePackages: Object.freeze(stringList(packageRoots.allowDuplicatePackages, 'checks.packageRoots.allowDuplicatePackages', { optional: true })),
       }),
     }),
+    model: modelSettings(raw.model),
     environment: Object.freeze({
       default: environment.default === undefined ? Object.freeze([]) : commandList(environment.default, 'environment.default'),
       stages: Object.freeze(stages),
@@ -271,6 +300,11 @@ export const workflowFile = role => {
   const file = projectConfig().workflows[role];
   if (!file) throw new Error(`unknown workflow role: ${role}`);
   return file;
+};
+export const modelConfig = () => {
+  const model = projectConfig().model;
+  if (!model) throw new ConfigError('model is required to run a model stage (provider, baseUrl, choices)');
+  return model;
 };
 export const labelName = role => {
   const name = projectConfig().labels[role];

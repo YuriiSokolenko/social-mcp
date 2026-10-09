@@ -11,18 +11,17 @@ import { stageConfig, stagePrompt } from './pi-common/stage-config.mjs';
 import { createStageRunSpec } from './pi-common/stage-run-contract.mjs';
 import { runStageWithValidationRecovery } from './pi-common/stage-validation-recovery.mjs';
 import { startModelTraceProxy } from './pi-common/model-trace-proxy.mjs';
+import { modelConfig } from './pi-common/project-config.mjs';
 import { resolveRunArtifactId, resolveValidationRunId } from './pi-common/validation-ledger.mjs';
 
 // The model alias selects what operators have already loaded behind the shared
 // Rabbit/Open Responses endpoint; this script does not start or stop runtimes.
 // verifyModelIsLoaded() checks that claim and fails loudly instead of silently
 // running a different model under the requested alias (see PR #118).
-const MODEL_CHOICES = {
-  laguna: { id: 'laguna-s-2.1-gguf', label: 'Laguna S 2.1' },
-  qwen: { id: 'Qwen3.8-Flash-Next-NVFP4', label: 'Qwen 3.8 Flash Next NVFP4' },
-};
+// The catalog, provider and endpoint are infra wiring read from `.agent-harness.json` `model`.
+const modelChoices = () => modelConfig().choices;
+export const defaultModelBaseUrl = () => modelConfig().baseUrl;
 
-export const DEFAULT_MODEL_BASE_URL = 'http://192.168.8.184:4001/v1';
 
 function controlWorkspace(env) {
   return env.GITHUB_WORKSPACE || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -106,9 +105,9 @@ function defaultModelChoice(env) {
     throw new Error(`Default Pi model config is missing: ${file}`);
   }
   const choice = fs.readFileSync(file, 'utf8').trim();
-  if (!MODEL_CHOICES[choice]) {
+  if (!modelChoices()[choice]) {
     throw new Error(
-      `Invalid default Pi model "${choice || '<empty>'}" in ${file}; expected one of: ${Object.keys(MODEL_CHOICES).join(', ')}`,
+      `Invalid default Pi model "${choice || '<empty>'}" in ${file}; expected one of: ${Object.keys(modelChoices()).join(', ')}`,
     );
   }
   return choice;
@@ -118,10 +117,10 @@ export function resolveModelId(env) {
   if (env.PI_MODEL) return env.PI_MODEL;
   const requested = String(env.PI_MODEL_CHOICE ?? '').trim();
   const choice = !requested || requested === 'default' ? defaultModelChoice(env) : requested;
-  const entry = MODEL_CHOICES[choice];
+  const entry = modelChoices()[choice];
   if (!entry) {
     throw new Error(
-      `Unknown PI_MODEL_CHOICE "${choice}", expected default or one of: ${Object.keys(MODEL_CHOICES).join(', ')}`,
+      `Unknown PI_MODEL_CHOICE "${choice}", expected default or one of: ${Object.keys(modelChoices()).join(', ')}`,
     );
   }
   return entry.id;
@@ -164,7 +163,7 @@ export function overrideProviderBaseUrl(model, env = process.env) {
 }
 
 export function forcePiProviderBaseUrl(model, env = process.env) {
-  if (model.provider !== 'hp-laguna') return;
+  if (model.provider !== modelConfig().provider) return;
   overrideProviderBaseUrl(model, env);
 }
 
@@ -182,7 +181,7 @@ async function verifyModelIsLoaded(baseUrl, expectedId) {
   if (!loaded.includes(expectedId)) {
     throw new Error(
       `Requested model "${expectedId}" is not loaded on ${baseUrl} (currently loaded: ${loaded.join(', ') || 'none'}). ` +
-      'Start it on nano first (infra/llama-gguf-experimental/start_*.sh) or pick the model that is actually running.',
+      'Load it on the model host first or pick the model that is actually running.',
     );
   }
 }
@@ -268,8 +267,8 @@ export function buildStageRunSpec({ stage, promptFile = null, raw = null, cwd = 
     prompt,
     model: {
       id: resolveModelId(env),
-      provider: env.PI_PROVIDER || 'hp-laguna',
-      baseUrl: env.PI_MODEL_BASE_URL || DEFAULT_MODEL_BASE_URL,
+      provider: env.PI_PROVIDER || modelConfig().provider,
+      baseUrl: env.PI_MODEL_BASE_URL || defaultModelBaseUrl(),
     },
     environment: childEnv,
     artifacts: {
@@ -378,7 +377,7 @@ export async function runStage(options, env = process.env) {
           },
         });
       } catch {
-        // Tracing is optional. Preserve the established hp-laguna route if the local proxy cannot start.
+        // Tracing is optional. Preserve the configured provider route if the local proxy cannot start.
         forcePiProviderBaseUrl(spec.model, env);
       }
       if (traceProxy) overrideProviderBaseUrl({ ...spec.model, baseUrl: traceProxy.baseUrl }, env);
