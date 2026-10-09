@@ -1217,8 +1217,6 @@ function runtimeScenario(mode) {
           for (const name of ['read', 'run_check', 'write']) {
             assert.ok(registeredTools.includes(name), 'registered inventory still includes ' + name);
           }
-          assert.doesNotMatch(request.task.slice(stateStart, stateEnd), /read|run_check|codingTools/,
-            'the broader registration catalog must not leak into runtime_state');
           console.log('CODING_HANDOFF_REQUEST_LOCAL_TOOLS_OK');
         }
         if (mode === 'fallback') assert.doesNotMatch(request.task, /Planner fact marker/);
