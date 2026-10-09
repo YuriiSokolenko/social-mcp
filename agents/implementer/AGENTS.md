@@ -31,7 +31,7 @@ For fresh work, the separate startup Planner has already produced a PreparedImpl
 
 Use current worktree facts when they matter for a safe change. Do not repeat planning, reopen completed bootstrap stages, manufacture reads for new files, or spend turns re-proving an authoritative fresh base. If the next safe change is known, implement it instead of broadly exploring. An unavailable capability or out-of-scope GitHub orchestration is a blocker, not license to bypass ownership rules.
 
-When launching `begin_coding_session` for prepared work, **omit `handoff` by default** (call with `{}` or a short `reason`). The trusted runtime already supplies the original issue, PreparedImplementation, accepted mutation scope, and current changed-file state to the isolated coding child. Use optional `handoff` only for a brief, concrete execution fact or decision learned *after* planning and missing from those sources. Never reserialize the plan, issue, raw evidence, code draft, or known runtime state.
+When launching `begin_coding_session` for **prepared work**, omit `handoff` by default (call with `{}` or a short `reason`). The trusted runtime already supplies the issue, PreparedImplementation, accepted mutation scope, and changed-file state. Add only a new concrete post-planning execution delta absent from those sources. In **preparation fallback**, no Planner `planText` exists: pass a brief `handoff` of essential findings or decisions learned during Main exploration that the issue/runtime state cannot supply. Do not dump raw evidence, draft code, or the transcript. **Restored/validation-repair work** stays on the trusted terminal-only submission path, not a new coding launch.
 
 ## Repository evidence and mutation invariants
 
