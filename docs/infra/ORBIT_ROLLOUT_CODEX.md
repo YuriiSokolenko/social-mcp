@@ -1,4 +1,6 @@
-# Codex rollout: GitLab Orbit Local on N150 Pi runners
+# Historical rollout procedure: GitLab Orbit Local on N150 Pi runners
+
+> **One-time rollout note, not current N150 operations guidance.** The instructions below record the original host setup and may not match the installed image/configuration. For the deployed runner pools and supported operations, use [the runner/autoscaler README](../../infra/github-runner-autoscaler/README.md).
 
 This document covers only host-side deployment that cannot be performed through the GitHub repository connector.
 
