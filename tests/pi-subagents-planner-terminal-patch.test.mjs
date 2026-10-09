@@ -176,8 +176,8 @@ test('pinned pi-subagents source patch preserves both real control-flow failure 
   const source = upstreamDecisionFixture();
   const patched = patchPiSubagentsSource(source);
   assert.match(patched, /trustedPlannerTerminalToolUse\(messages, agent\.name\)/);
-  assert.match(patched, /!acceptedTerminalPlan && \(missingOutput/);
-  assert.match(patched, /else if \(!acceptedTerminalPlan && errInfo\.hasError\)/);
+  assert.match(patched, /!acceptedTerminalToolUse && \(missingOutput/);
+  assert.match(patched, /else if \(!acceptedTerminalToolUse && errInfo\.hasError\)/);
   assert.match(patched, /PI_PLANNER_EVIDENCE_STATE_FILE/);
   assert.match(patched, /readFileSync/);
   assert.match(patched, /result\.exitCode = errInfo\.exitCode/);
