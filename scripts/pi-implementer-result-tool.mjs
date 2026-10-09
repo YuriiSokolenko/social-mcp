@@ -1,7 +1,7 @@
 import fs from 'node:fs';
-import { restoredWork } from '../infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs';
 import { Type } from 'typebox';
 
+import { restoredWork } from './pi-common/restored-work.mjs';
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';

@@ -190,8 +190,9 @@ The Implementer result tool snapshots restored-work status **when registering**
 adapter independently checks the current environment and terminal receipt when
 deciding whether its coding child may end on a tool-use turn without final
 assistant prose. Both call the same `restoredWork(env)` predicate defined in
-`patch-pi-subagents-planner-terminal.mjs`; its function source is injected
-into the pinned adapter during image build. This exemption is **Implementer
+`scripts/pi-common/restored-work.mjs`; its function source is injected
+into the pinned adapter during image build. The worker image mirrors the
+repository-relative layout so this import resolves at patch time. This exemption is **Implementer
 only**; Planner's `submit_plan` receipt checks remain separate.
 
 - `PI_RESUME_ACTIVE=true` means restored work and permits the runtime-owned

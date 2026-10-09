@@ -3,27 +3,13 @@
 // failure because the terminating assistant toolUse turn has no final prose.
 // Main revalidates this same per-lifecycle sidecar independently.
 import fs from 'node:fs';
-import { existsSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PINNED_VERSION = '0.76.1';
+import { restoredWork } from '../../scripts/pi-common/restored-work.mjs';
 
-// Shared with Implementer registration and source-injected into the pinned Pi
-// adapter. Explicit PI_RESUME_ACTIVE ('false' or '' included) overrides fallback.
-// Only an unset flag checks that PI_RESUME_PATCH is an existing, nonempty file.
-export function restoredWork(env = process.env) {
-  if (env.PI_RESUME_ACTIVE != null) return env.PI_RESUME_ACTIVE === 'true';
-  const patch = env.PI_RESUME_PATCH;
-  try {
-    if (!patch || !existsSync(patch)) return false;
-    const file = statSync(patch);
-    return file.isFile() && file.size > 0;
-  } catch {
-    return false;
-  }
-}
+const PINNED_VERSION = '0.76.1';
 
 export function acceptedTerminalPlannerReceipt(messages, state, lifecycleId) {
   if (!Array.isArray(messages) || !state || state.phase !== 'submitted' ||
@@ -140,6 +126,7 @@ export function patchPiSubagentsSource(source) {
   ensureOnce(source, conditionAnchor);
   ensureOnce(source, errorConditionAnchor);
   const policy = acceptedTerminalPlannerReceipt.toString();
+  // Inline the shared predicate: installed pi-subagents cannot import our source tree.
   const restorePolicy = restoredWork.toString();
   const implementerPolicy = acceptedTerminalImplementerReceipt.toString();
   const guard = [
