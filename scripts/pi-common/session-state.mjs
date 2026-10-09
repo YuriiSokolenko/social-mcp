@@ -145,6 +145,21 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
 }
 
 /**
+ * Terminal recovery is a strict single-tool obligation, not a preference.
+ * If the exact executor is missing/deferred, the outbound tool surface is
+ * empty rather than offering otherwise-active edit/inspection/terminal tools.
+ * The caller supplies the same canonicalizer used by the controller gate.
+ */
+export function constrainTerminalRecoveryTools(tools, requiredTool, canonicalize = name => name) {
+  if (!requiredTool) return tools;
+  if (!Array.isArray(tools)) return [];
+  return tools.filter(tool => {
+    const name = tool?.function?.name ?? tool?.name;
+    return typeof name === 'string' && canonicalize(name) === requiredTool;
+  });
+}
+
+/**
  * Pi's serialized tool definitions have already been captured from the executor registry.
  * Intersect those definitions with the current phase's exposed tools; getAllTools() may
  * report a narrower inventory in delegated coding sessions and must not veto a definition.
