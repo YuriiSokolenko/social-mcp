@@ -35,6 +35,15 @@ import { resolveCandidateBase } from './candidate-revision.mjs';
  * Implementer + product-checks own that. This helper publishes an already
  * validated tree.
  */
+// Render model-authored PR prose as inert text, never actionable GitHub Markdown.
+// The fence is longer than any backtick run in the data, so embedded fences
+// cannot escape it; normalize every line separator before rendering.
+export function renderUntrustedImplementerSummary(value) {
+  const normalized = String(value).replace(/\r\n|\r|\n|\u2028|\u2029/g, '\n');
+  const longest = [...normalized.matchAll(/`+/g)].reduce((max, match) => Math.max(max, match[0].length), 0);
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return ['Model-reported description (unverified):', '', fence + 'text', normalized, fence].join('\n');
+}
 const lines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 const gitPaths = (s) => s.split('\0').filter(Boolean);
 
@@ -334,10 +343,10 @@ export async function upsertPullRequest({
     renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted, candidateRevision }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
   ].join('\n');
-  // Opaque model Markdown is data, never authoritative validation/security headings.
-  // Quote it as untrusted prose so model-supplied headings cannot impersonate runtime sections.
+  // Untrusted resultText must be inert Markdown: blockquotes still activate
+  // issue-closing keywords, mentions and links. Use a dynamically sized fence.
   const summary = typeof metadata.result_text === 'string'
-    ? 'Model-reported description (unverified):\n' + metadata.result_text.split('\n').map(line => '> ' + line).join('\n')
+    ? renderUntrustedImplementerSummary(metadata.result_text)
     : metadata.summary;
   const body = `## Summary\n${summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
   const expectedCommit = git(['rev-parse','HEAD'], { cwd }).out.trim();
