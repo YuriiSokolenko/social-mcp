@@ -63,7 +63,11 @@ function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
   if (responses && message.type === 'function_call_output') return null;
   if (responses && message.type !== 'message') return null;
   if (message.role !== 'user' && message.role !== 'assistant') return null;
-  // A pending assistant function call without text is not an instruction carrier.
+  // An assistant message can contain both text and tool_calls. Neither that
+  // text nor its arguments are a safe instruction carrier while tool linkage
+  // is pending. Fall back to an existing provider tool description instead.
+  if (message.role === 'assistant' &&
+      (message.tool_calls != null || message.function_call != null || message.tool_call_id != null)) return null;
   // Do not invent content on tool-call linkage or replace multimodal parts.
   if (typeof message.content === 'string') {
     return { ...message, content: message.content + '\n\n' + suffix };
@@ -79,9 +83,13 @@ function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
 function appendToolDescriptionGuidance(payload, instructions) {
   const definitions = payload.tools;
   if (!Array.isArray(definitions)) return payload;
-  const index = definitions.findIndex(tool => {
+  // Prefer the last valid serialized definition so prior schemas retain their
+  // prompt-cache prefix. The instruction is a global provider capability rule,
+  // not advice about the particular tool that happens to carry it.
+  const index = definitions.findLastIndex(tool => {
     const definition = tool?.function ?? tool;
-    return typeof definition?.name === 'string' && definition.name.length > 0;
+    return typeof definition?.name === 'string' && definition.name.length > 0 &&
+      typeof definition?.description === 'string';
   });
   if (index < 0) return payload;
   const current = definitions[index];
