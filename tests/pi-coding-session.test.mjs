@@ -401,8 +401,16 @@ function runtimeScenario(mode) {
           }
         }
         // Thinking off on the wire, from the trusted runtime, whatever the settings say.
-        const providerPatch = childHandlers.get('before_provider_request');
-        assert.ok(providerPatch, 'coding-session runtime patches provider requests');
+        const realProviderPatch = childHandlers.get('before_provider_request');
+        assert.ok(realProviderPatch, 'coding-session runtime patches provider requests');
+        let lastProviderToolNames = [];
+        const providerPatch = (event, ctx) => {
+          const next = realProviderPatch(event, ctx);
+          if (Array.isArray(next?.tools)) {
+            lastProviderToolNames = next.tools.map(tool => tool.function?.name ?? tool.name);
+          }
+          return next;
+        };
         const patched = providerPatch({ payload: { model: 'm', messages: [], max_completion_tokens: 16384, chat_template_kwargs: { keep: 1, enable_thinking: true } } }, childCtx);
         assert.deepEqual(patched.chat_template_kwargs, { keep: 1, enable_thinking: false });
         assert.equal(patched.max_completion_tokens, 16384, 'the 16K ceiling is untouched');
@@ -442,6 +450,18 @@ function runtimeScenario(mode) {
           await childHandlers.get('tool_execution_end')({ ...call, result: { content: call.content } }, childCtx);
           const rewritten = await childHandlers.get('tool_result')(call, childCtx);
           assert.match(rewritten.content[0].text, /not executable in this response/);
+          // The tool_call gate and Pi's later executor-not-found hooks may
+          // observe the same unavailable call. The child sidecar must contain
+          // exactly one logical entry for it, regardless of hook duplication.
+          const ghostCall = { toolName: 'ghost_tool', toolCallId: 'fork-ghost-1', input: {} };
+          const ghostBlocked = await childHandlers.get('tool_call')(ghostCall, childCtx);
+          assert.equal(ghostBlocked?.block, true);
+          const ghostResult = { ...ghostCall, isError: true, content: [{ type: 'text', text: 'Tool ghost_tool not found' }] };
+          await childHandlers.get('tool_execution_end')({ ...ghostResult, result: { content: ghostResult.content } }, childCtx);
+          await childHandlers.get('tool_result')(ghostResult, childCtx);
+          const sidecar = JSON.parse(fs.readFileSync(JSON.parse(process.env.PI_CODING_SESSION).capabilityFile, 'utf8'));
+          assert.deepEqual(sidecar.unavailable_tools, ['ghost_tool'], 'both missing-executor callbacks create only one unavailable-tool sidecar entry');
+          console.log('FORK_UNAVAILABLE_SIDECAR_ONCE_OK');
           console.log('FORK_DEFERRED_CAPABILITY_OK');
         }
         if (mode === 'tool-contract') {
@@ -631,6 +651,15 @@ function runtimeScenario(mode) {
         const childCall = async (name, input) => {
           childHandlers.get('turn_start')({ turnIndex: turn });
           if (!definition.tools.includes(name)) { turn++; return { block: true, reason: name + ' is not in the agent tool allowlist' }; }
+          // A new simulated model turn rebuilds the provider request only when
+          // the desired active tool was NOT in the preceding serialized request.
+          // Redundant requests would consume the one-shot reasoning/fallback
+          // phase and change the very repair state these tests exercise.
+          if (childActive.includes(name) && !lastProviderToolNames.includes(name)) {
+            providerPatch({ payload: {
+              model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
+            } }, childCtx);
+          }
           const event = { toolName: name, toolCallId: 'c' + turn, input };
           const blocked = await childHandlers.get('tool_call')(event, childCtx);
           if (blocked) { await childHandlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 400 } } }, childCtx); return blocked; }
@@ -653,6 +682,11 @@ function runtimeScenario(mode) {
         };
         const settleRepairRetry = async variant => {
           childHandlers.get('turn_start')({ turnIndex: turn });
+          if (!lastProviderToolNames.includes('retry_last_failed_check')) {
+            providerPatch({ payload: {
+              model: 'm', messages: [], tools: childActive.map(toolName => ({ type: 'function', function: { name: toolName } })),
+            } }, childCtx);
+          }
           const event = { toolName: 'retry_last_failed_check', toolCallId: 'repair-retry-' + turn, input: {} };
           const blocked = await childHandlers.get('tool_call')(event, childCtx);
           assert.equal(blocked, undefined, 'exact retry passes the real runtime gate');
@@ -1028,6 +1062,9 @@ function runtimeScenario(mode) {
           ];
           for (let index = 0; index < flipFlop.length; index++) {
             await settleSyntheticDifferentScopePass();
+            // Each new failed-check scope reopens an evidence-only provider turn.
+            // Read the authoritative test before the next mutation turn.
+            if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
             await childCall('safe_edit', {
               path: 'test_generated.py',
               operation: 'insert_after',
@@ -1047,6 +1084,8 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-volatile-message') {
+          // Repair evidence must precede a new request containing mutation tools.
+          if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
             operation: 'insert_after',
@@ -1061,6 +1100,8 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-semantic-number') {
+          // Evidence-only and mutation-only provider phases are distinct requests.
+          if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
             operation: 'insert_after',
@@ -1104,6 +1145,8 @@ function runtimeScenario(mode) {
         }
 
         if (mode === 'repair-pass-reset') {
+          // An authoritative failed check exposes read before a scoped fix.
+          if (childActive.includes('read')) await childCall('read', { path: 'test_generated.py' });
           await childCall('safe_edit', {
             path: 'test_generated.py',
             operation: 'insert_after',
@@ -1231,6 +1274,12 @@ function runtimeScenario(mode) {
       }
       const filteredPayload = handlers.get('before_provider_request')({ payload: { model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'invented_tool' } }] } }, ctx);
       assert.deepEqual(filteredPayload.tools, [], 'provider never advertises a non-active tool');
+      // That deliberately malformed provider probe is NOT the subsequent model
+      // response. Serialize the actual active definitions before replaying tool calls:
+      // a zero-tool request must never gain permissions from getActiveTools().
+      handlers.get('before_provider_request')({
+        payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+      }, ctx);
       if (mode === 'deferred-capability' || mode === 'deferred-then-removed') {
         // #441: submit_result became active after pi assembled this payload.
         handlers.get('turn_start')({ turnIndex: 0 });
@@ -1291,8 +1340,17 @@ function runtimeScenario(mode) {
       }
       tools.get('run_check').execute = async () => ({ content: [{ type: 'text', text: 'check passed' }] });
       let turn = 0;
-      async function call(name, input = {}, { expectError = null } = {}) {
+      async function call(name, input = {}, { expectError = null, usePreparedRequest = false } = {}) {
         handlers.get('turn_start')({ turnIndex: turn });
+        // Every helper invocation stands in for a model turn. New tools enter
+        // only through a provider boundary. A prepared resultText submission
+        // already has a separate serialized request with a verified 4K ceiling;
+        // do not overwrite that snapshot with the generic test fixture.
+        if (!usePreparedRequest) {
+          handlers.get('before_provider_request')({
+            payload: { model: 'm', messages: [], tools: active.map(toolName => ({ type: 'function', function: { name: toolName } })) },
+          }, ctx);
+        }
         const event = { toolName: name, toolCallId: name + turn, input };
         assert.equal(await handlers.get('tool_call')(event, ctx), undefined, name + ' was blocked');
         // Pi completes the provider assistant message before executing its tool calls.
@@ -1811,7 +1869,17 @@ function runtimeScenario(mode) {
           const again = await handlers.get('tool_call')({ toolName: 'subagents_enable', toolCallId: 'repeat-again-' + turn, input: {} }, ctx);
           assert.equal(again.block, true);
           await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-          assert.equal(aborts, 1, 'repeated already-satisfied calls still count as no productive action and trip the watchdog');
+          assert.equal(aborts, 0, 'an unexposed repeated tool gets one bounded request-local correction');
+          assert.match(steers.at(-1), /RUNTIME UNAVAILABLE CAPABILITY CORRECTION/);
+          // The next provider request remains without the removed one-shot tool.
+          const correction = handlers.get('before_provider_request')({ payload: providerPayload }, ctx);
+          assert.ok(!correction.tools.some(tool => tool.function?.name === 'subagents_enable'));
+          handlers.get('turn_start')({ turnIndex: turn });
+          const exhausted = await handlers.get('tool_call')({ toolName: 'subagents_enable', toolCallId: 'repeat-exhausted-' + turn, input: {} }, ctx);
+          assert.equal(exhausted.block, true);
+          await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+          assert.equal(aborts, 1, 'repeated unavailable one-shot tool exhausts the bounded correction');
+          assert.equal(JSON.parse(fs.readFileSync(runtimeFailure, 'utf8')).failure_code, 'PI_UNAVAILABLE_CAPABILITY_ABORT');
           process.exit(0);
         }
 
@@ -2132,6 +2200,10 @@ function runtimeScenario(mode) {
         if (partialRecovery) {
           assert.ok(active.includes('retry_last_failed_check'), 'exact failed-check retry remains available after inspection');
           assert.ok(active.includes('write'), 'inspection reopens ordinary mutation tools under accepted-scope enforcement');
+          const mutationRequest = handlers.get('before_provider_request')({
+            payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+          }, ctx);
+          assert.ok(mutationRequest.tools.some(tool => tool.function?.name === 'write'), 'inspected recovery publishes mutation tools on a new request');
           handlers.get('turn_start')({ turnIndex: turn });
           const outsideWrite = await handlers.get('tool_call')({
             toolName: 'write',
@@ -2155,6 +2227,10 @@ function runtimeScenario(mode) {
           assert.equal(aborts, 0, 'local parent repair remains recoverable');
           assert.ok(active.includes('retry_last_failed_check'), 'successful local repair preserves the exact failed-check retry path');
 
+          const validationRequest = handlers.get('before_provider_request')({
+            payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+          }, ctx);
+          assert.ok(validationRequest.tools.some(tool => tool.function?.name === 'retry_last_failed_check'), 'exact retry is serialized after the new mutation');
           handlers.get('turn_start')({ turnIndex: turn });
           const retryCall = await handlers.get('tool_call')({
             toolName: 'retry_last_failed_check',
@@ -2205,13 +2281,17 @@ function runtimeScenario(mode) {
         // for integrateLatestDev()/git publication checks. Match production here.
         process.chdir(cwd);
         assert.equal(fs.realpathSync(process.cwd()), fs.realpathSync(cwd));
+        // #631: the trusted submit_result protocol now requires one explicit
+        // submission prelude and an accepted resultText tool call after Pi's
+        // final assistant toolUse message, on a verified-budget request.
         await call('begin_result_submission', {});
         const resultOnly = handlers.get('before_provider_request')({ payload: {
           model: 'm', messages: [], max_completion_tokens: 4096,
           tools: [{ type: 'function', function: { name: 'submit_result' } }],
         } }, ctx);
         assert.deepEqual(resultOnly.tools.map(tool => tool.function.name), ['submit_result']);
-        await call('submit_result', { resultText: 'Publish coding-session changes from the parent.' });
+        await call('submit_result', { resultText: 'Publish coding-session changes from the parent.' },
+          { usePreparedRequest: true });
         const metadata = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
         assert.equal(metadata.scope_enforcement, 'predeclared');
         assert.deepEqual(metadata.accepted_scope.accepted.map(entry => entry.path), ['generated.py', 'test_generated.py']);
@@ -2626,8 +2706,9 @@ test('OpenAI SDK provider error turns preserve forcing on 408/429 and recover on
 
 test('an already-completed repeated tool call clears forcing but still fails closed via the progress watchdog', () => {
   const logs = runtimeScenario('action-repeat-abort');
-  assert.match(logs, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED .*"alreadySatisfied":true/);
-  assert.match(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
+  assert.match(logs, /PI_UNAVAILABLE_TOOL_ATTEMPT .*"attemptedTool":"subagents_enable"/);
+  assert.match(logs, /PI_UNAVAILABLE_CAPABILITY_ABORT/);
+  assert.doesNotMatch(logs, /PI_ACTION_REQUIRED_ABORT: second consecutive prose-only action-required turn/);
 });
 
 test('#470 missing evidence executor restores the permit through the real runtime hooks', () => {
@@ -2802,6 +2883,7 @@ test('#441 a tool activated after payload assembly is deferred, not advertised; 
 test('#441 a coding-session fork defers a late-active tool and recovers from calling it', () => {
   const logs = runtimeScenario('fork-deferred-capability');
   assert.match(logs, /PI_CAPABILITY_LIFECYCLE_MISMATCH .*"attemptedTool":"submit_result"/);
+  assert.match(logs, /FORK_UNAVAILABLE_SIDECAR_ONCE_OK/);
   assert.match(logs, /FORK_DEFERRED_CAPABILITY_OK/);
   assert.match(logs, /"phase":"completed".*"submitted":true/);
 });

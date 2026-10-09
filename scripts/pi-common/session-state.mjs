@@ -28,6 +28,123 @@ export function providerToolNames(payload) {
 }
 
 /**
+ * Pi's serialized tool definitions have already been captured from the executor registry.
+ * Intersect those definitions with the current phase's exposed tools; getAllTools() may
+ * report a narrower inventory in delegated coding sessions and must not veto a definition.
+ * Never inject a newly active tool into an already assembled provider request.
+ */
+export function reconcileProviderToolSurface(payload, { activeTools = [] } = {}) {
+  if (!Array.isArray(payload?.tools)) return { payload };
+  const active = new Set(activeTools);
+  const tools = payload.tools.filter(tool => {
+    const name = tool?.function?.name ?? tool?.name;
+    return typeof name === 'string' && active.has(name);
+  });
+  return {
+    payload: tools.length === payload.tools.length && tools.every((tool, i) => tool === payload.tools[i])
+      ? payload
+      : { ...payload, tools },
+  };
+}
+
+/**
+ * Keep the request-local capability guidance in ONE stable carrier: the final
+ * serialized tool definition. Switching between message text and tool schema
+ * changes a much earlier llama.cpp prompt prefix on tool-result turns.
+ * An empty tool list has no schema carrier; fall back to an existing safe text
+ * message without adding a chat role. Never modify tool results or linked
+ * assistant calls. The dispatch gate remains authoritative either way.
+ */
+function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
+  if (!message || typeof message !== 'object') return null;
+  if (responses && message.type === 'function_call_output') return null;
+  if (responses && message.type !== 'message') return null;
+  if (message.role !== 'user' && message.role !== 'assistant') return null;
+  // An assistant message can contain both text and tool_calls. Neither that
+  // text nor its arguments are a safe instruction carrier while tool linkage
+  // is pending. Fall back to an existing provider tool description instead.
+  if (message.role === 'assistant' &&
+      (message.tool_calls != null || message.function_call != null || message.tool_call_id != null)) return null;
+  // Do not invent content on tool-call linkage or replace multimodal parts.
+  if (typeof message.content === 'string') {
+    return { ...message, content: message.content + '\n\n' + suffix };
+  }
+  if (!Array.isArray(message.content)) return null;
+  const parts = message.content;
+  const last = parts[parts.length - 1];
+  const allowedTypes = responses ? ['input_text', 'output_text'] : ['text', 'input_text'];
+  if (!last || !allowedTypes.includes(last.type) || typeof last.text !== 'string') return null;
+  return { ...message, content: [...parts.slice(0, -1), { ...last, text: last.text + '\n\n' + suffix }] };
+}
+
+const CAPABILITY_CONTRACT_START = '\n\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_START]\n';
+const CAPABILITY_CONTRACT_END = '\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_END]';
+
+function appendToolDescriptionGuidance(payload, instructions) {
+  const definitions = payload.tools;
+  if (!Array.isArray(definitions) || definitions.length === 0) return payload;
+  // Tool definitions are already reconciled against the active phase. Keep
+  // the rest of the schema array intact for llama.cpp prefix-cache reuse.
+  const index = definitions.findLastIndex(tool => {
+    const definition = tool?.function ?? tool;
+    return typeof definition?.name === 'string' && definition.name.length > 0;
+  });
+  if (index < 0) return payload;
+  const current = definitions[index];
+  const nested = current.function && typeof current.function === 'object';
+  const definition = nested ? current.function : current;
+  const description = typeof definition.description === 'string' ? definition.description : '';
+  const start = description.lastIndexOf(CAPABILITY_CONTRACT_START);
+  const original = start >= 0 && description.endsWith(CAPABILITY_CONTRACT_END)
+    ? description.slice(0, start)
+    : description;
+  const next = original + CAPABILITY_CONTRACT_START + instructions + CAPABILITY_CONTRACT_END;
+  if (description === next) return payload; // repeated provider hook: no double append
+  const patchedDefinition = { ...definition, description: next };
+  const patchedTool = nested ? { ...current, function: patchedDefinition } : patchedDefinition;
+  return { ...payload, tools: [...definitions.slice(0, index), patchedTool, ...definitions.slice(index + 1)] };
+}
+
+export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false, onMissingCarrier = null } = {}) {
+  if (!payload || !snapshot || !trustedRuntimeEnvelope) return payload;
+  const hasMessages = Array.isArray(payload.messages);
+  const hasInput = Array.isArray(payload.input);
+  if (hasMessages === hasInput) return payload; // unknown or ambiguous provider envelope
+  // Trust comes from the installed Implementer runtime, not tool-result contents.
+  // This also survives compaction that removes the original role overlay.
+  const key = hasMessages ? 'messages' : 'input';
+  const history = payload[key];
+  if (history.length === 0) return payload; // no real conversation envelope to update
+  const deferred = (snapshot.deferredTools ?? [])
+    .filter(name => !snapshot.executableTools.includes(name));
+  const instructions = [
+    'RUNTIME EXECUTABLE TOOL CONTRACT (this provider request only):',
+    activeToolGuidance(snapshot.executableTools),
+    'Earlier tool names in system contracts, task handoffs, or conversation history do not grant execution.',
+    ...(deferred.length
+      ? [`DEFERRED / NOT EXECUTABLE IN THIS REQUEST: ${deferred.join(', ')}. Do not call these now; only a subsequent provider request that actually lists a tool can enable its use.`]
+      : []),
+    'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
+  ].join(' ');
+  if (Array.isArray(payload.tools) && payload.tools.length > 0) {
+    // Always prefer the same tool-description carrier on every tool-bearing
+    // request, regardless of whether the final turn is user, assistant or tool.
+    const updated = appendToolDescriptionGuidance(payload, instructions);
+    if (updated === payload && providerToolNames(payload).length === 0) {
+      onMissingCarrier?.('no_serialized_tool_definition');
+    }
+    return updated;
+  }
+  const index = history.length - 1;
+  const patchedLast = appendCapabilitySuffix(history[index], instructions, { responses: hasInput });
+  if (!patchedLast) {
+    onMissingCarrier?.('no_safe_text_or_tool_carrier');
+    return payload;
+  }
+  return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
+}
+
+/**
  * Classifies pi's `Tool X not found` result against the authoritative provider-request snapshot.
  * pi resolves tool calls against the turn context captured with the request, so:
  * - a tool the request advertised but pi cannot execute is a real tool-contract failure;
