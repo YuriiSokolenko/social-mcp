@@ -29,7 +29,7 @@ const clean = (value) => typeof value === 'string' ? value.trim() : '';
 function assertRuntimePublicationFiles(changedPaths, receipt) {
   const files = normalizeImplementerFiles(changedPaths);
   const accepted = new Set(receipt.accepted.map(entry => entry.path));
-  const scratch = file => /(^|\\/)(?:\\.probe(?:\\d+)?\\.txt|\\.pi-tmp-[^/]+)$/.test(file);
+  const scratch = file => /(^|\/)(?:\.probe(?:\d+)?\.txt|\.pi-tmp-[^/]+)$/.test(file);
   const unpublishable = files.filter(file => !accepted.has(file) || scratch(file));
   try {
     assertNoScratchArtifacts(files);
