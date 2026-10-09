@@ -106,7 +106,7 @@ function fakePi() {
   return { pi, tools, events, steers, budgets, activeTools, emit };
 }
 
-async function enterSubmission(h) {
+async function enterSubmission(h, stream = true) {
   const call = { toolName: 'begin_result_submission', toolCallId: 'begin-665', input: {} };
   assert.equal(await h.emit('tool_call', call), undefined);
   const result = await h.tools.get('begin_result_submission').execute();
@@ -118,7 +118,8 @@ async function enterSubmission(h) {
   assert.deepEqual(h.activeTools.at(-1), ['submit_result']);
   assert.equal(h.budgets.at(-1), 4096);
   assert.equal(h.steers.length, 1, 'handoff is on a new provider turn');
-  const wire = await h.emit('before_provider_request', { payload: payload() });
+  const wire = await h.emit('before_provider_request', { payload: { ...payload(), stream } });
+  assert.equal(wire.stream, stream);
   assert.equal(wire.tool_choice, 'auto');
   assert.deepEqual(wire.tools[0].function.parameters.required, ['resultText']);
   return wire;
@@ -145,26 +146,26 @@ test('#665 real provider callback chain accepts executed Pi toolUse without extr
   assert.equal(h.budgets.at(-1), 16384, 'initial model budget restored');
 });
 
-test('#665 #662 stop with syntactically valid tool_calls but no execution remains a correction', async () => {
-  const h = fakePi();
-  await enterSubmission(h);
-  // #662 SSE carried valid submit_result arguments, but finish_reason=stop.
-  // Pi therefore had no verified terminal toolUse/tool execution.
-  // Raw SSE may include a parseable tool call that Pi attempts, but a stop
-  // response cannot satisfy the verified toolUse admission gate.
-  assert.equal(await h.emit('tool_call', emittedCall), undefined);
-  await h.emit('message_end', { message: assistant('stop', ['done-665']) });
-  await h.emit('tool_execution_end', { ...emittedCall, isError: true });
-  await h.emit('turn_end');
-  assert.equal(h.steers.length, 2);
-  assert.match(h.steers.at(-1).message, /FORMAT CORRECTION/);
-  await h.emit('before_provider_request', { payload: payload() });
-  assert.equal(await h.emit('tool_call', emittedCall), undefined);
-  await h.emit('message_end', { message: assistant('stop', ['done-665']) });
-  await h.emit('tool_execution_end', { ...emittedCall, isError: true });
-  await h.emit('turn_end');
-  assert.equal(h.pi.aborted, true, 'bounded correction exhausted; never accept raw SSE');
-  assert.equal(h.steers.length, 2, 'no third model correction');
+test('#665 #662 valid-JSON tool_calls + stop without trusted execution fail closed in both modes', async () => {
+  for (const stream of [true, false]) {
+    const h = fakePi();
+    await enterSubmission(h, stream);
+    // #662 SSE tool_call deltas are parseable, but finish_reason=stop.
+    // A bare tool call is never a successful toolUse/terminal execution.
+    assert.equal(await h.emit('tool_call', emittedCall), undefined);
+    await h.emit('message_end', { message: assistant('stop', ['done-665']) });
+    await h.emit('tool_execution_end', { ...emittedCall, isError: true });
+    await h.emit('turn_end');
+    assert.equal(h.steers.length, 2);
+    assert.match(h.steers.at(-1).message, /FORMAT CORRECTION/);
+    await h.emit('before_provider_request', { payload: { ...payload(), stream } });
+    assert.equal(await h.emit('tool_call', emittedCall), undefined);
+    await h.emit('message_end', { message: assistant('stop', ['done-665']) });
+    await h.emit('tool_execution_end', { ...emittedCall, isError: true });
+    await h.emit('turn_end');
+    assert.equal(h.pi.aborted, true, 'bounded correction exhausted; never accept raw SSE');
+    assert.equal(h.steers.length, 2, 'no third model correction');
+  }
 });
 
 test('#665 truncated stream retries once with verified 8192 budget', async () => {
