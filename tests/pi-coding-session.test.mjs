@@ -2456,6 +2456,26 @@ function runtimeScenario(mode) {
         assert.ok(recoveryRequest.tools.some(tool => tool.function.name === 'read'));
         assert.ok(!recoveryRequest.tools.some(tool => ['bash', 'repo_search', 'begin_coding_session'].includes(tool.function.name)));
 
+        // Before inspecting preserved work, the ordinary recovery guard must
+        // reject unrelated paths independently of provider-name correction.
+        handlers.get('turn_start')({ turnIndex: turn });
+        handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+        }, ctx);
+        const unrelatedRead = await handlers.get('tool_call')({
+          toolName: 'read',
+          toolCallId: 'unrelated-recovery-read-' + turn,
+          input: { path: 'README.md' },
+        }, ctx);
+        assert.equal(unrelatedRead.block, true);
+        assert.match(unrelatedRead.reason, /recovery read is limited to preserved changed publishable paths/);
+        console.log('CODING_RECOVERY_WRONG_PATH_BLOCKED_OK');
+        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
+        assert.equal(aborts, 0, 'wrong-path read is rejected without consuming the preserved recovery state');
+        // The next provider turn has a fresh, request-local wire inventory.
+        handlers.get('before_provider_request')({
+          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
+        }, ctx);
         handlers.get('turn_start')({ turnIndex: turn });
         const unavailableRecoveryTool = partialRecovery ? 'bash' : 'begin_coding_session';
         const unavailableRecoveryAttempt = await handlers.get('tool_call')({
@@ -2494,22 +2514,7 @@ function runtimeScenario(mode) {
         assert.equal(aborts, 0, 'an authorized recovery read resolves the one corrective provider request');
         assert.match(recovered.content[0].text, /REQUIRED_CONSTANT/);
 
-        // A later out-of-scope read is still blocked under the ordinary recovery
-        // policy, independently of the already-resolved provider-name incident.
-        handlers.get('turn_start')({ turnIndex: turn });
-        handlers.get('before_provider_request')({
-          payload: { model: 'm', messages: [], tools: active.map(name => ({ type: 'function', function: { name } })) },
-        }, ctx);
-        const unrelatedRead = await handlers.get('tool_call')({
-          toolName: 'read',
-          toolCallId: 'unrelated-recovery-read-' + turn,
-          input: { path: 'README.md' },
-        }, ctx);
-        assert.equal(unrelatedRead.block, true);
-        assert.match(unrelatedRead.reason, /recovery read is limited to preserved changed publishable paths/);
-        console.log('CODING_RECOVERY_WRONG_PATH_BLOCKED_OK');
-        await handlers.get('turn_end')({ turnIndex: turn++, message: { usage: { output: 100 } } }, ctx);
-        assert.equal(aborts, 0, 'wrong-path read is rejected without consuming the preserved recovery state');
+
         assert.ok(active.includes('safe_edit') || active.includes('edit'), 'bounded inspection opens local accepted-scope repair');
         assert.ok(!active.includes('begin_coding_session'), 'inspection does not reopen a second coding fork');
         assert.ok(!active.includes('bash'), 'inspection does not reopen raw shell');
