@@ -51,7 +51,7 @@ test('#682 out-of-request read is blocked, corrected once and then fails durably
       hooks.get('turn_start')({ turnIndex: 0 });
       const outbound = hooks.get('before_provider_request')({ payload: payload() }, ctx);
       assert.deepEqual(outbound.tools.map(t => t.function.name), ['safe_edit', 'submit_result']);
-      const first = await hooks.get('tool_call')({ toolName: 'read', toolCallId: 'c1', input: { path: 'x' } }, ctx);
+      const first = await hooks.get('tool_call')({ toolName: 'read', input: { path: 'x' } }, ctx);
       assert.equal(first.block, true);
       assert.match(first.reason, /provider tool-name contract violation/);
       await hooks.get('turn_end')(response('c1'), ctx);
@@ -71,6 +71,7 @@ test('#682 out-of-request read is blocked, corrected once and then fails durably
       assert.equal(failure.failure_class, 'model_execution_abort');
       assert.deepEqual(failure.requestedToolNames, ['safe_edit', 'submit_result']);
       assert.deepEqual(failure.returnedToolNames, ['read']);
+      assert.deepEqual(failure.requestedToolNames, ['safe_edit', 'submit_result']);
       assert.equal(failure.correctionAttempts, 1);
       assert.equal(failure.checkpoint.worktree_preserved, true);
     `;
@@ -85,6 +86,8 @@ test('#682 out-of-request read is blocked, corrected once and then fails durably
     assert.equal(child.status, 0, child.stderr + child.stdout);
     assert.match(child.stderr, /PI_PROVIDER_TOOL_NAME_VIOLATION/);
     assert.match(child.stderr, /PI_PROVIDER_TOOL_NAME_CORRECTION_FAILED/);
+    assert.equal((child.stderr.match(/PI_PROVIDER_TOOL_NAME_VIOLATION /g) ?? []).length, 2,
+      'id-less tool_call and decoded turn_end with an id describe the SAME first violation');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
