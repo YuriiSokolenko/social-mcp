@@ -234,6 +234,7 @@ test('text-only result submission advertises no model-owned publication metadata
       const tool = registered.get('submit_result');
       assert.deepEqual(Object.keys(tool.parameters.properties), ['resultText', 'already_satisfied', 'blocked_reason']);
       assert.deepEqual(tool.parameters.required, []);
+      assert.equal(tool.parameters.additionalProperties, false, 'legacy files strings are never valid terminal metadata');
       assert.equal(registered.get('begin_result_submission').parameters.additionalProperties, false);
       assert.equal(resultProviderBudgetEvidence({ max_completion_tokens: 4096 }, 4096).verified, true);
       assert.equal(resultProviderBudgetEvidence({ max_completion_tokens: 2048 }, 4096).verified, false);
