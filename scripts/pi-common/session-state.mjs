@@ -96,7 +96,7 @@ export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
 
   // A dedicated submit_result-only request is terminal even in a validation
   // repair attempt. Do not suggest an edit when no repair tool is serialized.
-  if (mode === 'main' && (resumed || validationRepair) && (!authorizedRepair || terminalOnly)) {
+  if ((resumed || validationRepair) && (terminalOnly || (mode === 'main' && !authorizedRepair))) {
     append('submit_result', 'Restored/validation-repair terminal-only state: call submit_result with no arguments immediately. Do not inspect, edit, or validate before submission.');
     if (!has('submit_result')) {
       hints.push('Restored/validation-repair terminal-only state: the terminal action submit_result is unavailable in this request. Preserve the worktree; do not invent a call or restart fresh work.');
