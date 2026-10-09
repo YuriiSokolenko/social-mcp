@@ -65,21 +65,133 @@ export function compactImplementerSkillPrompt(systemPrompt) {
     + systemPrompt.slice(sections[0].index + oldSection.length);
 }
 
+
+// Main retains full Pi skill discovery. Only the advertised system-prompt catalog
+// is curated; its non-featured entries stay in a lossless name/location index.
+// This is a relevance hint, NEVER an authorization boundary or a tool grant.
+const NON_DISTINCTIVE_SKILL_WORDS = new Set([
+  'skill', 'skills', 'general', 'common', 'guide', 'guidance', 'patterns',
+  'practice', 'practices', 'best', 'modern', 'agent', 'agents', 'tools',
+  'development', 'implementation', 'code', 'coding', 'project', 'repository',
+  'testing', 'test', 'workflow', 'workflows', 'use', 'using',
+]);
+const TOPIC_SIGNALS = [
+  { match: /(?:\.py\b|\.pyi\b|\bpython\b|\bpytest\b|\bruff\b)/i, names: ['python', 'pytest', 'py'] },
+  { match: /(?:\.(?:js|jsx|ts|tsx|mjs|cjs)\b|\bjavascript\b|\btypescript\b|\bnode\.?js\b|\bvitest\b)/i,
+    names: ['javascript', 'typescript', 'node', 'js', 'ts'] },
+  { match: /(?:\bDockerfile\b|docker[\s-]?compose|compose\.ya?ml|\bdocker\b|\bcontainer(?:s)?\b)/i,
+    names: ['docker', 'container', 'compose'] },
+  { match: /(?:\.github\/workflows\/|\bgithub actions\b|\bCI\/CD\b|\bworkflow_dispatch\b)/i,
+    names: ['github', 'actions', 'ci', 'workflow'] },
+  { match: /(?:\bOAuth\b|\bauthentication\b|\bauthorization\b|\bsecurity\b|\bthreat\b)/i,
+    names: ['security', 'auth', 'oauth'] },
+  { match: /(?:\barchitecture\b|\bmodule boundaries\b|\bdesign pattern\b)/i,
+    names: ['architecture', 'design'] },
+];
+
+function relevantSkillNames(entries, taskText, limit = 5) {
+  const text = typeof taskText === 'string' ? taskText.slice(0, 12000) : '';
+  const terms = new Set((text.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? [])
+    .filter(word => !NON_DISTINCTIVE_SKILL_WORDS.has(word)));
+  const signals = TOPIC_SIGNALS.filter(topic => topic.match.test(text));
+  const matches = entries.map(([,, , name]) => {
+    const words = decodeXml(name).toLowerCase().split(/[^a-z0-9]+/)
+      .filter(word => word.length > 2 && !NON_DISTINCTIVE_SKILL_WORDS.has(word));
+    const exact = words.length >= 2 && text.toLowerCase().includes(words.join(' '));
+    const score = (exact ? 6 : 0)
+      + words.reduce((total, word) => total + (terms.has(word) ? 4 : 0), 0)
+      + signals.reduce((total, signal) =>
+        total + (words.some(word => signal.names.includes(word)) ? 7 : 0), 0);
+    return { name, score };
+  }).filter(item => item.score > 0);
+  matches.sort((a, b) => b.score - a.score);
+  return new Set(matches.slice(0, Math.max(0, Math.min(6, limit))).map(item => item.name));
+}
+
+/**
+ * Keep up to five task-relevant full skill summaries and move the remainder to
+ * an exact-path directory. Pi continues to register ALL skills. A model may
+ * inspect any indexed SKILL.md when an actual serialized tool permits it.
+ * When markup is unfamiliar or incomplete, retain the original Pi prompt.
+ */
+export function curateImplementerSkillPrompt(systemPrompt, { taskText = '', maxFeatured = 5 } = {}) {
+  if (typeof systemPrompt !== 'string') return systemPrompt;
+  const sections = [...systemPrompt.matchAll(SKILLS_SECTION_RE)];
+  if (sections.length !== 1) return systemPrompt;
+  const oldSection = sections[0][0];
+  const catalogs = [...oldSection.matchAll(AVAILABLE_SKILLS_RE)];
+  if (catalogs.length !== 1) return systemPrompt;
+  const entriesText = catalogs[0][1];
+  const entries = [...entriesText.matchAll(SKILL_ENTRY_RE)];
+  const openingCount = (entriesText.match(/<skill>/g) ?? []).length;
+  if (!entries.length || entries.length !== openingCount ||
+      entriesText.replace(SKILL_ENTRY_RE, '').trim()) return systemPrompt;
+  if (entries.some(([, name, , location]) =>
+    !name.trim() || !location.trim() || /[\r\n\t]/.test(name.trim()) ||
+    /[\r\n\t]/.test(location.trim()))) return systemPrompt;
+  // Duplicate names would make the directory ambiguous: fail open.
+  const allNames = entries.map(([, name]) => name.trim());
+  if (new Set(allNames).size !== allNames.length) return systemPrompt;
+
+  // Put the name in a fixed tuple position so ranking does not depend on a
+  // fragile object->XML round trip. Keep selection deterministic.
+  const featuredNames = relevantSkillNames(
+    entries.map(([, name, description, location]) => [description, location, null, name]),
+    taskText, maxFeatured,
+  );
+  const featured = [];
+  const indexed = [];
+  for (const [, name, description, location] of entries) {
+    if (featuredNames.has(name)) {
+      featured.push('<skill><name>' + name.trim() + '</name><description>'
+        + briefDescription(description) + '</description><location>'
+        + location.trim() + '</location></skill>');
+    } else {
+      // XML-encoded names/locations are preserved byte-for-byte, not guessed
+      // from a directory pattern. No tool is invoked just to rediscover them.
+      indexed.push(name.trim() + '\t' + location.trim());
+    }
+  }
+  const replacement = [
+    '<skills>',
+    'Featured task-relevant instructions are listed below. Skills are not tools or permissions.',
+    'All remaining discovered skills are indexed with exact SKILL.md paths. Inspect a file only through a tool actually present in this request; this listing does not grant one.',
+    '<available_skills>',
+    ...featured,
+    '</available_skills>',
+    '<skill_discovery_index>',
+    'Other skills (name TAB exact SKILL.md path):',
+    ...indexed,
+    '</skill_discovery_index>',
+    '</skills>',
+  ].join('\n');
+  // A failed optimization must not inflate the system prompt.
+  if (Buffer.byteLength(replacement, 'utf8') >= Buffer.byteLength(oldSection, 'utf8')) {
+    return compactImplementerSkillPrompt(systemPrompt);
+  }
+  return systemPrompt.slice(0, sections[0].index) + replacement
+    + systemPrompt.slice(sections[0].index + oldSection.length);
+}
+
 export default function implementerSkillIndex(pi) {
   pi.on('before_agent_start', event => {
     // The Bootstrap Planner has a separate Pi process. Coding child has its own
     // isolated extension allowlist and inheritSkills: false.
     if (process.env.PI_STAGE !== 'implementer' || process.env.PI_CODING_SESSION) return;
     const before = event.systemPrompt;
-    const after = compactImplementerSkillPrompt(before);
+    const after = curateImplementerSkillPrompt(before, { taskText: event.prompt });
     if (after === before) return;
     const names = [...after.matchAll(/<name>([^<]+)<\/name>/g)].map(match => match[1]);
+    const index = after.match(/<skill_discovery_index>([\s\S]*?)<\/skill_discovery_index>/)?.[1] ?? '';
+    const discoverable = index.split('\n').filter(line => line.includes('\t')).length;
     console.log(`PI_MAIN_SKILLS ${JSON.stringify({
       phase: 'catalog_compacted',
       originalBytes: Buffer.byteLength(before, 'utf8'),
       compactBytes: Buffer.byteLength(after, 'utf8'),
       savedBytes: Buffer.byteLength(before, 'utf8') - Buffer.byteLength(after, 'utf8'),
       skillCount: names.length,
+      indexedSkillCount: discoverable,
+      totalDiscoverableSkills: names.length + discoverable,
       skillNames: names,
     })}`);
     return { systemPrompt: after };
