@@ -1576,11 +1576,18 @@ export default function (pi) {
   // Only a tool the authoritative request snapshot advertised is a real contract failure; returns
   // replacement guidance for the other (recoverable) classes.
   function profileHiddenToolAdvice(name, snapshot = providerCapabilitySnapshot) {
+    if (['grep', 'find', 'ls'].includes(name)) return `BLOCKED: ${name} is permanently forbidden in Main; no capability grant can enable it. Use the permitted read or repository search tools.`;
     const group = optionalMainToolGroup(name);
     const permitted = snapshot?.executableTools?.includes(MAIN_CAPABILITY_REQUEST_TOOL);
     return permitted
       ? `BLOCKED: ${name} is intentionally hidden by the Main tool profile, not newly active. If this optional capability is genuinely required, call ${MAIN_CAPABILITY_REQUEST_TOOL} with group=${group} and a concrete reason; only a later provider request may expose ${name}. Do not retry this tool now.`
       : `BLOCKED: ${name} is hidden by the Main tool profile, and ${MAIN_CAPABILITY_REQUEST_TOOL} is not executable in this request. Do not retry or assume it appears later; use an exposed safe action or preserve the worktree.`;
+  }
+  async function steerProfileHidden(name, snapshot) {
+    const key = `${snapshot?.request ?? 'unknown'}:${name}`;
+    if (profileHiddenCorrections.has(key)) return;
+    profileHiddenCorrections.add(key);
+    await pi.sendUserMessage(profileHiddenToolAdvice(name, snapshot), { deliverAs: 'steer' });
   }
   const missingExecutorCalls = new Map();
   async function handleMissingExecutor(event, ctx) {
@@ -1603,9 +1610,7 @@ export default function (pi) {
       // It must not promise that request's surface: another tool in this response may still
       // change state and remove the deferred tool again, so the guidance stays conditional on
       // the authoritative snapshot of the request that carries it.
-      if (kind === 'profile_hidden') {
-        await pi.sendUserMessage(profileHiddenToolAdvice(event.toolName, snapshot), { deliverAs: 'steer' });
-      }
+      if (kind === 'profile_hidden') await steerProfileHidden(event.toolName, snapshot);
       if (kind === 'deferred') {
         await pi.sendUserMessage(
           `RUNTIME: ${event.toolName} became active after provider request ${snapshot.request} was built, so that call could not execute. Do not retry it in this response. On the next request, call it only if that request exposes it (its tool list, and CURRENTLY EXPOSED TOOLS when given) and it is still needed; the surface may change again before then.`,
@@ -3672,7 +3677,10 @@ export default function (pi) {
     const missingAtRequestBoundary = requestTools != null && !requestTools.includes(event.toolName);
     const removedSinceRequest = requestTools?.includes(event.toolName) === true &&
       !activeToolNames.includes(event.toolName);
-    const newlyActiveButDeferred = missingAtRequestBoundary && activeToolNames.includes(event.toolName);
+    const profileHidden = missingAtRequestBoundary &&
+      providerCapabilitySnapshot?.profileHiddenTools?.includes(event.toolName);
+    const newlyActiveButDeferred = missingAtRequestBoundary && !profileHidden &&
+      activeToolNames.includes(event.toolName);
     const enforceActiveSurface =
       missingAtRequestBoundary ||
       (lastSurfaceSignature !== null &&
@@ -3680,6 +3688,19 @@ export default function (pi) {
         !recoveryPolicyTool &&
         !activeToolNames.includes(event.toolName));
     if (enforceActiveSurface) {
+      if (profileHidden) {
+        // This is neither a late-active executor nor an unknown unavailable
+        // capability. Do not feed it to the generic loop guard or consume its
+        // correction budget. Give one request-local escalation explanation.
+        console.warn('PI_MAIN_PROFILE_TOOL_HIDDEN ' + JSON.stringify({
+          stage, request: providerCapabilitySnapshot.request,
+          attemptedTool: event.toolName,
+          group: optionalMainToolGroup(event.toolName),
+          requestCapabilitiesExposed: requestTools.includes(MAIN_CAPABILITY_REQUEST_TOOL),
+        }));
+        await steerProfileHidden(event.toolName, providerCapabilitySnapshot);
+        return { block: true, reason: profileHiddenToolAdvice(event.toolName) };
+      }
       unavailableToolAttempts += 1;
       unavailableCapabilityAttemptedThisTurn = true;
       unavailableCapabilityToolThisTurn = event.toolName;
