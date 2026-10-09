@@ -50,8 +50,10 @@ test('#634 effective instructions use only the provider request, and label defer
   assert.equal(outgoing.messages.length, history.length, 'request-local guidance must not introduce a role turn');
   assert.deepEqual(outgoing.messages.map(m => m.role), history.map(m => m.role));
   assert.deepEqual(history, payload.messages, 'request-local instructions do not pollute persisted history');
-  assert.equal(outgoing.tools, payload.tools);
-  const instructions = outgoing.messages.at(-1).content;
+  assert.equal(outgoing.tools.length, payload.tools.length);
+  assert.equal(outgoing.tools[0], payload.tools[0], 'earlier tool definitions stay cacheable');
+  assert.equal(outgoing.messages.at(-1), history.at(-1), 'tool-bearing turns never alter message text');
+  const instructions = outgoing.tools.at(-1).function.description;
   assert.equal(outgoing.messages[0], history[0], 'earlier prompt-cache prefix remains byte-for-byte unchanged');
   assert.match(instructions, /CURRENTLY EXPOSED TOOLS \(authoritative\): safe_edit, submit_result/);
   assert.match(instructions, /DEFERRED \/ NOT EXECUTABLE IN THIS REQUEST: read, run_check, retry_last_failed_check, bash/);
@@ -65,7 +67,8 @@ test('#634 effective instructions use only the provider request, and label defer
   }, { executableTools: ['submit_result'], deferredTools: [] }, { trustedRuntimeEnvelope: true });
   assert.equal(responses.input.length, 1);
   assert.equal(responses.input.at(-1).type, 'message');
-  assert.match(responses.input.at(-1).content[0].text, /submit_result/);
+  assert.match(responses.tools[0].function.description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.equal(responses.input.at(-1).content[0].text, '<coding_role_contract source="trusted">coding child</coding_role_contract>');
   assert.equal(withProviderCapabilityInstructions({ messages: [], input: [] }, snapshot).messages.length, 0,
     'ambiguous envelopes remain untouched');
   const untrustedToolResult = {
@@ -84,6 +87,43 @@ test('#634 effective instructions use only the provider request, and label defer
   assert.equal(untrustedToolResult.tools[0].function.description, 'submit_result');
   assert.equal(withProviderCapabilityInstructions({ messages: [], tools: [] }, snapshot, { trustedRuntimeEnvelope: true }).messages.length, 0,
     'empty synthetic history has no request-local instruction injection, but remains a zero-tool request');
+});
+
+test('#634 capability guidance stays in one idempotent tool carrier across request shapes', () => {
+  const snapshot = { executableTools: ['read', 'submit_result'], deferredTools: ['bash'] };
+  const tools = [tool('read'), tool('submit_result')];
+  const user = { role: 'user', content: 'Initial task' };
+  const assistant = { role: 'assistant', content: 'I found the target' };
+  const result = { role: 'tool', tool_call_id: 'call-1', content: '{"result":"ok"}' };
+  const request = messages => ({ messages, tools });
+  const initial = withProviderCapabilityInstructions(request([user]), snapshot, { trustedRuntimeEnvelope: true });
+  const afterAssistant = withProviderCapabilityInstructions(request([user, assistant]), snapshot, { trustedRuntimeEnvelope: true });
+  const afterTool = withProviderCapabilityInstructions(request([user, assistant, result]), snapshot, { trustedRuntimeEnvelope: true });
+  assert.equal(initial.tools[0], tools[0]);
+  assert.deepEqual(initial.tools, afterAssistant.tools, 'carrier and schema bytes do not oscillate on assistant text');
+  assert.deepEqual(initial.tools, afterTool.tools, 'tool result must not move guidance to a new carrier');
+  assert.deepEqual(afterTool.messages.at(-1), result);
+  assert.equal(afterTool.messages[0], user);
+  const repeated = withProviderCapabilityInstructions(afterTool, snapshot, { trustedRuntimeEnvelope: true });
+  assert.equal(repeated, afterTool, 'second provider hook pass is an identity-preserving no-op');
+  assert.equal((repeated.tools.at(-1).function.description.match(/RUNTIME EXECUTABLE TOOL CONTRACT/g) ?? []).length, 1);
+  const revised = withProviderCapabilityInstructions(repeated, {
+    executableTools: ['read', 'submit_result'], deferredTools: ['grep'],
+  }, { trustedRuntimeEnvelope: true });
+  assert.equal((revised.tools.at(-1).function.description.match(/RUNTIME EXECUTABLE TOOL CONTRACT/g) ?? []).length, 1,
+    'a changed snapshot replaces the contract without duplicating it');
+  assert.match(revised.tools.at(-1).function.description, /DEFERRED \/ NOT EXECUTABLE IN THIS REQUEST: grep/);
+  assert.doesNotMatch(revised.tools.at(-1).function.description, /DEFERRED \/ NOT EXECUTABLE IN THIS REQUEST: bash/);
+});
+
+test('#634 no safe guidance carrier reports omission and zero-tool dispatch remains closed', () => {
+  const omitted = [];
+  const payload = { messages: [{ role: 'tool', tool_call_id: 'c1', content: 'raw output' }], tools: [] };
+  const unchanged = withProviderCapabilityInstructions(payload, {
+    executableTools: [], deferredTools: ['write'],
+  }, { trustedRuntimeEnvelope: true, onMissingCarrier: reason => omitted.push(reason) });
+  assert.equal(unchanged, payload);
+  assert.deepEqual(omitted, ['no_safe_text_or_tool_carrier']);
 });
 
 test('#634 strict chat-template role ordering survives a tool result and consecutive user steers', () => {
@@ -123,7 +163,7 @@ test('#634 strict chat-template role ordering survives a tool result and consecu
   const corrected = withProviderCapabilityInstructions(steers, snapshot, { trustedRuntimeEnvelope: true });
   assert.equal(corrected.messages.length, steers.messages.length);
   assert.deepEqual(corrected.messages.map(m => m.role), steers.messages.map(m => m.role));
-  assert.match(corrected.messages.at(-1).content, /RUNTIME EXECUTABLE TOOL CONTRACT/);
+  assert.match(corrected.tools.at(-1).function.description, /RUNTIME EXECUTABLE TOOL CONTRACT/);
   assert.equal(steers.messages.at(-1).content, 'RUNTIME UNAVAILABLE CAPABILITY CORRECTION: choose an exposed tool');
 });
 
@@ -249,7 +289,7 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
       };
       const outbound = handlers.get('before_provider_request')({ payload });
       assert.deepEqual(outbound.tools.map(x => x.function.name), ['safe_edit', 'submit_result']);
-      assert.match(outbound.messages.at(-1).content, /CURRENTLY EXPOSED TOOLS \\(authoritative\\): safe_edit, submit_result/);
+      assert.match(outbound.tools.at(-1).function.description, /CURRENTLY EXPOSED TOOLS \\(authoritative\\): safe_edit, submit_result/);
       // Another phase/executor becomes active after the serialized request was built.
       // The model cannot call those tools in THIS response, even if getActiveTools now lists them.
       active = [...active, 'read', 'run_check', 'retry_last_failed_check', 'bash'];
