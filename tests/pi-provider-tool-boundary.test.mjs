@@ -416,6 +416,29 @@ test('#634 real Implementer boundary blocks late read/run_check/retry/bash even 
         'any tool denied by the active runtime surface must be absent from wire tools',
       );
       assert.match(outbound.tools.at(-1).function.description, /CURRENTLY EXPOSED TOOLS \\(authoritative\\): safe_edit, submit_result/);
+      // A tool-linked stale action steer cannot be compacted safely (#594).
+      // Catalog neutralization and wire guidance must still run independently.
+      const linkedSteer = {
+        role: 'user', tool_call_id: 'linked-683',
+        content: 'RUNTIME ACTION REQUIRED: evidence is complete. In the next response, do not narrate or restate the plan. CURRENTLY EXPOSED TOOLS (authoritative): read. Verification status: not yet available.',
+      };
+      const blockedCompaction = handlers.get('before_provider_request')({
+        payload: {
+          ...payload,
+          messages: [
+            { role: 'system', content: '<tools><tool name="read">stale</tool></tools> stable safety rules' },
+            { role: 'developer', content: '<tools><tool name="read">stale</tool></tools> stable developer rules' },
+            payload.messages[1],
+            linkedSteer,
+          ],
+        },
+      });
+      assert.deepEqual(blockedCompaction.tools.map(x => x.function.name), ['safe_edit', 'submit_result']);
+      assert.doesNotMatch(blockedCompaction.messages[0].content, /<tool name="read"/);
+      assert.doesNotMatch(blockedCompaction.messages[1].content, /<tool name="read"/);
+      assert.equal(blockedCompaction.messages.at(-1), linkedSteer,
+        'linked steer and transcript pairing must stay untouched when compaction declines');
+      assert.match(blockedCompaction.tools.at(-1).function.description, /CURRENTLY EXPOSED TOOLS \\(authoritative\\): safe_edit, submit_result/);
       // Another phase/executor becomes active after the serialized request was built.
       // The model cannot call those tools in THIS response, even if getActiveTools now lists them.
       active = [...active, 'read', 'run_check', 'retry_last_failed_check', 'bash'];
