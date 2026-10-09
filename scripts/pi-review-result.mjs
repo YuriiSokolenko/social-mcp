@@ -101,7 +101,9 @@ export function reviewAcceptanceCriteria(body) {
     const line = raw.trim().replace(/^[-*]\s+(?:\[[ xX]\]\s*)?/, '').replace(/^\d+[.)]\s*/, '');
     out.push(...line.split(/;\s+|(?<=[.!?])\s+(?=[A-Z])/).map(x => x.trim()).filter(x => x.length >= 8));
   }
-  return out.slice(0, 30);
+  // Never truncate trusted requirements: an oversized list is a human gate,
+  // not permission for a partial PASS.
+  return out;
 }
 
 const proofLocation = /(?:[\w.-]+\/)+[\w.-]+(?::\d+)?|\x60[^\x60]{4,}\x60|\b(?:node --test|npm test|pytest|git diff|git ls-files)\b/i;
