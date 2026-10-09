@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import vm from 'node:vm';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
@@ -102,12 +104,12 @@ function upstreamDecisionFixture() {
 
 function runPatchedDecision({ agentName = 'implementation-planner', messages = validMessages(),
   state = validState(), errInfo = { hasError: true, exitCode: 4, errorType: 'read', details: 'ENOENT' },
-  readError = null, receipt = null, metadata = null, sessionId = 'coding-632' } = {}) {
+  readError = null, receipt = null, metadata = null, sessionId = 'coding-632', env = {} } = {}) {
   const patched = patchPiSubagentsSource(upstreamDecisionFixture());
   const executable = patched.replace(/^import \{[^\n]+\} from "node:fs";\nimport \{ createHash \} from "node:crypto";\n/, '');
   const warnings = [];
   const ctx = {
-    Buffer, createHash,
+    Buffer, createHash, existsSync: fs.existsSync, statSync: fs.statSync,
     process: { env: {
       PI_PLANNER_EVIDENCE_STATE_FILE: '/private/planner-sidecar.json',
       PI_PLANNER_LIFECYCLE_ID: receiptId,
@@ -115,6 +117,7 @@ function runPatchedDecision({ agentName = 'implementation-planner', messages = v
       PI_TERMINAL_RESULT_FILE: '/private/terminal-receipt.json',
       PI_IMPLEMENTER_RESULT_FILE: '/private/implementer-result.json',
       PI_VALIDATION_RUN_ID: 'run-632', PI_ISSUE: '632',
+      ...env,
     } },
     readFileSync: (name) => {
       if (readError) throw readError;
@@ -329,4 +332,131 @@ test('#632 blocked outcome needs exact runtime-bound reason, not generic success
   messages[0].content[0].arguments.blocked_reason = 'unrelated human claim';
   assert.equal(acceptedTerminalImplementerReceipt(
     messages, receipt, Buffer.from(JSON.stringify(metadata)), env, 'coding-632'), false);
+});
+
+function runtimeOwnedImplementerEnvelope() {
+  const sample = validImplementerEnvelope();
+  delete sample.metadata.result_text;
+  delete sample.metadata.summary;
+  sample.messages[0].content[0].arguments = {};
+  sample.receipt.result_metadata_sha256 = createHash('sha256')
+    .update(JSON.stringify(sample.metadata)).digest('hex');
+  return sample;
+}
+
+test('#643 patched adapter accepts patch-only resume and rejects missing, empty and disabled patch', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-resume-643-'));
+  const nonempty = path.join(dir, 'resume.patch');
+  const empty = path.join(dir, 'empty.patch');
+  const missing = path.join(dir, 'absent.patch');
+  fs.writeFileSync(nonempty, 'diff --git a/a b/a\n');
+  fs.writeFileSync(empty, '');
+  try {
+    for (const [name, env, accepted] of [
+      ['unset flag + nonempty patch', { PI_RESUME_PATCH: nonempty }, true],
+      ['undefined flag + nonempty patch', { PI_RESUME_ACTIVE: undefined, PI_RESUME_PATCH: nonempty }, true],
+      ['empty patch', { PI_RESUME_PATCH: empty }, false],
+      ['missing patch', { PI_RESUME_PATCH: missing }, false],
+      ['no patch or flag', {}, false],
+      ['explicit false suppresses patch fallback', { PI_RESUME_ACTIVE: 'false', PI_RESUME_PATCH: nonempty }, false],
+      ['explicit empty flag suppresses patch fallback', { PI_RESUME_ACTIVE: '', PI_RESUME_PATCH: nonempty }, false],
+      ['explicit true works with no patch', { PI_RESUME_ACTIVE: 'true' }, true],
+    ]) {
+      const sample = runtimeOwnedImplementerEnvelope();
+      const { result } = runPatchedDecision({
+        agentName: 'implementer-coding-session', ...sample,
+        env, errInfo: { hasError: false },
+      });
+      assert.equal(result.exitCode, accepted ? 0 : 1, name);
+      assert.equal(result.error, accepted ? undefined : 'Missing final text', name);
+    }
+    // Fresh changed work still uses the text-only submission contract.
+    const fresh = validImplementerEnvelope();
+    assert.equal(runPatchedDecision({
+      agentName: 'implementer-coding-session', ...fresh,
+      env: { PI_RESUME_PATCH: empty }, errInfo: { hasError: false },
+    }).result.exitCode, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#643 patch-only empty submit never bypasses current-attempt receipt and transport checks', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-receipt-643-'));
+  const patch = path.join(dir, 'resume.patch');
+  fs.writeFileSync(patch, 'restored patch\n');
+  try {
+    const errors = [
+      ['wrong run', s => { s.receipt.run_id = 'other'; }],
+      ['wrong issue', s => { s.receipt.issue = 'other'; }],
+      ['wrong session', s => { s.receipt.session_id = 'previous-session'; }],
+      ['wrong attempt', s => { s.receipt.attempt_id = 'validation-repair:1'; }],
+      ['invalid candidate', s => { s.receipt.candidate_revision.digest = ''; }],
+      ['stale metadata hash', s => { s.metadata.files.push('src/b.py'); }],
+      ['unauthorized file', s => { s.metadata.files = ['src/other.py']; }],
+      ['truncated tool call', s => { s.messages[0].stopReason = 'length'; }],
+      ['provider failure', s => { s.messages[0].errorMessage = 'provider failure'; }],
+      ['missing tool result', s => { s.messages.pop(); }],
+      ['failed submit_result', s => { s.messages[1].isError = true; }],
+      ['duplicate submit_result', s => { s.messages[0].content.push({ ...s.messages[0].content[0] }); }],
+      ['wrong tool result id', s => { s.messages[1].toolCallId = 'stale'; }],
+    ];
+    for (const [name, mutate] of errors) {
+      const sample = runtimeOwnedImplementerEnvelope();
+      mutate(sample);
+      const result = runPatchedDecision({
+        agentName: 'implementer-coding-session', ...sample,
+        env: { PI_RESUME_PATCH: patch }, errInfo: { hasError: false },
+      }).result;
+      assert.equal(result.exitCode, 1, name);
+    }
+    const earlierFailure = { role: 'toolResult', toolCallId: 'read-1',
+      toolName: 'read', isError: true };
+    for (const errorType of ['provider', 'timeout', 'cancelled', 'transport']) {
+      const sample = runtimeOwnedImplementerEnvelope();
+      const result = runPatchedDecision({
+        agentName: 'implementer-coding-session', ...sample,
+        messages: [earlierFailure, ...sample.messages], env: { PI_RESUME_PATCH: patch },
+        errInfo: { hasError: true, errorType, exitCode: 4 },
+      }).result;
+      assert.equal(result.exitCode, 4, errorType);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('#643 validation-repair and already_satisfied retain their terminal semantics', () => {
+  const repaired = runtimeOwnedImplementerEnvelope();
+  repaired.receipt.attempt_id = 'validation-repair:3';
+  const env = { PI_VALIDATION_REPAIR: 'true', PI_VALIDATION_REPAIR_ATTEMPT: '3' };
+  assert.equal(runPatchedDecision({
+    agentName: 'implementer-coding-session', ...repaired, env,
+    errInfo: { hasError: false },
+  }).result.exitCode, 0);
+  assert.equal(runPatchedDecision({
+    agentName: 'implementer-coding-session', ...repaired,
+    env: { ...env, PI_VALIDATION_REPAIR_ATTEMPT: '4' },
+    errInfo: { hasError: false },
+  }).result.exitCode, 1);
+
+  const satisfied = runtimeOwnedImplementerEnvelope();
+  satisfied.metadata.outcome = 'already_satisfied';
+  satisfied.metadata.files = [];
+  satisfied.receipt.outcome = 'already_satisfied';
+  satisfied.receipt.result_metadata_sha256 = createHash('sha256')
+    .update(JSON.stringify(satisfied.metadata)).digest('hex');
+  assert.equal(runPatchedDecision({
+    agentName: 'implementer-coding-session', ...satisfied,
+    env: { PI_RESUME_ACTIVE: 'true' }, errInfo: { hasError: false },
+  }).result.exitCode, 0);
+  assert.equal(runPatchedDecision({
+    agentName: 'implementer-coding-session', ...satisfied,
+    env: {}, errInfo: { hasError: false },
+  }).result.exitCode, 1, 'fresh work must reject empty already_satisfied args');
+  satisfied.messages[0].content[0].arguments = { already_satisfied: true };
+  assert.equal(runPatchedDecision({
+    agentName: 'implementer-coding-session', ...satisfied,
+    env: {}, errInfo: { hasError: false },
+  }).result.exitCode, 0);
 });
