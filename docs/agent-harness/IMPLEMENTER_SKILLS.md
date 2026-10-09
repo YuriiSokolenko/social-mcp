@@ -8,6 +8,38 @@ The extension is loaded explicitly only for the Implementer Main `buildPiInvocat
 
 **Compatibility guard:** the compression only occurs if exactly one Pi `<skills>` section and one `<available_skills>` catalog contain parseable `<skill><name>...<description>...<location>...` entries, with no unrecognized entry text. The parser also requires the number of fully parsed entries to equal the number of opening `<skill>` tags, so a missing `<location>` cannot silently merge two skills. Unrecognized formats, duplicates, empty catalogs or a compression that would increase size preserve the original prompt, rather than risk losing skills or other system content. The hook does not edit project/role contracts, original issue or `planText` handoff, runtime steering, resolved targets, security policy, available tools or tool schemas.
 
+## Follow-on curation — issue #685
+
+Issue #593 originally shortened descriptions but kept all 31 full XML entries. The
+Main-only #685 hook now uses the actual Pi \`before_agent_start\` event's \`prompt\`
+to rank skills by relevant name/topic and list **at most five** task-relevant
+summaries in \`<available_skills>\`. Every other discovered skill remains in
+\`<skill_discovery_index>\` as its original, exact \`name<TAB>SKILL.md path\`.
+This changes prompt advertising only: Pi still registers the complete local and
+repository skill set, and a skill path must be inspected using a tool **actually
+serialized on that request**. Neither the featured entries nor the index grant
+capabilities or override #683/#684 phase restrictions.
+
+Unknown or cross-domain tasks retain all paths in the index; selection is not an
+authorization boundary. Malformed, ambiguous and duplicated catalogs fail open.
+The hook is unchanged for Planner, Reviewer, Architect and isolated coding sessions.
+The selected catalog is stable across Main phase transitions and does not require
+one new tool call for discovery. Log \`PI_MAIN_SKILLS\` gives featured/indexed/total
+counts and system-byte savings; provider-boundary \`PI_MAIN_PROMPT\` also reports
+\`skillCount\` (featured), \`indexedSkillCount\`, \`discoverableSkillCount\`,
+\`skillCatalogBytes\`, total system text bytes and request schema size.
+
+### Validation still needed on live Pi
+
+Run the #677 Python smoke (or a disposable equivalent) and a JS/Docker
+specialized-skill task. Compare the first and later real outgoing provider
+payloads with the 31-entry / 10,398-byte #677 reference. In particular, confirm
+that the \`before_agent_start\` hook's replacement survives Pi's final prompt
+composition, no tool is falsely offered by text, the model can inspect an indexed
+SKILL.md using an eligible read capability, token counts/cache telemetry are
+reported without inventing missing values, and the tasks complete correctly.
+Synthetic tests and green CI alone are not live completion evidence.
+
 ## Measurement and validation
 
 - **Reference baseline**: issue #583, [run 37772392770](https://github.com/YuriiSokolenko/social-mcp/actions/runs/37772392770), original model trace. The issue reports approximately **15.1 KB** of skill descriptions/listing across **31 skills** in the Main system prompt; this is a reported baseline, not a byte-exact value independently reproduced by this change.
