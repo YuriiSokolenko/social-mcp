@@ -3100,236 +3100,236 @@ export default function (pi) {
             refuse(error.code ?? 'terminal_session_binding_failed', String(error?.message ?? error));
           }
           try {
-          sessionsStarted += 1;
-          // Durable in the parent process: if the coding child returns without terminal submission,
-          // parent-side run_check/mutations/submit_result remain under the same behavioral
-          // validation contract.
-          process.env[CODING_SESSION_USED_ENV] = 'true';
-          const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
-          const contractAnchor = process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || process.env.PI_PREPARED_IMPLEMENTATION_FILE;
-          if (!contractAnchor) refuse('state_unavailable', 'No trusted runtime artifact path is available for coding-session state.');
-          const contractFile = `${contractAnchor}.${sessionId}.contract.json`;
-          const capabilityFile = `${contractFile}.capabilities.json`;
-          const inheritedMutationJournalFile = String(process.env.PI_MUTATION_JOURNAL_FILE ?? '').trim();
-          const fallbackMutationJournalFile = inheritedMutationJournalFile
-            ? null
-            : `${contractFile}.mutation-journal.json`;
-          const codingMutationJournalFile = inheritedMutationJournalFile || fallbackMutationJournalFile;
-          if (fallbackMutationJournalFile) {
-            writeMutationJournalFile(
-              ctx.cwd,
-              fallbackMutationJournalFile,
-              mutationJournalState(ctx.cwd, process.env),
-            );
-          }
-          const startedAt = Date.now();
-          // The parent-side lease remains held through delegation, receipt reads,
-          // outcome handling and every early return (including abort/timeout).
-          // PI_CODING_SESSION is still supplied only to the fork.
-          codingSessionLog('started', { ...base, context: 'fresh', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens, handoffBytes: Buffer.byteLength(codingTask, 'utf8'), parentHandoffBytes: Buffer.byteLength(parentHandoff, 'utf8') });
-          let response = null;
-          let sessionError = null;
-          try {
-            response = await runStructuredSubagent(pi, ctx, {
-              agent: sessionConfig.codingSessionAgent,
-              nodeId: `coding-session-${toolCallId}`,
-              task: codingTask,
-              timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
-              maxTokens: sessionConfig.codingSessionMaxTokens,
-              // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
-              toolBudget: null,
-              thinking: 'off',
-              context: 'fresh',
-              childEnv: {
-                PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile, capabilityFile }),
-                PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
-                ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
-                  ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
-                  : {}),
-                PI_MUTATION_JOURNAL_FILE: codingMutationJournalFile,
-              },
-            }, signal);
-          } catch (error) {
-            sessionError = error;
-          } finally {
+            sessionsStarted += 1;
+            // Durable in the parent process: if the coding child returns without terminal submission,
+            // parent-side run_check/mutations/submit_result remain under the same behavioral
+            // validation contract.
+            process.env[CODING_SESSION_USED_ENV] = 'true';
+            const terminalFile = process.env.PI_TERMINAL_RESULT_FILE || null;
+            const contractAnchor = process.env.PI_RUNTIME_FAILURE_FILE || terminalFile || process.env.PI_PREPARED_IMPLEMENTATION_FILE;
+            if (!contractAnchor) refuse('state_unavailable', 'No trusted runtime artifact path is available for coding-session state.');
+            const contractFile = `${contractAnchor}.${sessionId}.contract.json`;
+            const capabilityFile = `${contractFile}.capabilities.json`;
+            const inheritedMutationJournalFile = String(process.env.PI_MUTATION_JOURNAL_FILE ?? '').trim();
+            const fallbackMutationJournalFile = inheritedMutationJournalFile
+              ? null
+              : `${contractFile}.mutation-journal.json`;
+            const codingMutationJournalFile = inheritedMutationJournalFile || fallbackMutationJournalFile;
             if (fallbackMutationJournalFile) {
-              try {
-                if (!fs.existsSync(fallbackMutationJournalFile)) {
-                  throw new Error('coding-session fallback mutation journal disappeared');
+              writeMutationJournalFile(
+                ctx.cwd,
+                fallbackMutationJournalFile,
+                mutationJournalState(ctx.cwd, process.env),
+              );
+            }
+            const startedAt = Date.now();
+            // The parent-side lease remains held through delegation, receipt reads,
+            // outcome handling and every early return (including abort/timeout).
+            // PI_CODING_SESSION is still supplied only to the fork.
+            codingSessionLog('started', { ...base, context: 'fresh', agent: sessionConfig.codingSessionAgent, codingMaxTokens: sessionConfig.codingSessionMaxTokens, handoffBytes: Buffer.byteLength(codingTask, 'utf8'), parentHandoffBytes: Buffer.byteLength(parentHandoff, 'utf8') });
+            let response = null;
+            let sessionError = null;
+            try {
+              response = await runStructuredSubagent(pi, ctx, {
+                agent: sessionConfig.codingSessionAgent,
+                nodeId: `coding-session-${toolCallId}`,
+                task: codingTask,
+                timeoutMs: Number(sessionConfig.codingSessionTimeoutMs ?? 5400000),
+                maxTokens: sessionConfig.codingSessionMaxTokens,
+                // No tool budget: the runtime inside the fork applies the normal progress/loop rules.
+                toolBudget: null,
+                thinking: 'off',
+                context: 'fresh',
+                childEnv: {
+                  PI_CODING_SESSION: JSON.stringify({ sessionId, maxTokens: sessionConfig.codingSessionMaxTokens, failureFile: contractFile, capabilityFile }),
+                  PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify(mutationScopeReceipt(ctx.cwd, process.env)),
+                  ...(process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE
+                    ? { PI_ACCEPTED_MUTATION_SCOPE_FILE: process.env.PI_ACCEPTED_MUTATION_SCOPE_FILE }
+                    : {}),
+                  PI_MUTATION_JOURNAL_FILE: codingMutationJournalFile,
+                },
+              }, signal);
+            } catch (error) {
+              sessionError = error;
+            } finally {
+              if (fallbackMutationJournalFile) {
+                try {
+                  if (!fs.existsSync(fallbackMutationJournalFile)) {
+                    throw new Error('coding-session fallback mutation journal disappeared');
+                  }
+                  // Reload child journal mutations into the parent process cache before deleting
+                  // the transport sidecar. Subsequent parent tools then see the fork's chronology.
+                  mutationJournalState(ctx.cwd, {
+                    ...process.env,
+                    PI_MUTATION_JOURNAL_FILE: fallbackMutationJournalFile,
+                  });
+                } catch (error) {
+                  if (!sessionError) sessionError = error;
+                  else {
+                    console.warn(`PI_CODING_MUTATION_JOURNAL_REFRESH_FAILED ${JSON.stringify({
+                      sessionId,
+                      error: String(error?.message ?? error),
+                    })}`);
+                  }
+                } finally {
+                  fs.rmSync(fallbackMutationJournalFile, { force: true });
                 }
-                // Reload child journal mutations into the parent process cache before deleting
-                // the transport sidecar. Subsequent parent tools then see the fork's chronology.
-                mutationJournalState(ctx.cwd, {
-                  ...process.env,
-                  PI_MUTATION_JOURNAL_FILE: fallbackMutationJournalFile,
-                });
-              } catch (error) {
-                if (!sessionError) sessionError = error;
-                else {
-                  console.warn(`PI_CODING_MUTATION_JOURNAL_REFRESH_FAILED ${JSON.stringify({
-                    sessionId,
-                    error: String(error?.message ?? error),
-                  })}`);
-                }
-              } finally {
-                fs.rmSync(fallbackMutationJournalFile, { force: true });
               }
             }
-          }
-          let contractFailure = null;
-          try {
-            if (fs.existsSync(contractFile)) contractFailure = JSON.parse(fs.readFileSync(contractFile, 'utf8'));
-          } catch (error) {
-            // Advisory provenance must not replace the original delegation error.
-            contractFailure = null;
-            console.warn(`PI_CODING_CONTRACT_METADATA_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
-          } finally {
-            fs.rmSync(contractFile, { force: true });
-          }
-          // Read before any early exit so the sidecar never outlives this tool call.
-          let attemptedTools = [];
-          try {
-            attemptedTools = consumeUnavailableCapabilityAttempts(capabilityFile);
-          } catch (error) {
-            console.warn(`PI_CODING_CAPABILITY_RECORD_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
-          }
-          if (contractFailure?.failure_code === 'PI_TOOL_CONTRACT_FAILURE') {
-            // This exit still owns whatever usage the child accrued; account it before aborting.
-            recordDescendantMetric({
-              call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
-              status: 'contract_failure', usage: response?.usage ?? sessionError?.delegationUsage ?? null,
-            });
-            await abortToolContract(contractFailure.tool, ctx, contractFailure.reason);
-            throw new Error(`PI_TOOL_CONTRACT_FAILURE: ${contractFailure.reason}`);
-          }
-          if (signal?.aborted) {
-            recordDescendantMetric({
-              call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
-              status: 'cancelled', usage: response?.usage ?? sessionError?.delegationUsage ?? null,
-            });
-            codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
-            throw sessionError ?? new Error('coding session was cancelled');
-          }
-          let receiptResult = null;
-          let receiptError = null;
-          const markerPresent = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
-          if (markerPresent) {
+            let contractFailure = null;
             try {
-              receiptResult = assertSuccessfulTerminalReceipt({
-                cwd: ctx.cwd,
-                resultFile: process.env.PI_IMPLEMENTER_RESULT_FILE,
-                env: process.env,
-                expectedSessionId: sessionId,
-              });
+              if (fs.existsSync(contractFile)) contractFailure = JSON.parse(fs.readFileSync(contractFile, 'utf8'));
             } catch (error) {
-              receiptError = error;
+              // Advisory provenance must not replace the original delegation error.
+              contractFailure = null;
+              console.warn(`PI_CODING_CONTRACT_METADATA_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
+            } finally {
+              fs.rmSync(contractFile, { force: true });
             }
-          }
-          // A nonzero/error delegation is not a successful terminal toolUse:
-          // the patched adapter must recognize the verified terminal envelope itself.
-          // Never turn provider cancellation, timeout or adapter failure into success
-          // merely because a receipt was left by an earlier tool execution.
-          if (receiptError || sessionError) invalidateTerminalReceipt(process.env);
-          const outcome = normalizeCodingSessionOutcome({
-            submitted: Boolean(receiptResult) && !sessionError,
-            outcome: receiptResult?.receipt?.outcome ?? null,
-            sessionError,
-            receiptError,
-          });
-          const submitted = outcome.successful_final_submission;
-          const terminalSubmitted = outcome.submitted;
-          const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
-          const recoverableSessionAbort = Boolean(
-            sessionError &&
-            recoveryReceipt?.changed_publishable_paths?.length > 0
-          );
-          if (recoverableSessionAbort) {
-            codingRecoveryWorktreeRoot = ctx.cwd;
-            codingRecoveryGuard = {
-              ...recoveryReceipt,
-              inspection_complete: false,
-            };
-            requireToolOnNextProviderRequest = true;
-            console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
-              stage,
-              sessionId,
-              changedPublishablePaths: recoveryReceipt.changed_publishable_paths,
-              preparedOutputsPresent: recoveryReceipt.prepared_outputs_present,
-              lastValidation: recoveryReceipt.last_validation,
-              remainingTerminalObligation: recoveryReceipt.remaining_terminal_obligation,
-            })}`);
-          }
-          const incapable = incapableCodingSessionRecord({
-            submitted: terminalSubmitted,
-            attemptedTools,
-            contractTools: agentReady.tools,
-            recoveryEpoch: trustedRecoveryEpoch,
-          });
-          if (!terminalSubmitted) lastIncapableCodingSession = incapable;
-          const delegationUsage = response?.usage ?? sessionError?.delegationUsage ?? null;
-          recordDescendantMetric({
-            call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
-            status: outcome.status === 'blocked' ? 'blocked' : sessionError?.delegationStatus ?? (terminalSubmitted ? 'completed' : sessionError ? 'error' : 'ended_without_submit'),
-            usage: delegationUsage,
-          });
-          codingSessionLog(outcome.status === 'blocked' ? 'blocked' : terminalSubmitted ? 'completed' : 'ended_without_submit', {
-            ...base,
-            durationMs: Date.now() - startedAt,
-            usage: delegationUsage,
-            ...outcome,
-            ...(recoveryReceipt ? { recoveryReceipt } : {}),
-            ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
-          });
-          if (submitted) {
-            const completionText = outcome.outcome === 'already_satisfied'
-              ? 'Coding session confirmed the requested implementation is already satisfied. Stop now.'
-              : 'Coding session completed the implementation and submitted the result. The work is done: stop now.';
+            // Read before any early exit so the sidecar never outlives this tool call.
+            let attemptedTools = [];
+            try {
+              attemptedTools = consumeUnavailableCapabilityAttempts(capabilityFile);
+            } catch (error) {
+              console.warn(`PI_CODING_CAPABILITY_RECORD_INVALID ${JSON.stringify({ sessionId, error: String(error?.message ?? error) })}`);
+            }
+            if (contractFailure?.failure_code === 'PI_TOOL_CONTRACT_FAILURE') {
+              // This exit still owns whatever usage the child accrued; account it before aborting.
+              recordDescendantMetric({
+                call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
+                status: 'contract_failure', usage: response?.usage ?? sessionError?.delegationUsage ?? null,
+              });
+              await abortToolContract(contractFailure.tool, ctx, contractFailure.reason);
+              throw new Error(`PI_TOOL_CONTRACT_FAILURE: ${contractFailure.reason}`);
+            }
+            if (signal?.aborted) {
+              recordDescendantMetric({
+                call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
+                status: 'cancelled', usage: response?.usage ?? sessionError?.delegationUsage ?? null,
+              });
+              codingSessionLog('cancelled', { ...base, durationMs: Date.now() - startedAt });
+              throw sessionError ?? new Error('coding session was cancelled');
+            }
+            let receiptResult = null;
+            let receiptError = null;
+            const markerPresent = Boolean(terminalFile && fs.existsSync(terminalFile) && fs.statSync(terminalFile).size > 0);
+            if (markerPresent) {
+              try {
+                receiptResult = assertSuccessfulTerminalReceipt({
+                  cwd: ctx.cwd,
+                  resultFile: process.env.PI_IMPLEMENTER_RESULT_FILE,
+                  env: process.env,
+                  expectedSessionId: sessionId,
+                });
+              } catch (error) {
+                receiptError = error;
+              }
+            }
+            // A nonzero/error delegation is not a successful terminal toolUse:
+            // the patched adapter must recognize the verified terminal envelope itself.
+            // Never turn provider cancellation, timeout or adapter failure into success
+            // merely because a receipt was left by an earlier tool execution.
+            if (receiptError || sessionError) invalidateTerminalReceipt(process.env);
+            const outcome = normalizeCodingSessionOutcome({
+              submitted: Boolean(receiptResult) && !sessionError,
+              outcome: receiptResult?.receipt?.outcome ?? null,
+              sessionError,
+              receiptError,
+            });
+            const submitted = outcome.successful_final_submission;
+            const terminalSubmitted = outcome.submitted;
+            const recoveryReceipt = terminalSubmitted ? null : trustedCodingRecoveryReceipt(ctx.cwd);
+            const recoverableSessionAbort = Boolean(
+              sessionError &&
+              recoveryReceipt?.changed_publishable_paths?.length > 0
+            );
+            if (recoverableSessionAbort) {
+              codingRecoveryWorktreeRoot = ctx.cwd;
+              codingRecoveryGuard = {
+                ...recoveryReceipt,
+                inspection_complete: false,
+              };
+              requireToolOnNextProviderRequest = true;
+              console.info(`PI_CODING_RECOVERY_GUARD ${JSON.stringify({
+                stage,
+                sessionId,
+                changedPublishablePaths: recoveryReceipt.changed_publishable_paths,
+                preparedOutputsPresent: recoveryReceipt.prepared_outputs_present,
+                lastValidation: recoveryReceipt.last_validation,
+                remainingTerminalObligation: recoveryReceipt.remaining_terminal_obligation,
+              })}`);
+            }
+            const incapable = incapableCodingSessionRecord({
+              submitted: terminalSubmitted,
+              attemptedTools,
+              contractTools: agentReady.tools,
+              recoveryEpoch: trustedRecoveryEpoch,
+            });
+            if (!terminalSubmitted) lastIncapableCodingSession = incapable;
+            const delegationUsage = response?.usage ?? sessionError?.delegationUsage ?? null;
+            recordDescendantMetric({
+              call: 'coding', scope: 'session', childSession: sessionId, parentSession: ctx.sessionManager.getSessionId(),
+              status: outcome.status === 'blocked' ? 'blocked' : sessionError?.delegationStatus ?? (terminalSubmitted ? 'completed' : sessionError ? 'error' : 'ended_without_submit'),
+              usage: delegationUsage,
+            });
+            codingSessionLog(outcome.status === 'blocked' ? 'blocked' : terminalSubmitted ? 'completed' : 'ended_without_submit', {
+              ...base,
+              durationMs: Date.now() - startedAt,
+              usage: delegationUsage,
+              ...outcome,
+              ...(recoveryReceipt ? { recoveryReceipt } : {}),
+              ...(incapable ? { unreachableCapabilities: incapable.unreachable } : {}),
+            });
+            if (submitted) {
+              const completionText = outcome.outcome === 'already_satisfied'
+                ? 'Coding session confirmed the requested implementation is already satisfied. Stop now.'
+                : 'Coding session completed the implementation and submitted the result. The work is done: stop now.';
+              return {
+                content: [{ type: 'text', text: completionText }],
+                details: {
+                  ...base,
+                  submitted: true,
+                  successful_final_submission: true,
+                  recovered_errors: outcome.recovered_errors,
+                  unresolved_terminal_error: outcome.unresolved_terminal_error,
+                },
+                // The fork already called submit_result; end this session without another turn.
+                terminate: true,
+              };
+            }
+            if (outcome.outcome === 'blocked') {
+              const blockedResult = readImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE);
+              return {
+                content: [{ type: 'text', text: `Coding session submitted a blocked outcome: ${blockedResult?.blocked_reason ?? 'no reason recorded'}. The implementation was not completed.` }],
+                details: { ...base, submitted: true, successful_final_submission: false, outcome: 'blocked', blocked_reason: blockedResult?.blocked_reason ?? null },
+                terminate: true,
+              };
+            }
+            const activeToolNames = pi.getActiveTools();
+            const terminalStatus = activeToolNames.includes('submit_result')
+              ? 'Coding session ended without submit_result'
+              : 'Coding session ended without a terminal result';
+            const terminalDiagnostic = sessionError ?? receiptError;
+            const recoveryGuidance = recoverableSessionAbort
+              ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not discard or blindly regenerate preserved child changes. If one concrete fact must be inspected, use the bounded recovery read exposed by the parent rather than restarting a coding session from memory.`
+              : '';
+            const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}.${recoveryGuidance} ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
+            // A real session/delegation error is still terminal for this tool call.
+            // A stale/invalid receipt is recoverable: return control so the parent
+            // can submit the current tree again instead of converting consistency
+            // drift into an execution failure.
+            if (sessionError && !recoverableSessionAbort) throw new Error(message);
+            if (recoverableSessionAbort) {
+              console.warn(`PI_CODING_RECOVERY_HANDOFF ${JSON.stringify({
+                sessionId,
+                error: String(sessionError?.message ?? sessionError),
+                recoveryReceipt,
+              })}`);
+            }
             return {
-              content: [{ type: 'text', text: completionText }],
-              details: {
-                ...base,
-                submitted: true,
-                successful_final_submission: true,
-                recovered_errors: outcome.recovered_errors,
-                unresolved_terminal_error: outcome.unresolved_terminal_error,
-              },
-              // The fork already called submit_result; end this session without another turn.
-              terminate: true,
+              content: [{ type: 'text', text: message }],
+              details: { ...base, ...outcome, submitted: false, recovery_receipt: recoveryReceipt },
             };
-          }
-          if (outcome.outcome === 'blocked') {
-            const blockedResult = readImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE);
-            return {
-              content: [{ type: 'text', text: `Coding session submitted a blocked outcome: ${blockedResult?.blocked_reason ?? 'no reason recorded'}. The implementation was not completed.` }],
-              details: { ...base, submitted: true, successful_final_submission: false, outcome: 'blocked', blocked_reason: blockedResult?.blocked_reason ?? null },
-              terminate: true,
-            };
-          }
-          const activeToolNames = pi.getActiveTools();
-          const terminalStatus = activeToolNames.includes('submit_result')
-            ? 'Coding session ended without submit_result'
-            : 'Coding session ended without a terminal result';
-          const terminalDiagnostic = sessionError ?? receiptError;
-          const recoveryGuidance = recoverableSessionAbort
-            ? ` Trusted recovery receipt: ${JSON.stringify(recoveryReceipt)} Resume from these existing worktree mutations; do not discard or blindly regenerate preserved child changes. If one concrete fact must be inspected, use the bounded recovery read exposed by the parent rather than restarting a coding session from memory.`
-            : '';
-          const message = `${terminalStatus}${terminalDiagnostic ? ` (${String(terminalDiagnostic?.message ?? terminalDiagnostic)})` : ''}.${recoveryGuidance} ${activeToolGuidance(activeToolNames)} ${taskSpecificToolGuidance(activeToolNames)}`.trim();
-          // A real session/delegation error is still terminal for this tool call.
-          // A stale/invalid receipt is recoverable: return control so the parent
-          // can submit the current tree again instead of converting consistency
-          // drift into an execution failure.
-          if (sessionError && !recoverableSessionAbort) throw new Error(message);
-          if (recoverableSessionAbort) {
-            console.warn(`PI_CODING_RECOVERY_HANDOFF ${JSON.stringify({
-              sessionId,
-              error: String(sessionError?.message ?? sessionError),
-              recoveryReceipt,
-            })}`);
-          }
-          return {
-            content: [{ type: 'text', text: message }],
-            details: { ...base, ...outcome, submitted: false, recovery_receipt: recoveryReceipt },
-          };
           } finally {
             // Restore the exact prior env value on success, rejection, throw, abort,
             // timeout and post-delegation receipt failures; release is idempotent.

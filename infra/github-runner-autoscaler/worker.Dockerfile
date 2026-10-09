@@ -99,6 +99,9 @@ RUN apt-get update \
 
 COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /home/runner/build-tools/patch-pi-mcp-adapter.mjs
 # Mirror the repository layout so the patch can import the shared source.
+# The source patch and shared resume helper are copied before the install RUN.
+# Docker invalidates the patched /opt/pi-package-seed layer when either changes.
+# Entrypoint restores this image seed; never double-patch it at job startup.
 COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs /home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs
 COPY --chown=1001:1001 scripts/pi-common/restored-work.mjs /home/runner/build-tools/scripts/pi-common/restored-work.mjs
 

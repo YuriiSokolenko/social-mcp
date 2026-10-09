@@ -573,8 +573,9 @@ test('#645 overlapping asynchronous coding delegations reject before clobbering 
     assert.deepEqual(changes, ['coding-A'], 'overlap did not write the process environment');
   } finally {
     finish.resolve();
+    // Join the production lease cleanup even if an overlap assertion throws.
+    await first;
   }
-  await first;
   assert.equal(env[key], 'pre-existing-session');
   assert.deepEqual(changes, ['coding-A', 'pre-existing-session'], 'first ID restored exactly once');
 
@@ -595,30 +596,66 @@ test('#645 overlapping asynchronous coding delegations reject before clobbering 
   assert.deepEqual(changes, ['coding-A', 'pre-existing-session', 'coding-B', 'pre-existing-session']);
 });
 
-test('#645 terminal session lease cleans up on throw, abort and timeout, including absent prior env', async () => {
+test('#652 lease cleanup is idempotent, assertion-safe and independent of case order', async () => {
   const key = 'PI_IMPLEMENTER_SUBAGENT_TERMINAL_SESSION_ID';
   const env = {};
-  async function delegate(sessionId, work) {
+  // Each fixture owns its lease in finally; an assertion throwing inside the
+  // fixture must not poison the process-global production lease for later tests.
+  async function withLease(sessionId, callback) {
     const release = acquireImplementerTerminalSession(sessionId, env);
-    try { return await work(); }
-    finally { release(); }
+    try { return await callback(); }
+    finally {
+      release();
+      release();
+    }
   }
-  for (const kind of ['error', 'abort', 'timeout']) {
-    await assert.rejects(delegate('coding-' + kind, async () => {
-      assert.equal(env[key], 'coding-' + kind);
-      if (kind === 'abort') {
-        const signal = new AbortController();
-        signal.abort();
-        assert.equal(signal.signal.aborted, true);
-      }
-      throw new Error(kind);
-    }), new RegExp(kind));
-    assert.equal(Object.hasOwn(env, key), false, kind + ' removed absent prior ID');
+  for (const kind of ['throw', 'assertion', 'success']) {
+    if (kind === 'success') {
+      await withLease(kind, async () => assert.equal(env[key], kind));
+    } else {
+      await assert.rejects(
+        withLease(kind, async () => {
+          assert.equal(env[key], kind);
+          if (kind === 'assertion') assert.fail('test assertion failed inside the lease');
+          throw new Error('delegation failed');
+        }),
+        /test assertion failed|delegation failed/,
+      );
+    }
+    assert.equal(Object.hasOwn(env, key), false, kind + ' did not leak its lease binding');
   }
-  await delegate('coding-after-failures', async () => assert.equal(env[key], 'coding-after-failures'));
+  await withLease('after-failures', async () => {
+    assert.equal(env[key], 'after-failures');
+    assert.throws(
+      () => acquireImplementerTerminalSession('overlap', env),
+      error => error.code === 'PI_IMPLEMENTER_TERMINAL_SESSION_OVERLAP',
+    );
+    assert.equal(env[key], 'after-failures', 'rejected overlap cannot mutate env');
+  });
   assert.equal(Object.hasOwn(env, key), false);
   assert.throws(() => acquireImplementerTerminalSession('', env), /non-empty coding terminal session ID/);
   assert.equal(Object.hasOwn(env, key), false);
+});
+
+test('#652 terminal source patch fails closed when replayed and Docker seed invalidates with patch source', () => {
+  const patched = patchPiSubagentsSource(upstreamDecisionFixture());
+  assert.match(patched, /trustedImplementerTerminalToolUse/);
+  assert.throws(
+    () => patchPiSubagentsSource(patched),
+    /pi-subagents 0\.76\.1 source drift/,
+    'a cached already-patched package must not be patched twice',
+  );
+  const docker = fs.readFileSync('infra/github-runner-autoscaler/worker.Dockerfile', 'utf8');
+  const entrypoint = fs.readFileSync('infra/github-runner-autoscaler/worker-entrypoint.sh', 'utf8');
+  const copyPatch = docker.indexOf('COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs /home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs');
+  const install = docker.indexOf('RUN pi install --no-approve');
+  const apply = docker.indexOf('node /home/runner/build-tools/infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs /home/runner/.pi/agent/npm/node_modules/pi-subagents');
+  const seed = docker.indexOf('cp -a /home/runner/.pi/agent/npm /opt/pi-package-seed/');
+  const copyResume = docker.indexOf('COPY --chown=1001:1001 scripts/pi-common/restored-work.mjs /home/runner/build-tools/scripts/pi-common/restored-work.mjs');
+  assert.ok(copyResume >= 0 && copyResume < install && copyPatch >= 0 && copyPatch < install && install < apply && apply < seed,
+    'Docker rebuild includes patch script in cache key before installation, patch and seed');
+  assert.match(entrypoint, /cp -a \/opt\/pi-package-seed\/npm\/\. \/home\/runner\/\.pi\/agent\/npm\//,
+    'runtime restores the image-built patched seed, not an external stale cache');
 });
 
 function assertPatchedImplementerCompleted(label, sample, env, errInfo = { hasError: false }) {
