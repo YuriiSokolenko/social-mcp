@@ -233,6 +233,7 @@ export function withProviderCapabilityInstructions(payload, snapshot, { trustedR
     onMissingCarrier?.('no_safe_text_or_tool_carrier');
     return payload;
   }
+  if (patchedLast === history[index]) return payload; // repeat hook is an identity-preserving no-op
   return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
 }
 
