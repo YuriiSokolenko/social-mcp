@@ -66,8 +66,9 @@ test('model PR description stays inside an inert fence across CR, separators, li
   const input = 'Result\r## Validation\r\n@someone Closes #9001 https://example.org\u2028~~~~\n~~~\u2029`````\n## Security';
   const rendered = renderUntrustedImplementerSummary(input);
   const lines = rendered.split('\n');
-  const fence = lines[2];
-  assert.match(fence, /^`{6,}$/);
+  const opener = lines[2];
+  assert.match(opener, /^`{6,}text$/);
+  const fence = opener.slice(0, -'text'.length);
   assert.equal(lines.at(-1), fence, 'only generated closing fence is able to terminate the code block');
   assert.equal(rendered.includes('\r'), false);
   assert.equal(rendered.includes('\u2028'), false);
