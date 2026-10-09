@@ -286,9 +286,10 @@ export function plannerProviderBudgetEvidence(payload, expected) {
   };
 }
 
-// Match the error envelope Pi emits for OpenAI-compatible providers. A 400/422
-// means the provider rejected the policy; an ordinary 200 with prose means it
-// *ignored* the policy. Both are evidence, neither is an accepted tool call.
+// Read status from Pi's OpenAI-compatible provider error envelope. A 400/422
+// alone does not identify tool-choice incompatibility: context and token-budget
+// validation also return these statuses. An ordinary 200 with prose is a
+// separate failure to produce an executable terminal tool call.
 export function plannerProviderErrorStatus(message) {
   if (message?.stopReason !== 'error') return null;
   for (const value of [message.status, message.statusCode, message.error?.status, message.error?.statusCode]) {
@@ -300,6 +301,25 @@ export function plannerProviderErrorStatus(message) {
   if (sdk) return Number(sdk[1] ?? sdk[2]);
   const api = /\bAPI error \((\d{3})\):/.exec(text);
   return api ? Number(api[1]) : null;
+}
+
+// Classify provider errors narrowly; only an explicit constraint rejection
+// permits the single named-tool compatibility retry. Never log raw provider
+// errors because they may contain request details or credentials.
+export function plannerSubmissionProviderError(message) {
+  const status = plannerProviderErrorStatus(message);
+  if (status == null) return { status: null, kind: 'transport' };
+  if (![400, 422].includes(status)) return { status, kind: 'transport' };
+  const error = String(message?.errorMessage ?? message?.error?.message ?? '');
+  if (/\b(?:context.{0,40}(?:length|window|size|exceed)|maximum context|too many tokens|prompt.{0,30}(?:long|large)|token.{0,30}limit)\b/i.test(error)) {
+    return { status, kind: 'context_exhausted' };
+  }
+  if (/\b(?:max[_ -]?(?:completion[_ -]?|output[_ -]?)?tokens?|output[_ -]?budget)\b/i.test(error)) {
+    return { status, kind: 'invalid_output_budget' };
+  }
+  const choice = /\b(?:tool[_ -]?choice|function[_ -]?calling|function[_ -]?call)\b/i.test(error);
+  const rejected = /\b(?:unsupported|not supported|does not support|invalid|unknown|unrecognized|rejected|not allowed|forbidden|not permitted|must be|expected|requires?|cannot|can't)\b/i.test(error);
+  return { status, kind: choice && rejected ? 'tool_choice_rejected' : 'other_bad_request' };
 }
 
 // Never infer policy from getActiveTools: only the exact post-filtered provider
@@ -368,7 +388,6 @@ export default function (pi) {
   let providerRequest = 0;
   let submissionChoiceStrategy = 'required';
   let submissionCorrectionUsed = false;
-  let submissionRecoveryUsed = false;
   let lastSerializedChoice = null;
   let providerBudgetEvidence = { effective: null, fields: [], verified: false, reason: 'no_provider_request' };
   const budgetHistory = [];
@@ -428,7 +447,7 @@ export default function (pi) {
   recordEvidenceState({ used: 0 }, { env: stateEnv });
   updatePlannerProtocolState({ phase, submissionBudget: budget, budgetHistory }, stateEnv);
   console.log(`PI_PLANNER_CAT_WAITING ${JSON.stringify({ state: 'CAT_WAITING', event: 'start' })}`);
-  pi.on('before_provider_request', event => {
+  pi.on('before_provider_request', (event, ctx) => {
     const payload = event?.payload;
     if (!payload) return payload;
     // Never expose submit_plan on a research request or evidence tools after transition.
@@ -442,12 +461,18 @@ export default function (pi) {
     const requestedChoice = plannerToolChoiceLabel(payload.tool_choice);
     providerBudgetEvidence = plannerProviderBudgetEvidence(payload, budget);
     const submission = phase === 'submission_pending';
-    // Fail *before* sending the request if the sole terminal tool is not
-    // executable. An empty tool surface must never silently become auto.
+    // Pi catches hook exceptions and sends the ORIGINAL provider payload.
+    // Never throw here: abort the child through the supplied ctx and return a
+    // sanitized, tool-less payload even if cancellation is asynchronous.
     if (submission && (executableTools.length !== 1 || executableTools[0] !== 'submit_plan')) {
       fail('planner_submission_tool_unavailable',
-        'submit_plan is absent or not the sole serialized provider tool', null);
-      throw new Error('planner_submission_tool_unavailable');
+        'submit_plan is absent or not the sole serialized provider tool', ctx);
+      const { tools: _tools, tool_choice: _choice, ...safePayload } = payload;
+      console.warn('PI_PLANNER_PROVIDER_WIRE_BLOCKED ' + JSON.stringify({
+        phase: 'submission_pending', reason: 'submit_plan_not_executable',
+        serializedToolChoice: null, serializedTools: [],
+      }));
+      return safePayload;
     }
     const selectedChoice = submission ? plannerSubmissionToolChoice(submissionChoiceStrategy)
       : tools.length > 0 ? 'auto' : null;
@@ -534,6 +559,9 @@ export default function (pi) {
       outputTokens: Number.isFinite(output) ? output : null,
       text: Array.isArray(msg.content) && msg.content.some(block => block?.type === 'text' && String(block.text ?? '').trim()),
       status: plannerProviderErrorStatus(msg),
+      // Keep in memory only for classification. Never persist or log raw error prose.
+      errorMessage: typeof msg.errorMessage === 'string' ? msg.errorMessage
+        : typeof msg.error?.message === 'string' ? msg.error.message : '',
     };
     if (phase === 'submission_pending') {
       console.log(`PI_PLANNER_PROVIDER_RESPONSE ${JSON.stringify({
@@ -663,8 +691,12 @@ export default function (pi) {
       return;
     }
     if (lastAssistant?.reason === 'error' || lastAssistant?.reason === 'aborted') {
-      const incompatible = [400, 422].includes(lastAssistant.status);
-      if (incompatible && !submissionCorrectionUsed && !submissionRecoveryUsed &&
+      const error = plannerSubmissionProviderError({
+        stopReason: lastAssistant.reason, status: lastAssistant.status,
+        errorMessage: lastAssistant.errorMessage,
+      });
+      const incompatible = error.kind === 'tool_choice_rejected';
+      if (incompatible && !submissionCorrectionUsed && !escalated &&
           submissionChoiceStrategy === 'required') {
         submissionChoiceStrategy = 'named';
         submissionCorrectionUsed = true;
@@ -677,19 +709,26 @@ export default function (pi) {
           'SUBMISSION COMPATIBILITY RETRY ONLY: the provider rejected required tool choice. Call submit_plan({ planText }) once. Do not research or return ordinary prose.',
           'planner-tool-choice-compatibility');
       }
-      fail(incompatible ? 'planner_submission_tool_choice_unsupported'
-        : 'planner_submission_transport_failure',
-        incompatible ? 'Provider rejected the terminal tool-choice strategy (400/422)'
-          : 'Provider returned an error or aborted submission', ctx);
+      const classification = incompatible ? 'planner_submission_tool_choice_unsupported'
+        : error.kind === 'context_exhausted' ? 'planner_submission_context_exhausted'
+        : error.kind === 'invalid_output_budget' ? 'planner_submission_budget_unavailable'
+        : error.kind === 'other_bad_request' ? 'planner_submission_provider_rejected'
+        : 'planner_submission_transport_failure';
+      console.warn('PI_PLANNER_PROVIDER_FAILURE ' + JSON.stringify({
+        request: providerRequest, httpStatus: error.status, classification,
+        providerErrorKind: error.kind, retryAllowed: false,
+      }));
+      fail(classification, 'Submission provider error classified as ' + error.kind, ctx);
       return;
     }
     if (lastAssistant?.reason === 'tooluse' &&
-        (lastAssistant.calls.length !== 1 || lastAssistant.calls[0].name !== 'submit_plan')) {
+        (lastAssistant.calls.length > 1 ||
+          lastAssistant.calls.some(call => call.name !== 'submit_plan'))) {
       fail('planner_submission_invalid_transition', 'Duplicate, forbidden or wrong terminal tool call', ctx);
       return;
     }
     if (lastAssistant?.complete && lastAssistant.reason !== 'tooluse') {
-      if (!submissionCorrectionUsed && !submissionRecoveryUsed &&
+      if (!submissionCorrectionUsed && !escalated &&
           submissionChoiceStrategy === 'required') {
         submissionChoiceStrategy = 'named';
         submissionCorrectionUsed = true;
@@ -717,9 +756,8 @@ export default function (pi) {
       fail(failureKind, 'Submission did not contain a complete valid tool call', ctx);
       return;
     }
-    if (!escalated && !submissionCorrectionUsed && !submissionRecoveryUsed) {
+    if (!escalated && !submissionCorrectionUsed) {
       escalated = true;
-      submissionRecoveryUsed = true;
       if (!(await applyBudget(ctx, 8192))) {
         const capacity = Number(ctx?.model?.contextWindow);
         const className = Number.isFinite(capacity) && capacity > 0 &&
