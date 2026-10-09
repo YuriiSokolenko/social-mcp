@@ -64,8 +64,7 @@ export function acceptedTerminalImplementerReceipt(messages, receipt, metadataBy
     const accepted = metadata.accepted_scope?.accepted;
     if (!Array.isArray(accepted) || metadata.files.length === 0 ||
         !metadata.files.every(file => typeof file === 'string' && file &&
-          accepted.some(item => item?.path === file)) ||
-        typeof metadata.result_text !== 'string' || !metadata.result_text.trim()) return false;
+          accepted.some(item => item?.path === file))) return false;
   } else if (metadata.files.length !== 0) return false;
 
   const lastAssistant = messages.findLastIndex(message => message?.role === 'assistant');
@@ -83,13 +82,23 @@ export function acceptedTerminalImplementerReceipt(messages, receipt, metadataBy
       results[0].toolName !== 'submit_result') return false;
   if (messages.slice(0, lastAssistant).some(message =>
     message?.role === 'toolResult' && message.toolCallId === calls[0].id)) return false;
+  let args = calls[0].arguments;
+  try { if (typeof args === 'string') args = JSON.parse(args); }
+  catch { return false; }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const keys = Object.keys(args);
+  const runtimeOwned = env.PI_VALIDATION_REPAIR === 'true' || env.PI_RESUME_ACTIVE === 'true';
   if (receipt.outcome === 'changed') {
-    let args = calls[0].arguments;
-    try { if (typeof args === 'string') args = JSON.parse(args); }
-    catch { return false; }
-    if (!args || typeof args !== 'object' || Array.isArray(args) ||
-        Object.keys(args).length !== 1 || args.resultText !== metadata.result_text) return false;
-  }
+    if (runtimeOwned) {
+      if (keys.length !== 0 || metadata.result_text != null) return false;
+    } else if (keys.length !== 1 || keys[0] !== 'resultText' ||
+        typeof metadata.result_text !== 'string' || !metadata.result_text.trim() ||
+        args.resultText !== metadata.result_text) return false;
+  } else if (receipt.outcome === 'already_satisfied') {
+    if (!(runtimeOwned && keys.length === 0) &&
+        !(keys.length === 1 && args.already_satisfied === true)) return false;
+  } else if (keys.length !== 1 || typeof args.blocked_reason !== 'string' ||
+      args.blocked_reason.trim() !== metadata.blocked_reason) return false;
   // Recoverable earlier tool failures are not a second terminal failure.
   // A provider/abort/timeout failure must never be hidden by a stale marker.
   if (errInfo?.hasError) {
