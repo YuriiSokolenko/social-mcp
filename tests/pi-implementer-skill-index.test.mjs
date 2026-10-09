@@ -248,3 +248,84 @@ test('#685 provider-boundary metrics distinguish featured from indexed entries o
   assert.equal(next.changedFromPrevious.system, false);
   assert.equal(next.discoverableSkillCount, metadata.discoverableSkillCount);
 });
+
+
+test('#685 small skill aliases py, ci, js and ts match domain signals', () => {
+  const names = ['py', 'ci-cd', 'js', 'ts', 'code-review-checklist',
+    'docker-compose', 'other-helper'];
+  for (const [task, target] of [
+    ['Add src/x.py and test with pytest.', 'py'],
+    ['Run checks in CI on the ci pipeline.', 'ci-cd'],
+    ['Fix src/app.js and run node tests.', 'js'],
+    ['Update src/app.ts and its TypeScript types.', 'ts'],
+  ]) {
+    const after = curateImplementerSkillPrompt(catalog(names), { taskText: task });
+    const featured = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
+    assert.match(featured, new RegExp('<name>' + target + '</name>'), task);
+    assert.doesNotMatch(featured, /<name>code-review-checklist<\/name>/);
+    for (const name of names) {
+      assert.ok(after.includes('/work/.agents/skills/' + name + '/SKILL.md'));
+    }
+  }
+});
+
+test('#685 incidental review/database/api wording cannot fill the five featured slots', () => {
+  const names = ['code-review-checklist', 'database-guide', 'api-design-guide',
+    'python-testing-patterns', 'py', 'generic-helper', 'generic-repo',
+    'unrelated-maintainer', 'docker-compose'];
+  const taskText = [
+    'Implement src/x.py with pytest.',
+    'Address review feedback mentioning the database, API and design notes.',
+    'Do not modify the database or API; these are only reviewer comments.',
+  ].join(' ');
+  const after = curateImplementerSkillPrompt(catalog(names), { taskText });
+  const featured = after.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? '';
+  assert.match(featured, /<name>python-testing-patterns<\/name>/);
+  assert.match(featured, /<name>py<\/name>/);
+  assert.doesNotMatch(featured, /<name>code-review-checklist<\/name>/);
+  assert.doesNotMatch(featured, /<name>database-guide<\/name>/);
+  assert.doesNotMatch(featured, /<name>api-design-guide<\/name>/);
+  assert.ok((featured.match(/<skill>/g) ?? []).length <= 5);
+  assert.ok(after.includes('code-review-checklist\t/work/.agents/skills/code-review-checklist/SKILL.md'));
+});
+
+test('#685 real Main phase simulation freezes selection even when Pi rebuilds the entire catalog', () => {
+  let handler;
+  implementerSkillIndex({ on: (name, callback) => {
+    assert.equal(name, 'before_agent_start');
+    handler = callback;
+  } });
+  const stage = process.env.PI_STAGE;
+  const child = process.env.PI_CODING_SESSION;
+  try {
+    process.env.PI_STAGE = 'implementer';
+    delete process.env.PI_CODING_SESSION;
+    const full = '<contract>Safety and original task requirements</contract>\n'
+      + catalog(['py', 'python-testing-patterns', 'ci-cd', 'docker-compose',
+        'code-review-checklist', 'repomap-navigation']);
+    const first = handler({
+      systemPrompt: full,
+      prompt: 'Create a Python helper in src/x.py and test using pytest.',
+    })?.systemPrompt;
+    assert.ok(first?.includes('<skill_discovery_index>'));
+    // Crucial: Pi might provide fresh full XML here, NOT first.systemPrompt.
+    const later = handler({
+      systemPrompt: full,
+      prompt: 'submit_result',
+    })?.systemPrompt;
+    assert.equal(later, first, 'Main feature selection must not depend on late-phase prompt');
+    const metadata1 = mainPromptRequestMetadata({
+      messages: [{ role: 'system', content: first }], tools: [],
+    });
+    const metadata2 = mainPromptRequestMetadata({
+      messages: [{ role: 'system', content: later }], tools: [],
+    }, metadata1);
+    assert.equal(metadata2.changedFromPrevious.system, false);
+    assert.equal(metadata1.discoverableSkillCount, 6);
+  } finally {
+    if (stage === undefined) delete process.env.PI_STAGE;
+    else process.env.PI_STAGE = stage;
+    if (child === undefined) delete process.env.PI_CODING_SESSION;
+    else process.env.PI_CODING_SESSION = child;
+  }
+});
