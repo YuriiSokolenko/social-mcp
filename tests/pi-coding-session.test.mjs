@@ -2031,9 +2031,14 @@ function runtimeScenario(mode) {
         let deadlineCallbackInvoked = false;
         const executions = [];
         const executeCoding = (callId, controller) => {
-          const running = tools.get('begin_coding_session').execute(
+          const invoke = () => tools.get('begin_coding_session').execute(
             callId, { reason: 'Verify terminal session lifetime' }, controller.signal, null, ctx,
           );
+          // Exercise an asynchronous launch boundary in the overlap scenario:
+          // neither request observation nor lease assertions may rely on execute()
+          // delegating synchronously.
+          const running = mode === 'terminal-binding-overlap'
+            ? Promise.resolve().then(invoke) : invoke();
           executions.push(running);
           return running;
         };
@@ -2079,6 +2084,9 @@ function runtimeScenario(mode) {
             clearTimeout(unrelatedTimer);
           }
           const first = executeCoding('first', controller);
+          if (mode === 'terminal-binding-overlap') {
+            assert.equal(heldTerminalRequests.length, 0, 'launch intentionally crosses a microtask boundary');
+          }
           await terminalRequestBarriers[0].promise;
           assert.equal(heldTerminalRequests.length, 1, 'first registered execute launched one delegation');
           const bound = sessionRequests[0].spec.sessionId;
