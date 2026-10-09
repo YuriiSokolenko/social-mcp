@@ -125,7 +125,8 @@ async function enterSubmission(h) {
 }
 
 const assistant = (reason, calls = [], providerError = false) => ({
-  role: 'assistant', stopReason: reason, ...(providerError ? { errorMessage: 'provider error' } : {}),
+  role: 'assistant', stopReason: reason, usage: { inputTokens: 1000 },
+  ...(providerError ? { errorMessage: 'provider error' } : {}),
   content: calls.map((id, n) => ({ type: 'toolCall', id, name: n ? 'read' : 'submit_result',
     arguments: { resultText: 'complete Markdown' } })),
 });
