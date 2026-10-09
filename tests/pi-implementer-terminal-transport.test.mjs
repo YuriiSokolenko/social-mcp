@@ -198,6 +198,30 @@ test('#665 real provider callback chain accepts executed Pi toolUse without extr
   assert.equal(h.budgets.at(-1), 16384, 'initial model budget restored');
 });
 
+test('#665 an executed terminal result with an incomplete turn aborts without replay', async () => {
+  for (const mode of ['changed_stop_reason', 'extra_blocked_tool']) {
+    const h = fakePi();
+    await enterSubmission(h);
+    assert.equal(await h.emit('tool_call', emittedCall), undefined);
+    await h.emit('message_end', { message: assistant('toolUse', ['done-665']) });
+    // Simulate the already committed terminal execution before turn_end.
+    await h.emit('tool_execution_end', { ...emittedCall, isError: false });
+    if (mode === 'changed_stop_reason') {
+      await h.emit('message_end', { message: assistant('stop', ['done-665']) });
+    } else {
+      const rejected = await h.emit('tool_call', {
+        toolName: 'read', toolCallId: 'extra-665', input: {},
+      });
+      assert.equal(rejected?.block, true);
+      await h.emit('message_end', { message: assistant('toolUse', ['done-665', 'extra-665']) });
+    }
+    await h.emit('turn_end');
+    assert.equal(h.pi.aborted, true, mode);
+    assert.equal(h.steers.length, 1, 'never replay a committed terminal result');
+    assert.equal(h.budgets.at(-1), 16384, 'restored budget even when aborting');
+  }
+});
+
 test('#665 #662 valid-JSON tool_calls + stop without trusted execution fail closed in both modes', async () => {
   for (const stream of [true, false]) {
     const h = fakePi();
@@ -235,6 +259,22 @@ test('#665 active terminal provider hook rejects a mixed tool list instead of fi
   await h.emit('message_end', { message: assistant('stop') });
   await h.emit('turn_end');
   assert.equal(h.pi.aborted, true, 'mixed provider surface fails closed without correction');
+});
+
+test('#665 malformed nullish tools fail closed through before_provider_request', async () => {
+  for (const tool of [null, undefined, false, { function: null }]) {
+    const h = fakePi();
+    await enterSubmission(h);
+    const restricted = await h.emit('before_provider_request', {
+      payload: { ...payload(), tools: [tool] },
+    });
+    assert.deepEqual(restricted.tools, []);
+    assert.equal(restricted.tool_choice, 'none');
+    await h.emit('message_end', { message: assistant('stop') });
+    await h.emit('turn_end');
+    assert.equal(h.pi.aborted, true, 'malformed provider payload aborts without TypeError');
+    assert.equal(h.steers.length, 1, 'do not attempt to correct unknown tool surfaces');
+  }
 });
 
 test('#665 truncated stream retries once with verified 8192 budget', async () => {
