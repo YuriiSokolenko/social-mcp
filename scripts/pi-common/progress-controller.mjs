@@ -130,6 +130,72 @@ export function classifyTruncatedToolCall({ toolName, isError, text }) {
 
 const DIRECT_PAYLOAD_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
 
+// Only inspect the final serialized provider request, not ctx.model, an environment
+// variable, or the desired Pi response cap. An absent, contradictory or invalid wire
+// ceiling is unverifiable and must never authorize an elevated recovery.
+export function serializedProviderOutputBudget(payload) {
+  const fields = ['max_completion_tokens', 'max_output_tokens', 'max_tokens']
+    .filter(name => Object.hasOwn(payload ?? {}, name));
+  if (!fields.length) return { verified: false, ceiling: null, reason: 'missing_wire_ceiling' };
+  const values = fields.map(name => payload[name]);
+  if (values.some(value => !Number.isSafeInteger(value) || value < 1)) {
+    return { verified: false, ceiling: null, reason: 'invalid_wire_ceiling' };
+  }
+  if (new Set(values).size > 1) {
+    return { verified: false, ceiling: null, reason: 'conflicting_wire_ceilings' };
+  }
+  return { verified: true, ceiling: values[0], field: fields.join('+') };
+}
+
+// Pi can parse a length-cut JSON fragment into an object containing "content"
+// but no "path". Its schema error is emitted AFTER the provider response and
+// BEFORE turn_end, so collect it, then correlate it with the actual wire budget.
+// An ordinary complete-json missing path is not itself truncation evidence.
+export function incompleteCodingToolError({ toolName, isError, text }) {
+  if (!DIRECT_PAYLOAD_TOOLS.has(toolName) || isError !== true) return null;
+  const message = String(text ?? '');
+  if (TRUNCATED_TOOL_CALL_PATTERN.test(message)) {
+    return { toolName, evidence: 'explicit_incomplete_transport' };
+  }
+  if (!/Validation failed for tool ["']?(?:write|edit|safe_edit|structural_edit)["']?:/i.test(message) ||
+      !/path:\s*must have required properties path/i.test(message) ||
+      !/Received arguments:/i.test(message) ||
+      !/"(?:content|newText|oldText|edits)"\s*:/i.test(message)) return null;
+  return { toolName, evidence: 'missing_path_with_payload' };
+}
+
+export function verifiedCodingToolTruncation({ candidates, requestBudget, outputTokens, stopReason }) {
+  if (!Array.isArray(candidates) || !candidates.length ||
+      !requestBudget?.verified ||
+      stopReason === 'error' || stopReason === 'aborted') return null;
+  const explicit = candidates.find(item => item.evidence === 'explicit_incomplete_transport');
+  // The provider's explicit "output token limit" error is direct transport
+  // evidence. The provider can omit usage on this path; do not manufacture 0.
+  if (explicit) return {
+    ...explicit, ceiling: requestBudget.ceiling,
+    outputTokens: Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null,
+  };
+  if (!Number.isFinite(outputTokens) || outputTokens < 0) return null;
+  // The exact provider ceiling plus a large malformed write/edit payload is the
+  // #627/#628 signature. Never reinterpret a short complete-JSON schema failure
+  // or reasoning-only length turn as a truncated tool transport.
+  if (outputTokens < requestBudget.ceiling) return null;
+  const candidate = candidates.find(item => item.evidence === 'missing_path_with_payload');
+  return candidate ? { ...candidate, ceiling: requestBudget.ceiling, outputTokens } : null;
+}
+
+export function codingTruncationCorrectionTool(failedTool, executableTools) {
+  if (!Array.isArray(executableTools)) return null;
+  if (DIRECT_PAYLOAD_TOOLS.has(failedTool) && executableTools.includes(failedTool)) {
+    return { tool: failedTool, mode: 'direct' };
+  }
+  if (executableTools.includes('begin_coding_session')) {
+    return { tool: 'begin_coding_session', mode: 'handoff' };
+  }
+  const alternative = [...DIRECT_PAYLOAD_TOOLS].find(name => executableTools.includes(name));
+  return alternative ? { tool: alternative, mode: 'split' } : null;
+}
+
 export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null, codingSessionTool = null } = {}) {
   if (codingSessionTool && DIRECT_PAYLOAD_TOOLS.has(toolName)) {
     return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
@@ -444,6 +510,22 @@ export class ProgressController {
     this.automaticLargeMutationBudgetArmed = false;
     this.largeMutationBudgetState = 'pending';
     this.largeMutationBudgetSource = 'automatic';
+    return true;
+  }
+
+  // Reuses the same pending -> active -> consumed one-shot grant as the normal
+  // request_large_mutation_budget tool. Recovery is chosen by the transport
+  // controller only after a corroborated, non-executed coding-tool call.
+  grantTruncatedCodingToolBudget() {
+    if (!this.largeMutationBudgetTool ||
+        !Number.isSafeInteger(this.largeMutationBudgetMaxTokens) ||
+        this.largeMutationBudgetMaxTokens < 1 ||
+        this.largeMutationBudgetState !== 'idle' ||
+        this.productiveState !== 'action_required' ||
+        this.requiredMutationAnchors.size > 0) return false;
+    this.automaticLargeMutationBudgetArmed = false;
+    this.largeMutationBudgetState = 'pending';
+    this.largeMutationBudgetSource = 'transport_recovery';
     return true;
   }
 
