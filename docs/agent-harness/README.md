@@ -1,4 +1,6 @@
-# Agent harness: layers and extraction plan
+# Agent harness: proposed extraction design (not deployed)
+
+> **Design proposal / non-operational.** The standalone harness and reusable-workflow layout below have **not** been deployed. The live issue pipeline is documented only in [Workflow and CI](../CI_RULES.md); follow current [workflow YAML](../../.github/workflows/) and [harness config](../../.agent-harness.json) for behavior. The layer inventory here is useful for a future extraction, not an independent runtime specification.
 
 The agent automation (dispatcher, architect, implementer, reviewer, repair, merge gate, reconciler) is being prepared to move into a standalone, agent-agnostic harness repository. **Nothing has moved yet.** This document records the seams that make the move mostly packaging.
 

@@ -28,11 +28,11 @@ test('merge gate requires green CI for the exact current PR head without synthet
 });
 
 test('architecture guard keeps exact-head PR CI but rejects synthetic dev-pair orchestration', () => {
-  const guard = fs.readFileSync('docs/ci-architecture.md', 'utf8');
-  assert.match(guard, /exact PR HEAD.*CI/is);
-  assert.match(guard, /before merge/is);
-  assert.match(guard, /Do not reintroduce/i);
-  assert.match(guard, /captured dev SHA|synthetic/i);
+  const guard = fs.readFileSync('docs/CI_RULES.md', 'utf8');
+  assert.match(guard, /green ordinary pull-request CI on that same PR HEAD/);
+  assert.match(guard, /current `dev` HEAD must also have green push CI/);
+  assert.match(guard, /Merge Gate never creates synthetic integration commits/);
+  assert.match(guard, /No pipeline stage uses captured cross-run dev SHA or synthetic dev\+PR CI/);
 });
 
 
@@ -1445,7 +1445,9 @@ test('text architecture map is maintained only for architecture-changing work', 
   const context = fs.readFileSync('docs/PROJECT_CONTEXT.md', 'utf8');
 
   assert.match(map, /## Product architecture/);
-  assert.match(map, /## Pi development pipeline/);
+  assert.match(map, /## Workflow automation \(canonical reference\)/);
+  assert.match(map, /\[the workflow and CI guide\]\(\.\.\/CI_RULES\.md\)/);
+  assert.doesNotMatch(map, /## Pi development pipeline/);
   assert.match(map, /## Component ownership/);
   assert.match(map, /Update this file in the same PR/);
   assert.doesNotMatch(map, /mermaid/i);
@@ -1458,7 +1460,7 @@ test('text architecture map is maintained only for architecture-changing work', 
 test('implementer action-required aborts keep defensive execution-failure provenance through publication fallback', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-issue-agent.yml', 'utf8');
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
-  const overview = fs.readFileSync('docs/CI_PIPELINE_OVERVIEW.md', 'utf8');
+  const guide = fs.readFileSync('docs/CI_RULES.md', 'utf8');
 
   assert.match(runtime, /tool_choice: 'required'/);
   assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_ARMED/);
@@ -1501,9 +1503,9 @@ test('implementer action-required aborts keep defensive execution-failure proven
     2,
     'both workflow failure consumers fail closed to an explicit invalid-metadata classification',
   );
-  assert.match(overview, /PI_RUNTIME_FAILURE_FILE.*diagnostic provenance, not an authorization boundary/s);
-  assert.match(overview, /\$RUNNER_TEMP.*Implementer shell\/tool process may be able to write/s);
-  assert.match(overview, /must never authorize publication, review, or merge/s);
+  assert.match(guide, /PI_RUNTIME_FAILURE_FILE.*diagnostic provenance, not an authorization boundary/s);
+  assert.match(guide, /\$RUNNER_TEMP.*Implementer shell\/tool process may be able to write/s);
+  assert.match(guide, /must never authorize publication, review, or merge/s);
 
   const abortIndex = workflow.indexOf('Pi execution aborted before terminal submission');
   const genericNoChangeIndex = workflow.indexOf('Pi completed the task but produced no repository changes');

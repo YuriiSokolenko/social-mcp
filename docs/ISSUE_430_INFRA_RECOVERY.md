@@ -1,4 +1,6 @@
-# Smoke-pack infrastructure and recovery findings (#430)
+# Historical incident findings: smoke-pack infrastructure and recovery (#430)
+
+> **Historical incident report, not current recovery instructions.** For deployed N150 quarantine/evidence/recovery behavior, use [the runner/autoscaler README](../infra/github-runner-autoscaler/README.md) and current manager scripts.
 
 ## Evidence and root-cause limits
 
