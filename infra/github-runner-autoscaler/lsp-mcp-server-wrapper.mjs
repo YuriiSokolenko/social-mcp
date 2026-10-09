@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { readdir, readFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const serverEntry = '/usr/lib/node_modules/lsp-mcp-server/dist/index.js';
+const globalModules = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
+const serverEntry = path.join(globalModules, 'lsp-mcp-server', 'dist', 'index.js');
 const daemonMarker = 'org.gradle.launcher.daemon.bootstrap.GradleDaemon';
 
 async function gradleDaemonPids() {

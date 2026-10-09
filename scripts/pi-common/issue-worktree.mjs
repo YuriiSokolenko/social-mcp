@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { resolveRunArtifactId } from './validation-ledger.mjs';
+import { decodeMutationJournalState, writeMutationJournalFile } from './mutation-journal.mjs';
 
 /**
  * Prepare and clean the isolated Implementer worktree.
@@ -18,6 +19,66 @@ import { resolveRunArtifactId } from './validation-ledger.mjs';
  * or as authoritative pipeline state. If 3-way apply leaves conflicts, the live
  * Implementer resolves them against current dev.
  */
+
+export function acceptedScopeStateFromRef(ref, cwd = process.cwd()) {
+  if (!ref) return null;
+  // Checkpoint tips may be marker-less (for example when a later crash saved
+  // additional work before submit_result). Search only saved-work commits that
+  // are not already part of current dev, so a trailer from an older merged
+  // issue can never be mistaken for this issue's scope.
+  const baseAvailable = git(['rev-parse', '--verify', baseRef()], { cwd, allowFailure: true }).status === 0;
+  const revArgs = baseAvailable
+    ? ['rev-list', ref, `^${baseRef()}`]
+    : ['rev-list', '-n', '50', ref];
+  const commits = git(revArgs, { cwd }).out.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  for (const commit of commits) {
+    const message = git(['show', '-s', '--format=%B', commit], { cwd }).out;
+    const enforcement = /^Pi-Scope-Enforcement:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+    if (enforcement !== 'predeclared') continue;
+    const encoded = /^Pi-Accepted-Mutation-Scope:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+    if (!encoded) continue;
+    try {
+      const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+      if (value?.schema_version === 1) return value;
+    } catch {
+      // Keep searching older checkpoint ancestry for the latest valid receipt.
+    }
+  }
+  return null;
+}
+
+export function mutationJournalStateFromRef(ref, cwd = process.cwd()) {
+  if (!ref) return null;
+  // expectedSha can legitimately be known by the control-plane before its object is present in
+  // this local clone. Missing local history means "no comparable prior trailer", not a checkpoint
+  // failure; the later force-with-lease still protects the remote ref update.
+  if (git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd, allowFailure: true }).status !== 0) return null;
+  // This trailer is a consistency/recovery record, not authorization. It may originate from
+  // model-created checkpoint history. Every later undo still re-validates worktree containment,
+  // protected-path policy, target type, and the exact current post-state fingerprint before any
+  // bytes are restored or deleted.
+
+  const baseAvailable = git(['rev-parse', '--verify', baseRef()], { cwd, allowFailure: true }).status === 0;
+  const revArgs = baseAvailable
+    ? ['rev-list', ref, `^${baseRef()}`]
+    : ['rev-list', '-n', '50', ref];
+  const commits = git(revArgs, { cwd }).out.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  for (const commit of commits) {
+    const message = git(['show', '-s', '--format=%B', commit], { cwd }).out;
+    const encoded = /^Pi-Mutation-Journal:\s*(\S+)\s*$/m.exec(message)?.[1] ?? '';
+    if (!encoded) continue;
+    const state = decodeMutationJournalState(cwd, encoded);
+    if (!state) {
+      // A malformed consistency trailer must not permanently wedge resume/checkpoint recovery.
+      // Treat the newest explicit-but-invalid journal record as unusable state rather than
+      // falling through to an older trailer, which could resurrect mutations already cleaned up.
+      console.warn(`PI_MUTATION_JOURNAL_TRAILER_INVALID ${JSON.stringify({ commit })}`);
+      return null;
+    }
+    return state;
+  }
+  return null;
+}
 
 export function issueWorktreePatchPath(tempDir, env = process.env) {
   if (!tempDir) throw new Error('tempDir is required');
@@ -45,6 +106,9 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }, env = process.e
     resumeRef = `refs/remotes/origin/${issueBranch}`;
   }
 
+  const acceptedScopeState = resumeRef ? acceptedScopeStateFromRef(resumeRef) : null;
+  const mutationJournalState = resumeRef ? mutationJournalStateFromRef(resumeRef) : null;
+
   git(['worktree', 'prune']);
   git(['worktree', 'add', '-B', issueBranch, jobDir, baseRef()]);
   const patch = issueWorktreePatchPath(tempDir, env);
@@ -63,7 +127,14 @@ export function prepareIssueWorktree({ issue, jobDir, tempDir }, env = process.e
       }
     }
   }
-  return { start, checkpointExpected, issueBranchExpected, patch, resumed };
+  if (env.PI_MUTATION_JOURNAL_FILE) {
+    writeMutationJournalFile(
+      jobDir,
+      env.PI_MUTATION_JOURNAL_FILE,
+      mutationJournalState ?? { schema_version: 1, entries: [] },
+    );
+  }
+  return { start, checkpointExpected, issueBranchExpected, patch, resumed, acceptedScopeState, mutationJournalState };
 }
 
 export function cleanIssueWorktree({ jobDir, patchFile }) {

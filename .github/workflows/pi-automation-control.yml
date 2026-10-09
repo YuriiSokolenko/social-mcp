@@ -20,7 +20,9 @@ permissions:
 
 jobs:
   control:
-    runs-on: [self-hosted, linux, x64, n150, general]
+    # Mode transitions must remain available even if every general runner is busy.
+    # This job needs only Node/Git and the scoped PI_CONTROL_TOKEN.
+    runs-on: [self-hosted, n150, control]
     steps:
       - name: Checkout trusted control repository
         uses: actions/checkout@v5

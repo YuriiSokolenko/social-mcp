@@ -68,6 +68,9 @@ jobs:
           echo "PI_IMPLEMENTER_RESULT_FILE=$RUNNER_TEMP/pi-implementer-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_RUNTIME_FAILURE_FILE=$RUNNER_TEMP/pi-runtime-failure-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
           echo "PI_VALIDATION_LEDGER_FILE=$RUNNER_TEMP/pi-validation-ledger-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" >> "$GITHUB_ENV"
+          echo "PI_ACCEPTED_MUTATION_SCOPE_FILE=$RUNNER_TEMP/pi-accepted-mutation-scope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
+          echo "PI_MUTATION_JOURNAL_FILE=$RUNNER_TEMP/pi-mutation-journal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
+          echo "PI_WORKTREE_BASELINE_FILE=$RUNNER_TEMP/pi-worktree-baseline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" >> "$GITHUB_ENV"
 
       - name: Validate and load dispatched issue
         id: preflight
@@ -106,6 +109,10 @@ jobs:
           echo "PI_ISSUE_BRANCH_EXPECTED=$(jq -r '.issueBranchExpected' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_RESUME_PATCH=$(jq -r '.patch' <<<"$CONTEXT")" >> "$GITHUB_ENV"
           echo "PI_RESUME_ACTIVE=$(jq -r '.resumed' <<<"$CONTEXT")" >> "$GITHUB_ENV"
+          ACCEPTED_SCOPE_STATE="$(jq -c '.acceptedScopeState // null' <<<"$CONTEXT")"
+          if [ "$ACCEPTED_SCOPE_STATE" != "null" ]; then
+            echo "PI_ACCEPTED_MUTATION_SCOPE_STATE=$ACCEPTED_SCOPE_STATE" >> "$GITHUB_ENV"
+          fi
 
       - name: Prepare Python environment
         if: steps.claim.outputs.terminal != 'true'
@@ -117,9 +124,16 @@ jobs:
           command -v orbit >/dev/null
           orbit version
           cd "$RUNNER_TEMP"
-          orbit setup pi --mcp --yes --no-index >/dev/null
-          orbit index "$JOB_DIR" >/dev/null
-          echo "Orbit Local MCP configured and current issue worktree indexed."
+          if ! orbit setup pi --mcp --yes --no-index >/dev/null; then
+            echo "::warning::Orbit setup failed; Implementer will continue and can use its read-only fallback."
+          fi
+          if ! orbit index "$JOB_DIR" >/dev/null; then
+            echo "::warning::Orbit index failed; Implementer will continue and can use its read-only fallback."
+          fi
+          if ! bash "$GITHUB_WORKSPACE/scripts/orbit-context-preflight.sh" "$JOB_DIR"; then
+            echo "::warning::Orbit context preflight failed; Implementer will continue and can use its read-only fallback."
+          fi
+          echo "Orbit Local MCP setup attempted for the current issue worktree."
 
       - name: Run implementation backend with live progress
         if: steps.claim.outputs.terminal != 'true'
@@ -133,7 +147,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" checkpoint "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_CHECKPOINT_EXPECTED")"
+          RESULT="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" checkpoint "$ISSUE" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT" "$PI_CHECKPOINT_EXPECTED" "$PI_IMPLEMENTER_RESULT_FILE" "$PI_ACCEPTED_MUTATION_SCOPE_FILE" "$PI_MUTATION_JOURNAL_FILE")"
           CHANGED="$(jq -r '.changed' <<<"$RESULT")"
           echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
           if [ "$CHANGED" = "true" ]; then
@@ -159,7 +173,7 @@ jobs:
           # is fixed by the Actions runner at dispatch time and is never routed
           # through $GITHUB_ENV, so nothing a running job does (including a
           # compromised mini-swe process writing to $GITHUB_ENV) can alter it.
-          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE" "${{ inputs.backend || 'pi' }}")"
+          PR="$(node "$GITHUB_WORKSPACE/scripts/pi-common/issue-publication.mjs" pr "$ISSUE" "$PI_IMPLEMENTER_RESULT_FILE" "${{ github.repository_owner }}" "$PI_VALIDATION_LEDGER_FILE" "${{ inputs.backend || 'pi' }}" "$JOB_DIR" "$PI_IMPLEMENTER_START_COMMIT")"
           echo "number=$(jq -r '.number' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r '.url' <<<"$PR")" >> "$GITHUB_OUTPUT"
           echo "verification_state=$(jq -r '.verification_state' <<<"$PR")" >> "$GITHUB_OUTPUT"
@@ -213,18 +227,10 @@ jobs:
             exit 0
           fi
           if [ -s "$PI_RUNTIME_FAILURE_FILE" ]; then
-            if jq -e '
-              type == "object" and
-              .schema_version == 1 and
-              (.failure_class | type == "string") and
-              (.failure_code | type == "string") and
-              (.reason | type == "string") and
-              .failure_class == "model_execution_abort" and
-              .failure_code == "PI_ACTION_REQUIRED_ABORT"
-            ' "$PI_RUNTIME_FAILURE_FILE" >/dev/null 2>&1; then
-              FAILURE_CLASS="model_execution_abort"
-              FAILURE_CODE="PI_ACTION_REQUIRED_ABORT"
-              FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"
+            if CLASSIFIED_RUNTIME_FAILURE="$(node "$GITHUB_WORKSPACE/scripts/pi-common/runtime-failure.mjs" classify "$PI_RUNTIME_FAILURE_FILE" 2>/dev/null)"; then
+              FAILURE_CLASS="$(jq -r '.failure_class' <<<"$CLASSIFIED_RUNTIME_FAILURE")"
+              FAILURE_CODE="$(jq -r '.failure_code' <<<"$CLASSIFIED_RUNTIME_FAILURE")"
+              FAILURE_REASON="$(jq -r '.reason' <<<"$CLASSIFIED_RUNTIME_FAILURE")"
             else
               FAILURE_CLASS="execution_failure"
               FAILURE_CODE="runtime_failure_metadata_invalid"
@@ -252,18 +258,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -s "$PI_RUNTIME_FAILURE_FILE" ]; then
-            if jq -e '
-              type == "object" and
-              .schema_version == 1 and
-              (.failure_class | type == "string") and
-              (.failure_code | type == "string") and
-              (.reason | type == "string") and
-              .failure_class == "model_execution_abort" and
-              .failure_code == "PI_ACTION_REQUIRED_ABORT"
-            ' "$PI_RUNTIME_FAILURE_FILE" >/dev/null 2>&1; then
-              FAILURE_CLASS="model_execution_abort"
-              FAILURE_CODE="PI_ACTION_REQUIRED_ABORT"
-              FAILURE_REASON="Implementer runtime aborted after repeated action-required responses without a usable tool action"
+            if CLASSIFIED_RUNTIME_FAILURE="$(node "$GITHUB_WORKSPACE/scripts/pi-common/runtime-failure.mjs" classify "$PI_RUNTIME_FAILURE_FILE" 2>/dev/null)"; then
+              FAILURE_CLASS="$(jq -r '.failure_class' <<<"$CLASSIFIED_RUNTIME_FAILURE")"
+              FAILURE_CODE="$(jq -r '.failure_code' <<<"$CLASSIFIED_RUNTIME_FAILURE")"
+              FAILURE_REASON="$(jq -r '.reason' <<<"$CLASSIFIED_RUNTIME_FAILURE")"
             else
               FAILURE_CLASS="execution_failure"
               FAILURE_CODE="runtime_failure_metadata_invalid"
@@ -310,6 +308,15 @@ jobs:
         with:
           name: pi-model-trace-implementer-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-model-trace-implementer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload sanitized runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-diagnostics-implementer-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-diagnostics-implementer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
           if-no-files-found: ignore
           retention-days: 7
 

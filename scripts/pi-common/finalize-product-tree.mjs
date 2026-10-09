@@ -1,7 +1,9 @@
 import { runGit as git } from './git.mjs';
 
-import { forbiddenAgentPaths } from './agent-change-policy.mjs';
+import { changedAgentPaths, forbiddenAgentPaths } from './agent-change-policy.mjs';
 import { runProductChecks } from './product-checks.mjs';
+import { assertAcceptedMutationScope } from './accepted-mutation-scope.mjs';
+import { IMPLEMENTER_OUTCOMES, readImplementerResult } from './implementer-result.mjs';
 import { baseBranch, baseRef, gitIdentity } from './project-config.mjs';
 
 
@@ -39,14 +41,54 @@ export function integrateLatestDev({ conflictMessage, allowConflicts = false }) 
       if (allowConflicts) return { conflicts };
       throw new Error(conflictMessage(conflicts));
     }
-    throw new Error(merge.out || `Failed to merge latest ${baseBranch()}`);
+    // Git writes merge failures such as "local changes would be overwritten"
+    // to stderr while stdout may contain only "Updating <sha>..<sha>".
+    // Preserve both streams, with stderr first, so callers receive the real
+    // failure cause instead of a misleading progress message.
+    const details = [merge.err, merge.out].filter(Boolean).join('\n');
+    throw new Error(`Failed to merge latest ${baseBranch()} (exit ${merge.status})${details ? `:\n${details}` : ''}`);
   }
   return { conflicts: [] };
 }
 
-export function validateFinalProductTree({ cwd, ledgerPath, backend, env = process.env } = {}) {
+export function validateAcceptedScopeMetadata({ cwd, base = baseRef(), env = process.env } = {}) {
+  const resultFile = env.PI_IMPLEMENTER_RESULT_FILE;
+  const metadata = resultFile ? readImplementerResult(resultFile) : null;
+  const changed = changedAgentPaths(base, cwd);
+  if (changed.length && !metadata) {
+    throw new Error(JSON.stringify({
+      code: 'accepted_scope_missing',
+      unexpected_paths: changed.sort(),
+      recovery: 'Changed implementation work requires terminal metadata with an accepted mutation scope before final validation.',
+    }));
+  }
+  if (metadata?.outcome === IMPLEMENTER_OUTCOMES.changed) {
+    if (metadata.scope_enforcement === 'predeclared') {
+      assertAcceptedMutationScope({ cwd, receipt: metadata.accepted_scope, base });
+    } else if (metadata.scope_enforcement !== 'unsandboxed-gated') {
+      throw new Error(JSON.stringify({
+        code: 'accepted_scope_missing',
+        recovery: 'Changed Pi work must carry a trusted predeclared accepted-scope receipt before final validation.',
+      }));
+    }
+  }
+  return metadata;
+}
+
+export function validateFinalProductTree({
+  cwd,
+  ledgerPath,
+  backend,
+  env = process.env,
+  enforceAcceptedScope,
+} = {}) {
+  if (typeof enforceAcceptedScope !== 'boolean') {
+    throw new Error('validateFinalProductTree requires explicit enforceAcceptedScope=true|false');
+  }
   const base = git(['merge-base', baseRef(), 'HEAD'], { cwd }).out;
   const forbidden = forbiddenAgentPaths(base, cwd);
   if (forbidden.length) throw new Error(`Agent changes to CI/control-plane files are forbidden: ${forbidden.join(', ')}`);
+
+  if (enforceAcceptedScope) validateAcceptedScopeMetadata({ cwd, base, env });
   runProductChecks({ cwd, ledgerPath, backend, env });
 }

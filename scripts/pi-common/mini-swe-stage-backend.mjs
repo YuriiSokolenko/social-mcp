@@ -9,6 +9,11 @@ import { integrateLatestDev } from './finalize-product-tree.mjs';
 import { runGit as git } from './git.mjs';
 import { writeImplementerResult } from './implementer-result.mjs';
 import { createStageRunResult } from './stage-run-contract.mjs';
+import {
+  assertSuccessfulTerminalReceipt,
+  createSuccessfulTerminalReceipt,
+  writeTerminalReceiptFile,
+} from './terminal-receipt.mjs';
 
 const BACKEND = 'mini-swe';
 const gitPaths = text => text.split('\0').filter(Boolean);
@@ -173,14 +178,19 @@ function writeImplementationResult(spec) {
     already_satisfied: false,
     security_notes: 'No dedicated security assessment was supplied by the experimental mini-swe-agent backend; independent review remains authoritative.',
     limitations: 'PR metadata is generated deterministically from the current diff rather than from Pi submit_result.',
+    scope_enforcement: 'unsandboxed-gated',
   };
   if (!metadata.title) throw new Error('Issue title is required for mini-swe publication');
 
   writeImplementerResult(target, { ...metadata, outcome: 'changed' });
-  fs.writeFileSync(
+  const receiptEnv = { ...spec.environment, PI_TERMINAL_RESULT_FILE: spec.artifacts.terminalResultPath };
+  writeTerminalReceiptFile(
     spec.artifacts.terminalResultPath,
-    JSON.stringify({ backend: BACKEND, status: 'submitted', changes: changedPaths }) + '\n',
-    { encoding: 'utf8', mode: 0o600 },
+    createSuccessfulTerminalReceipt({
+      cwd: spec.cwd,
+      resultFile: target,
+      env: receiptEnv,
+    }),
   );
 }
 
@@ -241,6 +251,13 @@ export async function runMiniSweStage(spec) {
   }
 
   writeImplementationResult(spec);
+  if (spec.environment.PI_IMPLEMENTER_RESULT_FILE && spec.environment.PI_VALIDATION_RUN_ID) {
+    assertSuccessfulTerminalReceipt({
+      cwd: spec.cwd,
+      resultFile: spec.environment.PI_IMPLEMENTER_RESULT_FILE,
+      env: { ...spec.environment, PI_TERMINAL_RESULT_FILE: spec.artifacts.terminalResultPath },
+    });
+  }
   return createStageRunResult({
     backend: BACKEND,
     durationMs: Date.now() - startedAt,

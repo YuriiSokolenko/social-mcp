@@ -17,6 +17,7 @@ Automated review must not approve CI/control-plane changes. The workflow guards 
 - `agents/**`
 - `scripts/pi-*`
 - `tests/*.test.mjs`
+- `tests/acceptance_probes/**`
 - `tests/test_runner_autoscaler.sh`
 - `infra/github-runner-autoscaler/**`
 - `.agent-harness.json` / `.agent-harness.yml` / `.agent-harness.yaml`
@@ -41,10 +42,10 @@ Choose complexity from the review scope:
 - **normal** — ordinary code/test change requiring local semantic context.
 - **complex** — broad multi-component, architectural, conflict-heavy, or security-sensitive change requiring substantial synthesis.
 
-After complexity is declared, follow this evidence-driven loop. Runtime caps these action-oriented review responses at 1024 output tokens and does not allow repeated prose-only deliberation: each turn must either call `submit_result` or call one concrete evidence tool for an unresolved question.
+After complexity is declared, follow this evidence-driven loop. Runtime caps these action-oriented review responses at 1024 output tokens and does not allow repeated prose-only deliberation: each turn must either call `begin_review_submission` or call one concrete evidence tool for an unresolved question.
 
 1. Ask: **can every acceptance criterion and relevant correctness concern already be judged from the issue, diff, and changed code already inspected?**
-2. If yes, decide the verdict immediately and call `submit_result`.
+2. If yes, decide the verdict immediately and call `begin_review_submission({verdict})`.
 3. If no, state the specific unresolved review question to yourself, inspect only the context needed to answer that question, then return to step 1.
 
 Additional investigation is allowed whenever it answers a concrete review question. This can include repository history, prior implementations/PRs, surrounding code, tests, configuration, documentation, or a relevant skill. Reused training/test issues may legitimately require history to distinguish the current change from earlier attempts.
@@ -82,7 +83,7 @@ For a trivial review:
 1. Read the issue.
 2. Inspect the complete diff and changed content.
 3. Verify the exact acceptance criteria.
-4. If they are resolved, submit the verdict immediately.
+4. If they are resolved, call `begin_review_submission({verdict})` immediately.
 5. If a concrete question remains, investigate that question only and then submit.
 
 Do not repeat a check merely for reassurance. History or prior attempts are valid when they materially answer a concrete question, including reused training/test issues. A static exact-content change does not otherwise require architecture, regression, test-design, or security exploration unless the diff itself introduces such a concern.
@@ -96,6 +97,8 @@ For complex changes, inspect additional architecture/security context only for c
 ## What determines the verdict
 
 For factual claims about **existing current behavior**, the checked-out current code and relevant tests are authoritative. An issue can request a behavior change, but it cannot make an inaccurate description of already-existing behavior true. If the issue text and inspected current code conflict, do not approve documentation, comments, tests, or implementation that repeat the false factual claim merely because the issue asked for it. Treat a PR that introduces or preserves a materially misleading factual description of current behavior as a concrete correctness defect and use `CHANGES_REQUESTED` with the exact mismatch. Correcting that factual mismatch is not scope expansion.
+
+Acceptance evidence: for PASS, submit one compact `criteria_evidence` entry for every material acceptance criterion. Use `ESTABLISHED` only when concrete code, trusted-test, or counterexample evidence proves the behavior; passing tests written in the same PR are not enough by themselves for a rejection/preservation/type/ordering boundary. Use `ASSUMPTION` when the issue leaves genuine policy latitude, and state that assumption explicitly instead of silently choosing a stricter contract. For CHANGES_REQUESTED, `criteria_evidence` may be omitted when the blocking defect is outside the acceptance criteria. Do not claim stricter validation or "verbatim" behavior than the inspected code proves. When one concrete question remains, you may run one narrow read-only probe of the changed function; this does not permit rerunning the deterministic prerequisites. `tests/acceptance_probes/` holds trusted probes that run with the product tests; some smoke-pack probes activate only when their target module exists, so recreated/reset smoke modules still inherit the independent oracle. A PR must not weaken or delete these probes.
 
 Evaluate only dimensions relevant to the change:
 
@@ -150,16 +153,14 @@ KISS, YAGNI, and SOLID are heuristics for an already-existing review question, n
 
 ## Verdict and submission
 
-Call `submit_result` exactly once as your final action:
+Investigation and terminal submission are separate provider requests. When done, call one nonterminal `begin_review_submission({verdict:"PASS"})` or `begin_review_submission({verdict:"CHANGES_REQUESTED"})`. It binds the verdict to the review run, session and PR HEAD, and never publishes or mutates files.
 
-`submit_result({"verdict":"PASS","summary":"..."})`
+On the NEXT dedicated request the runtime exposes ONLY `submit_result({reviewText:"..."})` with a 4096-token output budget and an optional bounded 8192-token truncation retry. Call that tool exactly once. No nested JSON, verdict argument, repository tools, hidden tools, or prose-only completion.
 
-or:
+For PASS, write Markdown with `## Acceptance evidence` and exactly one `### Criterion N: <criterion from issue>` section for EACH of the runtime-provided acceptance criteria, in order. Each needs `Status: ESTABLISHED` and `Evidence: <precise code/test reference and observed behavior>`. Genuine ambiguity uses `Status: ASSUMPTION` plus `Assumption: <explicit interpretation>`. A generic claim that tests pass is not evidence. Never manufacture missing acceptance evidence or use a transmission probe as a PASS.
 
-`submit_result({"verdict":"CHANGES_REQUESTED","summary":"..."})`
+For CHANGES_REQUESTED, include `## Blocking findings`, identify actionable blocking defects and their exact source/test references and consequences. Do not invent evidence.
 
-Use **PASS** when the PR satisfies the linked issue and you found no concrete blocking defect in the relevant correctness, regression, test, architecture, or security dimensions.
+Use **PASS** only if all issue requirements are met and no concrete blocker exists. Use **CHANGES_REQUESTED** only for established actionable blockers. Keep cosmetic observations nonblocking.
 
-Use **CHANGES_REQUESTED** only for concrete actionable blocking findings. State what is wrong, where it occurs, and why it matters. Keep optional/cosmetic observations out of the blocking verdict.
-
-For PASS, keep the summary concise and state what was actually verified.
+The runtime validates all acceptance sections and the actual provider toolUse, then publishes only a durable receipt-bound result. A failed submission may be retried only on an explicit runtime-approved correction/truncation request.

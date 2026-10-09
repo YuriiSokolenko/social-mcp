@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { controlPlanePaths } from './control-plane-policy.mjs';
 import { githubClient } from './github-api.mjs';
@@ -8,6 +10,11 @@ import { runGit as git } from './git.mjs';
 import { baseBranch, baseRef, checkpointBranch, gitIdentity, issueBranch, projectConfig, workflowFile } from './project-config.mjs';
 import { PIPELINE_LABELS } from './state-machine.mjs';
 import { computeVerificationState, readValidationLedger, renderValidationSection, VERIFICATION_STATES } from './validation-ledger.mjs';
+import { assertAcceptedMutationScope, readMutationScopeReceiptFile } from './accepted-mutation-scope.mjs';
+import { encodeMutationJournalState, readMutationJournalFile } from './mutation-journal.mjs';
+import { assertSuccessfulTerminalReceipt } from './terminal-receipt.mjs';
+import { mutationJournalStateFromRef } from './issue-worktree.mjs';
+import { resolveCandidateBase } from './candidate-revision.mjs';
 
 /**
  * Trusted publication primitives for an Implementer result.
@@ -28,6 +35,15 @@ import { computeVerificationState, readValidationLedger, renderValidationSection
  * Implementer + product-checks own that. This helper publishes an already
  * validated tree.
  */
+// Render model-authored PR prose as inert text, never actionable GitHub Markdown.
+// The fence is longer than any backtick run in the data, so embedded fences
+// cannot escape it; normalize every line separator before rendering.
+export function renderUntrustedImplementerSummary(value) {
+  const normalized = String(value).replace(/\r\n|\r|\n|\u2028|\u2029/g, '\n');
+  const longest = [...normalized.matchAll(/`+/g)].reduce((max, match) => Math.max(max, match[0].length), 0);
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return ['Model-reported description (unverified):', '', fence + 'text', normalized, fence].join('\n');
+}
 const lines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 const gitPaths = (s) => s.split('\0').filter(Boolean);
 
@@ -36,6 +52,20 @@ const DEFAULT_PUSH_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000]);
 
 function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function commitWithMessageFile(cwd, message, { allowEmpty = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-checkpoint-message-'));
+  try {
+    const messageFile = path.join(dir, 'message.txt');
+    fs.writeFileSync(messageFile, message, 'utf8');
+    const args = ['commit'];
+    if (allowEmpty) args.push('--allow-empty');
+    args.push('-F', messageFile);
+    return git(args, { cwd });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export function pushWithMissingObjectRetry(args, {
@@ -70,11 +100,10 @@ export function pushWithMissingObjectRetry(args, {
  * checkpoint recovery.
  */
 export function publicationBase(cwd, startCommit) {
-  const integrated = git(['merge-base','--is-ancestor',baseRef(),'HEAD'], { cwd, allowFailure:true }).status === 0;
-  return integrated ? baseRef() : startCommit;
+  return resolveCandidateBase({ cwd, startCommit, configuredBase: baseRef() });
 }
 
-export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) {
+export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token, resultFile, scopeFile, mutationJournalFile }) {
   const { cleanDirectories, cleanFiles } = projectConfig().workspace;
   for (const p of cleanDirectories) fs.rmSync(`${cwd}/${p}`, { recursive: true, force: true });
   for (const p of cleanFiles) fs.rmSync(`${cwd}/${p}`, { force: true });
@@ -85,16 +114,69 @@ export function saveCheckpoint({ issue, cwd, startCommit, expectedSha, token }) 
   const staged = lines(git(['diff','--cached','--name-only'], { cwd }).out);
   const sensitive = staged.filter(p => /(^|\/)(\.env(\.|$)|.*\.(db|sqlite3?|pem|key)$|credentials([^/]*$|\/))/.test(p) && !/(^|\/)\.env\.example$/.test(p));
   if (sensitive.length) throw new Error(`Refusing to checkpoint credential/runtime files: ${sensitive.join(', ')}`);
-  if (git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0) git(['commit','-m',`feat: implement issue #${issue}`], { cwd });
+  const stagedChanged = git(['diff','--cached','--quiet'], { cwd, allowFailure:true }).status !== 0;
+  const metadata = resultFile ? readImplementerResult(resultFile) : null;
+  const persistedScope = readMutationScopeReceiptFile(cwd, scopeFile);
+  const persistedMutationJournal = readMutationJournalFile(cwd, mutationJournalFile);
+  let message = `feat: implement issue #${issue}`;
+  // A completed unsandboxed backend must stay human-gated even if some stale
+  // Pi sidecar happens to exist. For Pi/predeclared work, the sidecar is the
+  // live monotonic runtime receipt and may contain scope amendments accepted
+  // after the last submit_result metadata was written.
+  const checkpointScope = metadata?.scope_enforcement === 'predeclared'
+    ? (persistedScope ?? metadata.accepted_scope)
+    : (!metadata ? persistedScope : null);
+  if (metadata?.scope_enforcement === 'unsandboxed-gated') {
+    message += '\n\nPi-Scope-Enforcement: unsandboxed-gated';
+  } else if (checkpointScope) {
+    const encodedScope = Buffer.from(JSON.stringify(checkpointScope), 'utf8').toString('base64url');
+    message += `\n\nPi-Scope-Enforcement: predeclared\nPi-Accepted-Mutation-Scope: ${encodedScope}`;
+  }
+  // Always seal the current journal state when the sidecar exists, including an empty journal.
+  // An explicit empty state prevents an older checkpoint trailer from resurrecting mutations
+  // that were already undone before a later checkpoint. Skip metadata-only commits when the
+  // checkpoint already carries the same journal state.
+  const previousMutationJournal = expectedSha
+    ? mutationJournalStateFromRef(expectedSha, cwd)
+    : null;
+  const mutationJournalChanged = Boolean(
+    persistedMutationJournal &&
+    JSON.stringify(previousMutationJournal) !== JSON.stringify(persistedMutationJournal)
+  );
+  if (persistedMutationJournal) {
+    message += `\nPi-Mutation-Journal: ${encodeMutationJournalState(cwd, persistedMutationJournal)}`;
+  }
   const base = publicationBase(cwd, startCommit);
-  if (git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status === 0) return { changed:false, reason:'no-change' };
-  const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
+  const treeChangedBeforeSeal = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
+  const journalSealCommitNeeded = Boolean(
+    !stagedChanged &&
+    expectedSha &&
+    persistedMutationJournal &&
+    mutationJournalChanged
+  );
+  // A journal seal can be appended to an already-changed committed tree, but that is not a
+  // metadata-only checkpoint: callers must still publish/update the real implementation diff.
+  const metadataOnlyJournalSeal = Boolean(journalSealCommitNeeded && !treeChangedBeforeSeal);
+  // Commit messages can contain both the accepted-scope and journal trailers. Use -F instead of
+  // a giant -m argv value so their combined size is not constrained by Linux's per-argument cap.
+  if (stagedChanged) {
+    commitWithMessageFile(cwd, message);
+  } else if (journalSealCommitNeeded) {
+    commitWithMessageFile(cwd, message, { allowEmpty: true });
+  }
+  const treeChanged = git(['diff','--quiet',base,'HEAD'], { cwd, allowFailure:true }).status !== 0;
+  if (!treeChanged && !journalSealCommitNeeded) return { changed:false, reason:'no-change' };
+  const changed = treeChanged
+    ? gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out)
+    : [];
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Implementer attempted to modify protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
   const ref = `refs/heads/${checkpointBranch(issue)}`;
   git(['push',`--force-with-lease=${ref}:${expectedSha ?? ''}`,'origin',`${commit}:${ref}`], { cwd, token });
-  return { changed:true, commit };
+  return metadataOnlyJournalSeal
+    ? { changed:false, reason:'journal-sealed', commit }
+    : { changed:true, commit };
 }
 
 export function assertPublicationFileSet({ cwd, base, resultFile }) {
@@ -104,13 +186,62 @@ export function assertPublicationFileSet({ cwd, base, resultFile }) {
   }
   const changed = gitPaths(git(['diff','--no-renames','--name-only','-z',base,'HEAD'], { cwd }).out);
   assertImplementerFileSet(changed, metadata.files);
+  if (metadata.scope_enforcement === 'predeclared') {
+    assertAcceptedMutationScope({ cwd, receipt: metadata.accepted_scope, base });
+  } else if (metadata.scope_enforcement !== 'unsandboxed-gated') {
+    throw new Error(JSON.stringify({
+      code: 'accepted_scope_missing',
+      unexpected_paths: changed,
+      recovery: 'Changed Pi work must carry a trusted predeclared accepted-scope receipt before publication.',
+    }));
+  }
   return changed;
+}
+
+export function assertPublicationCandidate({
+  cwd,
+  base,
+  resultFile,
+  ledgerFile,
+  terminalFile,
+  env = process.env,
+}) {
+  if (!ledgerFile) throw new Error('Validation ledger is required before publication');
+  const receiptEnv = {
+    ...env,
+    PI_TERMINAL_RESULT_FILE: terminalFile ?? env.PI_TERMINAL_RESULT_FILE,
+  };
+  const { candidateRevision } = assertSuccessfulTerminalReceipt({
+    cwd,
+    resultFile,
+    env: receiptEnv,
+    base,
+    bindAttempt: false,
+  });
+  const { records, corrupted } = readValidationLedger(ledgerFile);
+  const verificationState = computeVerificationState(records, { corrupted, candidateRevision });
+  if (verificationState !== VERIFICATION_STATES.VERIFIED) {
+    throw new Error(JSON.stringify({
+      code: 'publication_candidate_not_verified',
+      candidate_revision: candidateRevision.digest,
+      verification_state: verificationState,
+    }));
+  }
+  return { candidateRevision, verificationState };
 }
 
 export function pushIssueBranch({ issue, cwd, startCommit, expectedSha, token, resultFile }) {
   git(['diff','--check'], { cwd });
   const base = publicationBase(cwd, startCommit);
   const changed = assertPublicationFileSet({ cwd, base, resultFile });
+  assertPublicationCandidate({
+    cwd,
+    base,
+    resultFile,
+    ledgerFile: process.env.PI_VALIDATION_LEDGER_FILE,
+    terminalFile: process.env.PI_TERMINAL_RESULT_FILE,
+    env: process.env,
+  });
   const forbidden = controlPlanePaths(changed);
   if (forbidden.length) throw new Error(`Refusing to publish protected control-plane files: ${forbidden.join(', ')}`);
   const commit = git(['rev-parse','HEAD'], { cwd }).out;
@@ -174,8 +305,18 @@ export function nextLabelsForVerification(currentLabels, verificationState, unsa
   return [...names, PIPELINE_LABELS.needsHuman];
 }
 
-export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, backend }) {
-  const { api, replaceLabels } = githubClient();
+export async function upsertPullRequest({
+  issue,
+  resultFile,
+  owner,
+  ledgerFile,
+  backend,
+  cwd,
+  startCommit,
+  env = process.env,
+  client = githubClient(),
+}) {
+  const { api, replaceLabels } = client;
   const existing = await api(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${issueBranch(issue)}`)}&base=${encodeURIComponent(baseBranch())}`);
   const metadata = readImplementerResult(resultFile);
   if (!metadata) {
@@ -184,22 +325,51 @@ export async function upsertPullRequest({ issue, resultFile, owner, ledgerFile, 
   if (metadata.outcome !== IMPLEMENTER_OUTCOMES.changed) {
     throw new Error('Changed implementer result metadata is required before PR publication');
   }
+  if (!cwd || !startCommit) throw new Error('cwd and startCommit are required before PR publication');
+  const base = publicationBase(cwd, startCommit);
+  assertPublicationFileSet({ cwd, base, resultFile });
+  const { candidateRevision } = assertSuccessfulTerminalReceipt({
+    cwd,
+    resultFile,
+    env,
+    base,
+    bindAttempt: false,
+  });
   const changes = metadata.changes.map(x=>`- ${x}`).join('\n');
   const { records: ledgerRecords, corrupted: ledgerCorrupted } = readValidationLedger(ledgerFile);
-  const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted });
+  const verificationState = computeVerificationState(ledgerRecords, { corrupted: ledgerCorrupted, candidateRevision });
   const unsandboxedBackend = isUnsandboxedBackend(backend);
   const tests = [
-    renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted }),
+    renderValidationSection(ledgerRecords, { corrupted: ledgerCorrupted, candidateRevision }),
     `- The merged result is validated by the normal CI run on ${baseBranch()} after merge.`,
   ].join('\n');
-  const body = `## Summary\n${metadata.summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
+  // Untrusted resultText must be inert Markdown: blockquotes still activate
+  // issue-closing keywords, mentions and links. Use a dynamically sized fence.
+  const summary = typeof metadata.result_text === 'string'
+    ? renderUntrustedImplementerSummary(metadata.result_text)
+    : metadata.summary;
+  const body = `## Summary\n${summary}\n\n## Changes\n${changes}\n\n## Security\n${metadata.security_notes || 'No special security impact identified.'}\n\n## Validation\n${tests}\n\n## Known limitations\n${metadata.limitations || 'None identified.'}\n\nCloses #${issue}\n`;
+  const expectedCommit = git(['rev-parse','HEAD'], { cwd }).out.trim();
+  const assertPrHeadOrGate = async (pr, labels) => {
+    const actualCommit = pr?.head?.sha ?? null;
+    if (actualCommit === expectedCommit) return;
+    const gatedLabels = nextLabelsForVerification(labels, VERIFICATION_STATES.PENDING, false);
+    if (gatedLabels) await replaceLabels(pr.number, gatedLabels);
+    throw new Error(JSON.stringify({
+      code: 'published_pr_head_mismatch',
+      expected_head: expectedCommit,
+      actual_head: actualCommit,
+    }));
+  };
   if (existing[0]) {
     const pr = await api(`/pulls/${existing[0].number}`,'PATCH',{title:metadata.title,body});
+    await assertPrHeadOrGate(pr, existing[0].labels);
     const nextLabels = nextLabelsForVerification(existing[0].labels, verificationState, unsandboxedBackend);
     if (nextLabels) await replaceLabels(pr.number, nextLabels);
     return { number:pr.number, url:pr.html_url, verification_state: verificationState };
   }
   const pr = await api('/pulls','POST',{title:metadata.title,head:issueBranch(issue),base:baseBranch(),body});
+  await assertPrHeadOrGate(pr, pr.labels ?? []);
   const nextLabels = nextLabelsForVerification([], verificationState, unsandboxedBackend);
   if (nextLabels) await replaceLabels(pr.number, nextLabels);
   return { number:pr.number, url:pr.html_url, verification_state: verificationState };
@@ -212,9 +382,9 @@ export async function dispatchReviewer(prNumber) {
 
 async function main() {
   const [cmd, ...a] = process.argv.slice(2);
-  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
+  if (cmd === 'checkpoint') return console.log(JSON.stringify(saveCheckpoint({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],scopeFile:a[5],mutationJournalFile:a[6],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
   if (cmd === 'push') return console.log(JSON.stringify(pushIssueBranch({issue:Number(a[0]),cwd:a[1],startCommit:a[2],expectedSha:a[3],resultFile:a[4],token:process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN})));
-  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4]})));
+  if (cmd === 'pr') return console.log(JSON.stringify(await upsertPullRequest({issue:Number(a[0]),resultFile:a[1],owner:a[2],ledgerFile:a[3],backend:a[4],cwd:a[5],startCommit:a[6]})));
   if (cmd === 'review') return dispatchReviewer(Number(a[0]));
   throw new Error('unknown publication command');
 }

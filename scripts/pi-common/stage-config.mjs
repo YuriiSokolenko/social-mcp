@@ -13,9 +13,29 @@ function loadPromptFile(relativePath, env = process.env) {
   return fs.readFileSync(path.join(workspace, relativePath), 'utf8').trim();
 }
 
+const IMPLEMENTER_CODING_CONTRACT_HEADING = '## Coding-session contract';
+
+// Model contracts deliberately use canonical, unindented level-2 headings. Keep this
+// stricter than general Markdown parsing so inline text and deeper headings cannot match.
+function markdownSection(text, heading) {
+  const lines = text.split('\n');
+  const start = lines.findIndex(line => line.trimEnd() === heading);
+  if (start < 0) throw new Error(`Missing model-facing contract section: ${heading}`);
+  const next = lines.findIndex((line, index) => index > start && /^##(?:[ \t]+|$)/.test(line));
+  return lines.slice(start, next < 0 ? lines.length : next).join('\n').trim();
+}
+
+function withoutMarkdownSection(text, heading) {
+  const section = markdownSection(text, heading);
+  return text.replace(section, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export function agentContractPrompt(name, env = process.env) {
   const shared = loadPromptFile(sharedPromptPath(), env);
-  const role = loadPromptFile(promptPath(name), env);
+  const rawRole = loadPromptFile(promptPath(name), env);
+  const role = name === 'implementer'
+    ? withoutMarkdownSection(rawRole, IMPLEMENTER_CODING_CONTRACT_HEADING)
+    : rawRole;
   return `<shared_agent_contract source="${sharedPromptPath()}">
 ${shared}
 </shared_agent_contract>
@@ -23,6 +43,23 @@ ${shared}
 <role_contract source="${promptPath(name)}">
 ${role}
 </role_contract>`;
+}
+
+export function implementerCodingContractPrompt(env = process.env) {
+  const shared = loadPromptFile(sharedPromptPath(), env);
+  const role = loadPromptFile(promptPath('implementer'), env);
+  const codingRole = [
+    markdownSection(role, '## Hard boundaries'),
+    markdownSection(role, IMPLEMENTER_CODING_CONTRACT_HEADING),
+    markdownSection(role, '## Engineering constraints'),
+  ].join('\n\n');
+  return `<shared_agent_contract source="${sharedPromptPath()}">
+${shared}
+</shared_agent_contract>
+
+<coding_role_contract source="${promptPath('implementer')}">
+${codingRole}
+</coding_role_contract>`;
 }
 
 function withContracts(name, env, trustedContext) {
@@ -38,6 +75,29 @@ function untrustedTaskInput(value) {
     .replaceAll('&', '\\u0026')
     .replaceAll('<', '\\u003c')
     .replaceAll('>', '\\u003e');
+}
+
+// Restored checkpoint/issue-branch work: direct submission path, never fresh planning.
+export function implementerResumed(env = process.env) {
+  const resumePatch = env.PI_RESUME_PATCH;
+  return env.PI_RESUME_ACTIVE != null
+    ? env.PI_RESUME_ACTIVE === 'true'
+    : Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
+}
+
+// Fresh work is the only path that gets runtime bootstrap planning; restored work and
+// validation-repair attempts enter their direct-action states instead.
+export function isFreshImplementerWork(env = process.env) {
+  return env.PI_STAGE === 'implementer' && !implementerResumed(env) && env.PI_VALIDATION_REPAIR !== 'true';
+}
+
+// The runner replaces this with the PreparedImplementation block once bootstrap has completed.
+export const PREPARED_IMPLEMENTATION_PLACEHOLDER = '<runtime_prepared_implementation_state/>';
+
+export function withPreparedImplementation(prompt, block) {
+  return prompt.includes(PREPARED_IMPLEMENTATION_PLACEHOLDER)
+    ? prompt.replace(PREPARED_IMPLEMENTATION_PLACEHOLDER, () => block)
+    : `${prompt}\n\n<trusted_context>\n${block}\n</trusted_context>`;
 }
 
 const promptBuilders = Object.freeze({
@@ -100,12 +160,7 @@ The worktree was preflight-synced with current ${baseBranch()}.
     const context = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
     const title = context.title ?? '';
     const body = context.body ?? '';
-    const resumePatch = env.PI_RESUME_PATCH;
-    const resumed = env.PI_RESUME_ACTIVE != null
-      ? env.PI_RESUME_ACTIVE === 'true'
-      : Boolean(resumePatch && fs.existsSync(resumePatch) && fs.statSync(resumePatch).size > 0);
-    const freshBaseCommit = String(env.PI_IMPLEMENTER_START_COMMIT ?? '').trim();
-    const worktreeRoot = env.JOB_DIR || process.cwd();
+    const resumed = implementerResumed(env);
     const resumeSource = env.PI_CHECKPOINT_EXPECTED
       ? 'checkpoint'
       : env.PI_ISSUE_BRANCH_EXPECTED
@@ -113,11 +168,9 @@ The worktree was preflight-synced with current ${baseBranch()}.
         : 'saved work';
     const runtimeState = resumed
       ? `Runtime resume state: restored ${resumeSource} work is already in this worktree.
-Call submit_result with no arguments immediately. Do not call prepare_implementation or inspect, summarize, validate, or plan the restored files first.
-If submit_result reports a concrete problem, fix only that problem and retry. Do not pass already_satisfied for restored work; zero-diff restored work is completed by runtime automatically.`
-      : `Fresh worktree base: latest fetched ${baseRef()}${freshBaseCommit ? ` at ${freshBaseCommit}` : ''}.
-LSP workspace root: ${worktreeRoot}.
-Call prepare_implementation exactly once as the first tool action; runtime returns the startup plan and trivial/nontrivial classification.`;
+Call submit_result with no arguments immediately. Do not inspect, summarize, validate, or plan the restored files first.
+Only if the trusted runtime selects an exact terminal recovery tool after a concrete failure may you leave the terminal-only path; use that tool only when this request exposes it. Otherwise preserve the restored worktree. Do not pass already_satisfied for restored work; zero-diff restored work is completed by runtime automatically.`
+      : PREPARED_IMPLEMENTATION_PLACEHOLDER;
 
     return `${agentContractPrompt('implementer', env)}
 
@@ -213,25 +266,19 @@ export const STAGES = Object.freeze({
     // `begin_coding_session` (16k ceiling on the fork only). The parent-side one-shot grant
     // `request_large_mutation_budget` is LEGACY: kept only as a stage-1 compatibility fallback.
     implementationPlannerAgent: 'implementation-planner',
-    implementationPlannerMaxTokens: 768,
-    implementationPlannerStructuredRetry: 1,
-    implementationPlannerTimeoutMs: 120000,
-    preComplexityTurnLimit: 4,
-    preComplexityAllowedTools: ['prepare_implementation'],
-    preComplexityTransitionTools: ['prepare_implementation'],
+    // Response transport ceiling only. Planner exploration/result convergence has no numeric
+    // evidence budget, lifecycle deadline, or model-format repair loop.
+    implementationPlannerMaxTokens: 2048,
     delegatedTools: ['grep', 'find', 'ls'],
     delegationTool: 'subagent',
     boundedDirectBash: true,
-    singleUseTools: ['prepare_implementation'],
     requireLspStartBeforeFindSymbol: true,
     productiveProgress: {
-      activationTool: 'prepare_implementation',
       blockerTool: 'need_more_evidence',
       verificationTool: 'run_check',
       initialEvidenceBudget: 6,
-      // Fallback only: used when the planner's own per-task `evidence_budget` estimate is
-      // absent. The planner's estimate (wired through `setEvidenceBudget`) is authoritative
-      // because complexity alone is not a valid proxy for how much evidence a task needs.
+      // Legacy/direct-classification fallback only. Successful PreparedImplementation handoffs
+      // start action-oriented with explicit mutation anchors; unresolved facts use need_more_evidence.
       initialEvidenceBudgetByComplexity: {
         trivial: 2,
         nontrivial: 6,
@@ -257,11 +304,14 @@ export const STAGES = Object.freeze({
       // Exploration orchestration (subagents/scouts, LSP via ambient MCP extensions) and the
       // transition/legacy budget tools stay in the 2k phase.
       codingSessionTools: [
-        'read', 'bash', 'write', 'edit', 'structural_edit', 'safe_edit', 'rollback_last_mutation',
-        'run_check', 'retry_last_failed_check', 'repo_search', 'indexed_repo_search', 'need_more_evidence', 'submit_result',
+        'read', 'write', 'edit', 'structural_edit', 'safe_edit', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation',
+        'accept_mutation_scope', 'run_check', 'retry_last_failed_check', 'repo_search', 'indexed_repo_search', 'need_more_evidence', 'begin_result_submission', 'submit_result',
       ],
-      actionTools: ['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'submit_result'],
-      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget'],
+      actionTools: ['accept_mutation_scope', 'structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'rollback_last_mutation', 'recover_worktree', 'undo_mutation', 'begin_result_submission', 'submit_result'],
+      // Fresh Main only: ProgressController enables these after a successful PreparedImplementation
+      // handoff. Resumed/repair/coding modes enter action_required without that opt-in.
+      directActionTools: ['read', 'repo_search', 'indexed_repo_search', 'bash'],
+      controlTools: ['set_response_budget', 'subagents_enable', 'lsp_start_server', 'request_large_mutation_budget', 'request_capabilities'],
     },
     prompt: promptBuilders.implementer,
   },

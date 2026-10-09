@@ -1,7 +1,8 @@
 # GitHub runner autoscaler
 
-This directory runs a small Docker-based autoscaler for the N150 host, as two
-independent pools -- each its own manager instance (see `compose.yaml`) so one
+This directory runs the N150 GitHub Actions runner stack: two independent
+autoscaled pools plus one dedicated persistent control-plane runner. Each
+autoscaled pool has its own manager instance (see `compose.yaml`) so one
 pool's stuck loop can never block the other's:
 
 - **`pi-runner-manager`** (pool label `pi-agent`) watches queued runs of
@@ -10,21 +11,32 @@ pool's stuck loop can never block the other's:
   `.github/workflows/pi-architect.yml`, and `.github/workflows/pi-triage.yml` --
   jobs that call the Pi/LLM agent, gated by `MODEL_STATUS_URL` capacity.
 - **`general-runner-manager`** (pool label `general`) watches queued runs of
-  every workflow with a job on the `general` label: `.github/workflows/ci.yml`,
-  `pi-auto-merge.yml`, `pi-automation-control.yml`, `pi-pr-review.yml`'s gate
-  job (its review job stays on `pi-agent`), `pi-reconcile.yml`,
+  every workflow with a job on the `general` label: `.github/workflows/ci.yml`
+  (`test` and `docker` only), `pi-auto-merge.yml`, `pi-reconcile.yml`,
   and `pi-usage.yml` -- none of these call the Pi/LLM agent, so this pool has
   no model gate; `MAX_RUNNERS` is the only cap. **This list must stay in sync
   with `GENERAL_WORKFLOW_FILES`** (`compose.yaml`'s default / the host's
   `.env`): a workflow file moved onto the `general` label but left out of that
   list queues forever with nothing watching it -- check
   `grep -rl 'n150, *general' .github/workflows/` when adding one.
+- **`control-runner`** (labels `n150,control`) is one persistent lightweight
+  runner for short orchestration jobs: `ci.yml`'s post-dev wake,
+  `ci-terminal-wake.yml`'s PR wake, and `pi-automation-control.yml`'s
+  mode transition. It is not autoscaled, does not join either heavy pool,
+  and therefore remains available while `n150/general` is saturated.
 
-Each pool keeps up to its own `MAX_RUNNERS` ephemeral self-hosted runner
-containers alive. Each worker registers with GitHub using `--ephemeral`,
+
+Each autoscaled pool keeps up to its own `MAX_RUNNERS` ephemeral self-hosted
+runner containers alive. Each worker registers with GitHub using `--ephemeral`,
 accepts one job, and is removed after the job. Running each CI job on its own
-disposable runner is also what lets several queued runs execute in parallel
-instead of serializing behind a single persistent runner.
+disposable runner is also what lets several queued runs execute in parallel.
+
+The control lane is deliberately different: exactly one persistent runner
+container executes at most one job at a time. Every control-lane job must
+request exactly `[self-hosted, n150, control]`. Other self-hosted N150 jobs
+must require a pool-specific label such as `general` or `pi-agent`; a bare
+`self-hosted`/`n150` selector would also match the control runner and is
+blocked by the workflow contract test.
 
 ## Security model
 
@@ -39,9 +51,70 @@ For a fine-grained personal access token, grant this repository:
 
 The N150 Pi configuration is mounted read-only at `/pi-config-ro` and copied into each ephemeral worker's private writable `/home/runner/.pi/agent` directory at startup, only for the `pi-agent` pool (`MOUNT_PI_CONFIG=true`). This avoids Pi lock-file errors and prevents parallel workers from sharing mutable Pi state. Because the manager controls the host Docker daemon through `/var/run/docker.sock`, the source configured by `PI_HOME_HOST` must be a real host path.
 
+The persistent `control-runner` is intentionally constrained. Its image is
+built from a checksum-pinned Node.js 26.11.1 Linux runtime on Debian/glibc, contains only the GitHub
+Actions runner plus Git, Node.js, curl, jq, and runtime libraries, and has no
+Docker CLI/socket, Pi configuration, model endpoint, Android SDK, or build
+toolchain. Compose caps it at 1 CPU, 1 GiB RAM, and 512 PIDs, drops the
+default Linux capability set, and adds back only `SETUID`, `SETGID`, and
+`KILL`. `SETUID`/`SETGID` let PID 1 launch the unprivileged runner; `KILL`
+is required so root PID 1 can signal and reap the uid 1001 runner process group
+during graceful stop/recreate. The container also enables
+`no-new-privileges`. The entrypoint uses the repository administration token
+only for first-time registration and
+bounded post-failure recovery; the long-lived Actions runner and all workflow
+jobs run as the unprivileged `runner` user with `GH_ADMIN_TOKEN` removed from
+their environment. Normal Docker/host stops do not deregister the runner.
+
+The complete runner root at `/home/runner/actions-runner` is backed by the
+named volume `CONTROL_RUNNER_STATE_VOLUME` (default
+`social-mcp-control-runner-state`). Registration files, the repair-cooldown
+marker, work/update state, and any self-updated runner binaries therefore
+survive container restart, `--force-recreate`, and normal Compose down/up.
+The image also keeps its verified bootstrap package at
+`/opt/actions-runner-baseline` outside that volume. On startup, if the
+persisted runtime is missing/corrupt or older than the image baseline, the
+entrypoint restores only the runner package from that baseline while keeping
+registration/cooldown state.
+
+The entrypoint runs `bin/Runner.Listener run` directly instead of routing
+through GitHub's `run.sh` / `run-helper.sh`. The upstream wrapper maps
+listener exit codes such as terminated error (1) and session conflict (5) to
+success; direct execution preserves those codes while the entrypoint explicitly
+keeps the upstream retry/update/config-refresh behavior.
+
+Credential/session recovery is deliberately conservative. The first exit 1 or
+5 retries with the existing credentials, which lets a transient session
+conflict after Docker restart expire naturally. Only a repeated 1/5 failure
+can attempt `config.sh --replace`, and only when the repository runners API is
+healthy and the persisted repair cooldown has expired. A failed cooldown write
+or failed credential cleanup is non-destructive. Version-deprecated exit 7 and
+unknown failures never re-register; exit 6 has a short retry delay rather than
+a hot loop.
+
+Startup requires both non-empty `.runner` and `.credentials`; a half-written
+registration is cleared before `config.sh` runs. First-time `config.sh` and
+`Runner.Listener` each run in their own process group. Docker TERM makes PID 1
+signal and wait for the whole active process group, avoiding orphaned
+registration/listener children. Failed or interrupted registration clears
+partial local state. Retry/cooldown sleeps are interruptible.
+
+GitHub self-update remains enabled. Upstream `update.sh` waits for
+`Runner.Listener` to exit, switches the versioned `bin`/`externals`
+symlinks, and writes `update.finished`. The entrypoint keeps the same 31-second
+normal update wait as upstream, probes the updated listener after a confirmed
+`update.finished`, and restores the image baseline only if that completed
+runtime cannot answer `--version`. During Docker shutdown it waits up to
+`CONTROL_UPDATE_SHUTDOWN_WAIT_SECONDS` (default 90s) for an in-flight update;
+Compose gives the container a 120-second stop grace period.
+
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
-(`worker-general.Dockerfile`) adds the Docker CLI and Compose plugin over the
-same base runner image, and the host's `/var/run/docker.sock` is bind-mounted
+(`worker-general.Dockerfile`) starts directly from the public
+pinned Node.js 26.11.1 runtime, adds Python 3.12 from its digest-pinned official
+image, and installs GitHub CLI for general CI jobs. It installs the
+checksum-pinned GitHub Actions runner archive and Docker CLI, Buildx, and
+Compose, and the host's
+`/var/run/docker.sock` is bind-mounted
 into each ephemeral worker (sibling-container pattern) so `ci.yml`'s `docker`
 job can run `docker compose up/down` itself. This means anything with access
 to that pool's ephemeral runner also has Docker-socket-level access to the
@@ -74,37 +147,172 @@ image names, commands, or mount paths from the caller.
 
 ## N150 setup
 
-Build the Pi worker, the general worker, and the separate check sandbox first:
+Build the manager, Pi worker, general worker, dedicated control runner, and separate check sandbox first:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:0.89.1-mini-swe .
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.3 .
-docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.0 .
+docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.9 .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.7 .
+docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.2 .
 ```
 
-The Pi worker tag `0.89.1-mini-swe` pins `mini-swe-agent==2.4.6`, `pi-mcp-adapter@3.2.0`,
-`lsp-mcp-server@1.1.25`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`, BasedPyright `1.40.1`, and the official JetBrains
-Kotlin LSP `263.4702.0`. The experimental `mini-swe` Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded local model endpoint; Pi remains the default backend. The Pi and general worker tags are `0.89.1-mini-swe` and `0.87.3`; the general image now includes Buildx. `run_check` tooling lives in the separate `0.1.0` sandbox image. System-package changes must use a new image tag rather than silently reusing an already-built local tag. The sandbox image independently contains Python 3.12, the repository's pinned Ruff and pytest tooling, Node for the configured `node_tests` profile, and Git for repository tests; it contains no runner registration, GitHub CLI, SSH client, or agent runtime. To roll the Pi pool back, set
-`RUNNER_IMAGE=n150/github-pi-runner-ephemeral:0.87.1` in the N150 host's
-untracked `.env` and recreate only `pi-runner-manager`:
+Both autoscaled worker Dockerfiles start from a digest-pinned Debian base and
+install Node `26.11.1` from the official tarball with its SHA-256 verified;
+npm is pinned to `12.2.0`. GitHub Actions Runner `2.338.0` is also checksum
+verified. The manager image pins Docker CLI `29.8.2`. The general image also
+pins Python `3.12.15`, GitHub CLI `2.102.0`, Docker CLI `29.8.2`, Buildx
+`0.37.1`, and Compose `5.6.0`. They do
+not use locally built N150 images as build stages, so BuildKit can resolve
+every base independently in a clean builder. The manager and general worker
+retry a failed Docker daemon check once after five seconds before quarantining
+the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe-r3`
+pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit CLI `0.138.0` (GNU x86_64 artifact),
+`pi-mcp-adapter@5.1.0`, SearXNG MCP `2.5.1`, `pi-subagents@0.76.1`, `mini-swe-agent==2.4.6`,
+`lsp-mcp-server@1.1.26`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`,
+BasedPyright `1.40.2`, and JetBrains Kotlin LSP `263.6379.0`. The image tag is
+independent of the Pi package version.
+
+The N150 host Docker client packages are upgraded separately from the daemon.
+The host-only script `scripts/upgrade-n150-docker-client.sh` pins Docker CLI
+`5:29.8.2-1~ubuntu.26.04~resolute`, Buildx
+`0.37.1-1~ubuntu.26.04~resolute`, and Compose
+`5.6.0-1~ubuntu.26.04~resolute`. It saves the previous and target package
+archives with SHA-256 checksums and a generated rollback command; it does not
+upgrade or restart Docker Engine or stop containers. Run it on Beelink N150
+with `sudo bash <absolute-script-path>` after deployment smoke jobs have
+drained.
+
+### Implementer resume terminal lifecycle
+
+The Implementer result tool snapshots restored-work status **when registering**
+`submit_result`. The version-pinned `pi-subagents@0.76.1` foreground
+adapter independently checks the current environment and terminal receipt when
+deciding whether its coding child may end on a tool-use turn without final
+assistant prose. Both call the same `restoredWork(env)` predicate defined in
+`scripts/pi-common/restored-work.mjs`; its function source is injected
+into the pinned adapter during image build. The worker image mirrors the
+repository-relative layout so this import resolves at patch time. This exemption is **Implementer
+only**; Planner's `submit_plan` receipt checks remain separate.
+
+- `PI_RESUME_ACTIVE=true` means restored work and permits the runtime-owned
+  `submit_result({})` contract even without `PI_RESUME_PATCH`. The comparison
+  is case-sensitive.
+- When `PI_RESUME_ACTIVE` is **unset**, `PI_RESUME_PATCH` is a fallback:
+  the named path must be a regular file with nonzero filesystem size. An empty,
+  missing, inaccessible or unset path does **not** count as restored work.
+- An explicitly set `PI_RESUME_ACTIVE=false`, empty string, or any value
+  other than `true` disables patch fallback, even if `PI_RESUME_PATCH`
+  points at a nonempty file. Thus `unset` and `false` are not equivalent.
+- `PI_VALIDATION_REPAIR=true` is a **separate** runtime-owned mode: it permits
+  empty arguments and binds the receipt to the exact
+  `validation-repair:<attempt>` rather than `primary` attempt.
+
+For changed, fresh work the terminal call still requires
+`submit_result({resultText:"..."})`. For restored or validation-repair work
+the runtime supplies the metadata and the call must be `submit_result({})`.
+The `already_satisfied` and `blocked_reason` outcomes retain their own
+strict argument checks. **No empty call is sufficient by itself:** the coding
+child must have one successful, complete `submit_result` transport and a
+current run/issue/attempt/session-bound receipt matching the exact metadata
+SHA-256. Earlier recoverable tool errors may coexist with that receipt;
+provider, timeout, cancellation or transport failures do not qualify.
+
+Pi MCP Adapter `5.1.0` declares support through `pi-ai@^1.0.0`, although its
+Pi host dependency is imported as types only. The image applies the tracked,
+version-guarded peer range patch in `patch-pi-mcp-adapter.mjs` after installing
+the package. The adapter passed its type checks and regression suite against
+Pi `1.1.0` with strict peer resolution. The experimental `mini-swe`
+Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded
+local model endpoint; Pi remains the default backend. The Pi and general worker
+image tags are `1.1.0-mini-swe-r3` and `0.87.10`. Pi itself remains version
+`1.1.0`; `r1` records the image-only Python alias fix, `r2` adds the required
+SearXNG MCP runtime, and `r3` combines SearXNG with GNU Orbit and DuckDB JSON
+provisioning. `run_check` tooling remains in the separate `0.1.2` sandbox
+image. System-package changes must use a new image tag rather than silently
+reusing an already-built local tag. The sandbox
+image independently contains Python 3.12, the repository's pinned Ruff and
+pytest tooling, Node for the configured `node_tests` profile, and Git for
+repository tests; it contains no runner registration, GitHub CLI, SSH client,
+or agent runtime.
+
+The Pi worker installs `mcp-searxng` in the image because the mounted global Pi
+MCP configuration starts `mcp-searxng` by executable name. The host's
+`~/.pi/agent/mcp.json` is migrated to the adapter's `mcp-adapter.json` at worker
+startup, preserving the `searxng` server and its `SEARXNG_URL`; the URL stays in
+the host-managed config and is never printed by the startup check. Pi's built-in
+MCP extension is explicitly disabled in worker settings so the installed
+`pi-mcp-adapter` owns `/mcp` without colliding with `builtin:mcp`.
+
+Before runner registration, `check-pi-searxng-mcp` checks the effective adapter
+config, starts the configured executable, completes MCP initialize and tool
+discovery, then calls the read-only `searxng_web_search` tool with a fixed safe
+query. It reports missing config, executable, tool, timeout, or backend failure
+without printing endpoint values or child stderr. Planner remains isolated by
+its stage tool allowlist; the startup check does not add tools to Planner.
+
+To roll the Pi pool back, set the previous image tag in the N150 host's
+untracked `.env` and recreate only `pi-runner-manager` after confirming the
+pool has no active job:
+
+```dotenv
+RUNNER_IMAGE=n150/github-pi-runner-ephemeral:1.0.4-mini-swe
+```
 
 ```bash
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
 
-To deploy the general worker update, build the exact `0.87.3` tag, set
-`GENERAL_RUNNER_IMAGE=n150/github-general-runner-ephemeral:0.87.3` in the host
+To deploy the general worker update, build the exact `0.87.10` tag, set
+`GENERAL_RUNNER_IMAGE=n150/github-general-runner-ephemeral:0.87.10` in the host
 `.env`, then recreate only the general manager:
 
 ```bash
-docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.3 .
+docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
 docker compose --env-file .env up -d --force-recreate --no-deps general-runner-manager
 ```
+
+The previous general image is `n150/github-general-runner-ephemeral:0.87.4`.
+Keep each pool's tag separate and preserve these references for rollback. To
+roll back the general pool, restore that value in `.env` and recreate only its
+manager after confirming the pool has no active job:
+
+```bash
+docker compose --env-file .env up -d --force-recreate --no-deps general-runner-manager
+```
+
+To deploy or refresh the dedicated control lane, build the pinned image and
+recreate only `control-runner`. Its named runner-root volume is retained, so
+the same registration/cooldown/self-updated runtime survives restart and
+recreate:
+
+```bash
+docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.7 .
+docker compose --env-file .env up -d --force-recreate --no-deps control-runner
+docker compose --env-file .env logs --tail=100 control-runner
+```
+
+The control image uses GitHub Actions Runner `2.338.0` as its verified
+bootstrap baseline and checks the official Linux x64 archive SHA-256 during
+the build. The entrypoint intentionally does **not** pass `--disableupdate`:
+the persistent runner keeps GitHub's supported self-update path enabled, so it
+does not age out merely because the container stays online.
+
+Treat the Dockerfile version as the rebuild baseline, not as a permanent
+runtime ceiling. When updating that baseline, bump both
+`ACTIONS_RUNNER_VERSION` and `ACTIONS_RUNNER_SHA256`, bump
+`CONTROL_RUNNER_IMAGE`, rebuild the image, recreate only `control-runner`,
+and verify that `n150-control` is online in the repository Actions runner
+list before relying on it. The startup baseline check upgrades an older
+persisted runtime without deleting its registration state. Do not remove
+`CONTROL_RUNNER_STATE_VOLUME` during an ordinary deploy; deleting that volume
+is an explicit reset that discards registration and cooldown state. Do not add
+`general` or `pi-agent` to `CONTROL_RUNNER_LABELS`.
 
 ### `run_check` sandbox backend
 
 `RUN_CHECK_SANDBOX_IMAGE` independently selects the versioned sandbox image; it
-defaults to `n150/run-check-sandbox:0.1.0`. Set it in the host's untracked
+defaults to `n150/run-check-sandbox:0.1.2`. Set it in the host's untracked
 `.env`, build that exact tag, and restart only `pi-runner-manager` when changing
 the sandbox version. The manager refuses to start Pi workers unless the image
 exists locally, a hardened no-network container can run the image probe, and
@@ -116,6 +324,35 @@ network, no Docker socket, and the expected mount before logging
 `PI_RUN_CHECK_PREFLIGHT {"ok":true,...}`. Docker startup and executor failures
 remain structured `infra_error`; normal compiler and test failures remain
 `fail`. There is no unrestricted-shell fallback.
+
+The runtime and executor exchange a versioned environment contract on every
+preflight (`RUN_CHECK_ENV_CONTRACT`). A version or key-set mismatch is logged as
+`CHECK_ENV_CONTRACT`, recorded as `PI_RUN_CHECK_PREFLIGHT_FAILED`, and aborts the
+Implementer from `session_start` before it starts a coding session or model
+budget. If Pi schedules a request despite the abort, the request hook strips all
+tools and sets `tool_choice` to `none`, so no tool-capable provider request is
+sent. The sandbox wrapper must accept every key in the environment contract;
+the v2 acceptance-target keys were added in sandbox image `0.1.1`. Build the
+manager with the new `run-check-docker-0.1.9` tag and the sandbox with `0.1.2`,
+set `PI_RUNNER_MANAGER_IMAGE` and `RUN_CHECK_SANDBOX_IMAGE` in the host `.env`
+to those exact tags, then recreate
+`pi-runner-manager` so new ephemeral workers load the rebuilt executor:
+
+```bash
+docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.9 .
+docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.2 .
+docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
+```
+
+Confirm the manager is healthy and run a controlled Implementer workflow. Its
+`PI_RUN_CHECK_PREFLIGHT` record must report `ok:true`; a stale executor must fail
+with the contract diagnostic and no tool-capable provider request.
+
+Terminal receipt schema v2 adds the semantic Implementer outcome to the existing
+result digest binding. V2 readers reject v1 receipts, so deploy this manager and
+runtime update while the Pi pool is idle; finish active runs before recreating
+the manager. A run resumed with a v1 receipt must resubmit its result to create a
+v2 receipt before the parent can accept it.
 
 The manager also launches a local executor process with a Docker socket inside
 its trusted container. The Pi runner itself remains non-root, unprivileged,
@@ -140,17 +377,27 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Put the GitHub token into `.env`, then start both managers:
+Put the GitHub token into `.env`, then start both managers and the persistent control runner:
 
 ```bash
 docker compose --env-file .env up -d --build
-docker compose logs -f pi-runner-manager general-runner-manager
+docker compose logs -f pi-runner-manager general-runner-manager control-runner
 ```
 
 Before enabling `general-runner-manager`, stop and remove the old persistent
 `github-general-runner` container/registration (and, for `pi-runner-manager`,
 the old persistent `github-pi-runner` container) so neither consumes jobs in
 parallel with its ephemeral pool.
+
+For the #465 live smoke, first confirm `n150-control` is online in the
+repository runner list and note its reported runner version. Occupy all normal
+`n150/general` slots with ordinary
+heavy CI, then let a PR `CI` run reach a terminal state. Verify that its
+`CI Terminal Wake` job is assigned to `n150-control` promptly, before a
+general slot becomes free, and that it dispatches `Pi Auto Merge`. Repeat
+across a failing/cancelled PR CI followed by a successful PR CI and record the
+source CI run IDs plus wake start times. This is the live proof that the
+control lane is independent; the static tests only protect the configuration.
 
 The current Qwen model runtime supports eight concurrent model requests.
 `MODEL_MAX_CONCURRENCY` is the centralized model-capacity setting and defaults
@@ -276,16 +523,20 @@ is discovery against indexed `dev`; `repo_search` and `read` remain authoritativ
 for the current worktree, including after edits. For an already-known source-code
 symbol, semantic LSP lookup is the first hop. Name-only workspace lookup needs
 an active language server: when the task already makes the language explicit,
-call `lsp_start_server` once with server id `python` or `kotlin` and the exact absolute Implementer workspace root supplied by `prepare_implementation`, then call `lsp_find_symbol`. Do not add a
+call `lsp_start_server` once with server id `python` or `kotlin` and the exact absolute Implementer workspace root supplied in the runtime-prepared state, then call `lsp_find_symbol`. Do not add a
 `lsp_server_status` ritual first. Position-based LSP tools remain appropriate
 when file + line/column are already known and auto-start the routed server.
 
 
 ## GitLab Orbit Local for Pi
 
-The `pi-agent` ephemeral worker image pins `@gitlab/orbit@0.130.0`. Architect and Implementer workflows run `orbit setup pi --mcp --yes --no-index` before Pi starts, then index only the checkout authoritative for that job. No GitLab login, PAT, or Orbit Remote service is required: Orbit Local runs against the worker's local checkout and local DuckDB graph.
+The `pi-agent` ephemeral worker image pins Orbit CLI `0.138.0` as the GNU x86_64 artifact because its musl npm binary disables DuckDB dynamic extension loading. The image uses Debian Trixie for the GNU artifact's GLIBC 2.39 requirement and preloads the SHA-256-pinned DuckDB 1.5.5 JSON extension into the runner user's fresh-home cache, so file context does not depend on runtime download or mutable host cache. Architect and Implementer workflows run `orbit setup pi --mcp --yes --no-index`, index only the checkout authoritative for that job, then run `scripts/orbit-context-preflight.sh` against two existing files and a directory. No GitLab login, PAT, or Orbit Remote service is required: Orbit Local runs against the worker's local checkout/worktree and local DuckDB graph.
 
-After changing a worker image, bump its tracked image tag, rebuild that tag on N150, update the host `.env` to the same tag, restart the affected runner manager, and verify a fresh Architect or Implementer job prints only the Orbit version plus the non-sensitive confirmation line. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
+The failure is a binary/runtime mismatch: Orbit `0.138.0`'s npm Linux artifact is musl, and DuckDB `1.5.5` cannot dynamically load its auto-installed `json` extension from that build (`Dynamic loading not supported`). The GNU Orbit artifact supports the extension loader but requires GLIBC `2.39`, which is absent from the prior Bookworm worker base. The preflight fails with the captured Orbit stderr and reports the Orbit binary/version, current worktree HEAD, HOME, and extension cache contents; it never records a failed query as a successful context.
+
+To repeat the context smoke check on a clean worker, run `orbit setup pi --mcp --yes --no-index`, `orbit index <worktree>`, then `bash scripts/orbit-context-preflight.sh <worktree> src/social_mcp/diagnostics/smoke_retry_after.py tests/diagnostics/test_smoke_retry_after.py src/social_mcp/diagnostics`. The preflight prints Orbit version, worktree HEAD, HOME, and the extension cache contents if any target fails.
+
+After changing a worker image, bump its tracked image tag, rebuild that tag on N150, update the host `.env` to the same tag, restart the affected runner manager, and verify a fresh Architect or Implementer job prints the Orbit version, indexed HEAD preflight, and three nonempty file/directory context checks. Do not run `env`, `printenv`, shell tracing, or commands that print values from the manager/runner environment while diagnosing Orbit.
 
 Orbit complements the host Zoekt service: Zoekt stays the fast shared `dev` text index; Orbit supplies per-job structural code context for the current checkout/worktree.
 
@@ -310,3 +561,74 @@ Architect additionally loads the pinned `pi-repomap` extension from `scripts/pi-
 Project configuration lives in `.pi/repomap.json` with `refreshStrategy: "auto"` and a fixed **1536-token** map budget. RepoMap is an Architect-only navigation hint for unclear repository areas, not authoritative source text. The repository skill `.agents/skills/repomap-navigation/SKILL.md` records that bounded Architect policy.
 
 RepoMap writes its incremental cache under `.pi/cache/`; that path is gitignored so ephemeral Architect navigation state is never committed.
+
+## General-pool daemon quarantine (#430, #474)
+
+The general manager uses two bounded Docker health levels. Every scheduler poll
+runs the cheap `docker info` liveness check so daemon loss still fails closed
+without delaying queue observation. The expensive `docker system df` metadata
+walk runs once at manager startup, then on
+`GENERAL_DOCKER_DEEP_PROBE_INTERVAL_SECONDS` (default 300 seconds), after a
+failed general-runner container start, and during quarantine recovery. A
+container-start failure requests an early deep probe, but outside quarantine
+those forced probes are limited to one per 60 seconds so a persistent unrelated
+failure (for example, a missing image) cannot recreate the old per-poll CPU
+hot loop. Quarantine recovery deliberately bypasses that throttle.
+
+The manager is single-threaded and keeps the last successful deep-probe
+timestamp, so ordinary calls from both the main loop and `spawn_runner` share
+one cadence. This is intentional: `docker system df` traverses rw snapshots
+and detects the #401 corruption, but on the N150 it can take about ten seconds
+and must not sit on every queue-poll fast path.
+
+General workers independently repeat both `docker info` and `docker system df`
+before registering with GitHub, closing the manager's periodic-check window
+before a worker can accept a job. Pi workers still have no Docker socket. A
+successful deep probe is timestamped in manager logs, which makes the configured
+cadence visible during idle validation.
+
+A check that still fails after one five-second retry stops the spawn batch and quarantines the general pool. The manager
+removes only idle registrations with the `general` label belonging to its own prefix; GitHub refuses deletion
+of busy runners. It leaves busy jobs and other pools alone. While quarantined,
+each recovery poll runs both liveness and deep metadata validation, and the pool
+is released only after two consecutive healthy polls. A log containing
+`infra_error code=DOCKER_METADATA_CORRUPTION` means the daemon reported the specific
+`rw layer snapshot not found` error. Other health failures use
+`DOCKER_DAEMON_UNHEALTHY`. No host-wide prune, storage deletion, or daemon restart is
+automatic: a shared host may still be serving busy jobs.
+
+Inspect the named container with `docker inspect <container-id>`, and collect
+`journalctl -u docker -u containerd` around the failure before host repair. Check
+exited ephemeral workers and Docker/containerd shutdown or cleanup events. Remove
+an identified disposable stale container through the Docker API only after verifying
+it is not busy; if that cannot succeed, drain the host and restart/recreate its daemon
+under operator control. Never delete snapshot directories or metadata files manually.
+The quarantine health checks must pass before the host resumes accepting CI work.
+
+### Durable infra evidence (#437)
+
+GitHub job logs can expire and general workers are `--rm`, so a `Set up job` failure like
+PR #410's could not be diagnosed afterwards. The general pool now mounts a named volume
+(`GENERAL_EVIDENCE_VOLUME`, default `social-mcp-general-runner-evidence`) at `/evidence`:
+
+- `events.jsonl` (manager): one JSON line when the pool enters quarantine (code, failing
+  check, daemon diagnostic and a bounded `docker ps -a` snapshot) and when it recovers.
+  Only the transition is recorded, not every poll. Capped at 500 events.
+- `worker-events.log` (workers): daemon health failures and the runner's exit status.
+- `<runner-name>-worker-diag.log`: last 200 lines of the runner's newest `_diag/Worker_*.log`;
+  the 50 newest are kept.
+
+All writes are best-effort and never fail a job or block registration. Read them with
+`docker run --rm -v social-mcp-general-runner-evidence:/evidence alpine tail -n 50 /evidence/events.jsonl`.
+Evidence is disabled when `INFRA_EVIDENCE_DIR` is unset.
+
+Deploy these changes by building the new manager tag
+`n150/pi-runner-manager:run-check-docker-0.1.9`, sandbox tag
+`n150/run-check-sandbox:0.1.2`, and general worker tag
+`n150/github-general-runner-ephemeral:0.87.10` from this checkout, then updating the
+host `.env` and recreating the managers. Existing cached tags do not acquire the
+new gates. Do not restart busy worker containers during deployment.
+
+The CI BuildKit step retains required Buildx initialization; `docker system df`
+and `docker buildx du` inside the job are warning-only diagnostics. Merge Gate
+still retries infrastructure once and never dispatches PR Fix for those failures.

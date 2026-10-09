@@ -1,0 +1,125 @@
+{
+  "description": "Trusted acceptance-boundary probes for the eight-task workflow smoke pack (#427). Control-plane protected: implementers cannot edit or delete them. Each probe is tied to a criterion and records whether the behaviour is an acceptance requirement or a documented policy choice.",
+  "deferred_activation": "For a rerun that must create a deferred target, put an exact line in the issue body: trusted-acceptance-target: <python.module>. Free-text mentions do not activate deferred targets.",
+  "args_encoding": "JSON values, plus {\"$float\": \"nan|inf|-inf|1.5\"}, {\"$datetime\": \"<ISO-8601>\"}, {\"$int\": \"1eN\"}, {\"$decimal\": \"<decimal>\"}, {\"$fraction\": [numerator, denominator]}, {\"$tuple\": [...]}, and {\"$iterator\": [...]} tags.",
+  "smoke_pack_targets": [
+    "social_mcp.diagnostics.smoke_duration",
+    "social_mcp.diagnostics.smoke_chunks",
+    "social_mcp.diagnostics.smoke_redact",
+    "social_mcp.diagnostics.smoke_token_bucket",
+    "social_mcp.diagnostics.smoke_url",
+    "social_mcp.diagnostics.smoke_retry_after",
+    "social_mcp.diagnostics.smoke_intervals",
+    "social_mcp.diagnostics.smoke_lru"
+  ],
+  "criteria": {
+    "retry-after-delta-grammar": {
+      "source": "RFC 9110 section 10.2.3 delay-seconds = 1*DIGIT; issues #345/#400",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_retry_after:parse_retry_after"
+    },
+    "retry-after-integer-only": {
+      "source": "task #345: integer delta-seconds; programmatic bool/float/non-finite are not integers",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_retry_after:parse_retry_after"
+    },
+    "url-literal-preservation": {
+      "source": "task #344 and module docstring: scheme, host, path, fragment preserved verbatim. POLICY: literal, not semantic, scheme preservation",
+      "status": "policy-literal",
+      "target": "social_mcp.diagnostics.smoke_url:canonicalize_url"
+    },
+    "bucket-numeric-domain": {
+      "source": "bool is not a number; non-finite values are not valid bucket state. POLICY: int/float only; Decimal/Fraction are rejected",
+      "status": "policy-int-float-only",
+      "target": "social_mcp.diagnostics.smoke_token_bucket:token_bucket_transition"
+    },
+    "lru-capacity-integer": {
+      "source": "issues #347/#402 and follow-up #366: positive integer capacity excludes bool",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_lru:LRUCache",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_lru",
+      "source_path": "src/social_mcp/diagnostics/smoke_lru.py"
+    },
+    "interval-numeric-domain": {
+      "source": "issues #346/#401 and follow-up #368; original 'numeric' wording was ambiguous",
+      "status": "policy-real-plus-decimal",
+      "target": "social_mcp.diagnostics.smoke_intervals:merge_intervals",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_intervals",
+      "source_path": "src/social_mcp/diagnostics/smoke_intervals.py",
+      "policy": "Reject bool and NaN; accept numbers.Real values (including Fraction) or Decimal bounds; ordered infinities are accepted. Cross-domain Decimal/float mixing is not asserted by this policy."
+    },
+    "duration-contract": {
+      "source": "issues #340/#395: ms/s/m/h conversions; integer/decimal values; empty, negative, non-finite, unknown-unit and malformed inputs are rejected",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_duration:parse_duration_seconds",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_duration",
+      "source_path": "src/social_mcp/diagnostics/smoke_duration.py"
+    },
+    "chunking-contract": {
+      "source": "issues #341/#396: preserve order and return a list of lists; support one-shot iterators and final partial chunks; reject non-positive or non-integer sizes; bool is not accepted as a semantic chunk size",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_chunks:chunked",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_chunks",
+      "source_path": "src/social_mcp/diagnostics/smoke_chunks.py"
+    },
+    "redaction-contract": {
+      "source": "issues #342/#397: exact case-insensitive sensitive-key matching, recursive dict/list traversal, configurable replacement with the task-specified default, and input immutability",
+      "status": "requirement",
+      "target": "social_mcp.diagnostics.smoke_redact:redact_mapping",
+      "activation": "when-target-present",
+      "issue_marker": "trusted-acceptance-target: social_mcp.diagnostics.smoke_redact",
+      "source_path": "src/social_mcp/diagnostics/smoke_redact.py"
+    }
+  },
+  "probes": [
+    {"id": "duration-ms", "criterion": "duration-contract", "args": ["250ms"], "returns": 0.25},
+    {"id": "duration-decimal", "criterion": "duration-contract", "args": ["1.5s"], "returns": 1.5},
+    {"id": "duration-integer-seconds", "criterion": "duration-contract", "args": ["45s"], "returns": 45.0},
+    {"id": "duration-minutes", "criterion": "duration-contract", "args": ["2m"], "returns": 120.0},
+    {"id": "duration-hours", "criterion": "duration-contract", "args": ["1h"], "returns": 3600.0},
+    {"id": "duration-negative", "criterion": "duration-contract", "args": ["-1s"], "raises": "ValueError"},
+    {"id": "duration-non-finite", "criterion": "duration-contract", "args": ["NaNs"], "raises": "ValueError"},
+    {"id": "duration-unknown-unit", "criterion": "duration-contract", "args": ["1d"], "raises": "ValueError"},
+    {"id": "duration-empty", "criterion": "duration-contract", "args": [""], "raises": "ValueError"},
+    {"id": "chunks-order-partial", "criterion": "chunking-contract", "args": [[1, 2, 3, 4, 5], 2], "returns": [[1, 2], [3, 4], [5]]},
+    {"id": "chunks-one-shot-iterator", "criterion": "chunking-contract", "args": [{"$iterator": [1, 2, 3, 4, 5]}, 2], "returns": [[1, 2], [3, 4], [5]]},
+    {"id": "chunks-zero-size", "criterion": "chunking-contract", "args": [[1, 2, 3], 0], "raises": "ValueError"},
+    {"id": "chunks-float-size", "criterion": "chunking-contract", "args": [[1, 2, 3], 1.5], "raises": "ValueError"},
+    {"id": "chunks-bool-size", "criterion": "chunking-contract", "args": [[1, 2, 3], true], "raises": "ValueError"},
+    {"id": "redact-case-insensitive-exact", "criterion": "redaction-contract", "args": [{"Token": "secret", "tokens": "keep", "nested": [{"PASSWORD": "pw"}, {"safe": "visible"}]}, ["token", "password"]], "returns": {"Token": "***", "tokens": "keep", "nested": [{"PASSWORD": "***"}, {"safe": "visible"}]}, "input_unchanged": true},
+    {"id": "redact-custom-replacement", "criterion": "redaction-contract", "args": [{"token": "secret", "nested": {"TOKEN": "nested"}}, ["token"]], "kwargs": {"replacement": "[redacted]"}, "returns": {"token": "[redacted]", "nested": {"TOKEN": "[redacted]"}}, "input_unchanged": true},
+    {"id": "ra-underscore", "criterion": "retry-after-delta-grammar", "args": ["1_0", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-plus-sign", "criterion": "retry-after-delta-grammar", "args": ["+5", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-arabic-indic-digits", "criterion": "retry-after-delta-grammar", "args": ["١٢", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-fullwidth-digits", "criterion": "retry-after-delta-grammar", "args": ["１２", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-negative-string", "criterion": "retry-after-delta-grammar", "args": ["-1", {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-digits-ok", "criterion": "retry-after-delta-grammar", "args": ["120", {"$datetime": "1994-11-06T08:49:00+00:00"}], "returns": 120},
+    {"id": "ra-bool", "criterion": "retry-after-integer-only", "args": [true, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-fraction-float", "criterion": "retry-after-integer-only", "args": [{"$float": "1.5"}, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-nan", "criterion": "retry-after-integer-only", "args": [{"$float": "nan"}, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "ra-inf", "criterion": "retry-after-integer-only", "args": [{"$float": "inf"}, {"$datetime": "1994-11-06T08:49:00+00:00"}], "raises": "ValueError"},
+    {"id": "url-upper-scheme", "criterion": "url-literal-preservation", "args": ["HTTP://EXAMPLE.test/P?z=1&a=2#F"], "returns": "HTTP://EXAMPLE.test/P?a=2&z=1#F"},
+    {"id": "url-encoded-kept", "criterion": "url-literal-preservation", "args": ["http://h/p?b=%2f&a=%2F"], "returns": "http://h/p?a=%2F&b=%2f"},
+    {"id": "url-duplicate-keys-kept", "criterion": "url-literal-preservation", "args": ["http://h/p?a=2&a=1&a=2"], "returns": "http://h/p?a=1&a=2&a=2"},
+    {"id": "url-empty-query-no-marker", "criterion": "url-literal-preservation", "args": ["http://h/p?"], "returns": "http://h/p"},
+    {"id": "bucket-bool-capacity", "criterion": "bucket-numeric-domain", "args": [0, true, 1, 1, 1], "raises": "ValueError"},
+    {"id": "bucket-nan-tokens", "criterion": "bucket-numeric-domain", "args": [{"$float": "nan"}, 5, 1, 1, 1], "raises": "ValueError"},
+    {"id": "bucket-huge-int-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$int": "1e400"}, 1, 1, 1], "returns": {"$tuple": [0, true]}},
+    {"id": "bucket-inf-capacity", "criterion": "bucket-numeric-domain", "args": [0, {"$float": "inf"}, 1, 1, 1], "raises": "ValueError"},
+    {"id": "lru-bool-capacity", "criterion": "lru-capacity-integer", "args": [true], "raises": "ValueError"},
+    {"id": "lru-zero-capacity", "criterion": "lru-capacity-integer", "args": [0], "raises": "ValueError"},
+    {"id": "lru-negative-capacity", "criterion": "lru-capacity-integer", "args": [-1], "raises": "ValueError"},
+    {"id": "interval-bool-bound", "criterion": "interval-numeric-domain", "args": [[[true, 2]]], "raises": "ValueError"},
+    {"id": "interval-float-nan", "criterion": "interval-numeric-domain", "args": [[[{"$float": "nan"}, 2]]], "raises": "ValueError"},
+    {"id": "interval-decimal-nan", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "NaN"}, 2]]], "raises": "ValueError"},
+    {"id": "interval-decimal-snan", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "sNaN"}, 2]]], "raises": "ValueError"},
+    {"id": "interval-decimal", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "1.0"}, {"$decimal": "2.0"}], [{"$decimal": "2.0"}, {"$decimal": "3.0"}]]], "accepts": true},
+    {"id": "interval-fraction", "criterion": "interval-numeric-domain", "args": [[[{"$fraction": [1, 2]}, 1], [1, {"$fraction": [3, 2]}]]], "accepts": true},
+    {"id": "interval-infinity", "criterion": "interval-numeric-domain", "args": [[[0, {"$float": "inf"}], [1, 2]]], "accepts": true},
+    {"id": "interval-decimal-infinity", "criterion": "interval-numeric-domain", "args": [[[{"$decimal": "0"}, {"$decimal": "Infinity"}], [{"$decimal": "1"}, {"$decimal": "2"}]]], "accepts": true}
+  ]
+}

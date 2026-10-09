@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { startModelTraceProxy } from '../scripts/pi-common/model-trace-proxy.mjs';
+import { classifyProviderRequest, providerUsageTelemetry, startModelTraceProxy } from '../scripts/pi-common/model-trace-proxy.mjs';
 
 async function listen(server) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -17,6 +17,21 @@ async function listen(server) {
 
 function recordsAt(file) {
   return readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+}
+
+async function waitForRecords(file, count = 1, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(file)) {
+      const text = readFileSync(file, 'utf8').trim();
+      if (text) {
+        const records = text.split('\n').map(line => JSON.parse(line));
+        if (records.length >= count) return records;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${count} model trace record(s)`);
 }
 
 test('model trace records sequential exchanges, preserves usage fields, and redacts credentials only', async () => {
@@ -125,6 +140,10 @@ test('actual transport failures produce deterministic trace errors without leaki
   const [record] = recordsAt(tracePath);
   assert.equal(record.status, 502);
   assert.equal(record.response, null);
+  assert.equal(record.transportError, true);
+  assert.equal(record.streamDisposition, 'transport_error');
+  assert.equal(record.streamShortCircuit, false);
+  assert.equal(record.usableResponseObserved, false);
   assert.ok(record.error.name);
   assert.ok(record.error.message);
   assert.doesNotMatch(JSON.stringify(record), /upstream-secret|request-secret|body-secret/);
@@ -198,7 +217,178 @@ test('client disconnect aborts the in-flight upstream request but completed requ
   const [record] = recordsAt(tracePath);
   assert.equal(record.status, 499);
   assert.equal(record.response, null);
+  assert.equal(record.transportError, true);
+  assert.equal(record.streamDisposition, 'transport_error');
+  assert.equal(record.streamShortCircuit, false);
+  assert.equal(record.usableResponseObserved, false);
   assert.equal(record.error.name, 'AbortError');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('#538 fully consumed streamed tool response stays a normal 200 exchange', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-model-trace-stream-complete-'));
+  const tracePath = join(dir, 'trace.jsonl');
+  const upstream = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const events = [
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-1', type: 'function', function: { name: 'read' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path: 'README.md' }) } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+    ];
+    for (const event of events) res.write(`data: ${JSON.stringify(event)}\n\n`);
+    res.end('data: [DONE]\n\n');
+  });
+  const targetBaseUrl = await listen(upstream);
+  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'planner' });
+  try {
+    const response = await fetch(`${proxy.baseUrl}/chat/completions`, { method: 'POST', body: '{}' });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /\[DONE\]/);
+  } finally {
+    await proxy.close();
+    await new Promise(resolve => upstream.close(resolve));
+  }
+  const [record] = recordsAt(tracePath);
+  assert.equal(record.status, 200);
+  assert.equal(record.transportError, false);
+  assert.equal(record.streamDisposition, 'completed');
+  assert.equal(record.streamShortCircuit, false);
+  assert.equal(record.usableResponseObserved, true);
+  assert.equal(record.error, undefined);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('#538 client close after a complete streamed tool call is a normal short circuit', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-model-trace-short-circuit-'));
+  const tracePath = join(dir, 'trace.jsonl');
+  const observed = [];
+  let markAborted;
+  const aborted = new Promise(resolve => { markAborted = resolve; });
+  const upstream = http.createServer((_req, res) => {
+    res.once('close', markAborted);
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-1', type: 'function', function: { name: 'read' } }] }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path: 'README.md' }) } }] }, finish_reason: null }] })}\n\n`);
+  });
+  const targetBaseUrl = await listen(upstream);
+  const proxy = await startModelTraceProxy({
+    targetBaseUrl,
+    tracePath,
+    stage: 'planner',
+    onExchange: exchange => observed.push(exchange),
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const client = http.request(`${proxy.baseUrl}/chat/completions`, { method: 'POST' });
+      let closed = false;
+      client.on('error', error => {
+        if (!closed && error?.code !== 'ECONNRESET') reject(error);
+      });
+      client.on('response', response => {
+        let text = '';
+        response.on('data', chunk => {
+          text += chunk;
+          if (!closed && text.includes('README.md')) {
+            closed = true;
+            client.destroy();
+            resolve();
+          }
+        });
+      });
+      client.end('{}');
+    });
+    let timeout;
+    await Promise.race([
+      aborted,
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('short-circuited upstream was not aborted')), 1500); }),
+    ]).finally(() => clearTimeout(timeout));
+    await waitForRecords(tracePath);
+  } finally {
+    await proxy.close();
+    await new Promise(resolve => upstream.close(resolve));
+  }
+  const [record] = recordsAt(tracePath);
+  assert.equal(record.status, 200);
+  assert.equal(record.transportError, false);
+  assert.equal(record.streamDisposition, 'client_short_circuit');
+  assert.equal(record.streamShortCircuit, true);
+  assert.equal(record.usableResponseObserved, true);
+  assert.equal(record.error, undefined);
+  assert.match(record.response, /README\.md/);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].transportError, false);
+  assert.equal(observed[0].streamShortCircuit, true);
+  assert.equal(observed[0].usableResponseObserved, true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('#538 client close during request upload remains a 499 transport failure', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-model-trace-upload-abort-'));
+  const tracePath = join(dir, 'trace.jsonl');
+  let upstreamRequests = 0;
+  const upstream = http.createServer((_req, res) => {
+    upstreamRequests += 1;
+    res.end('{}');
+  });
+  const targetBaseUrl = await listen(upstream);
+  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'planner' });
+  try {
+    const client = http.request(`${proxy.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': '128' },
+    });
+    client.on('error', () => {});
+    client.flushHeaders();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    client.write('{"partial":');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    client.destroy();
+    await waitForRecords(tracePath);
+  } finally {
+    await proxy.close();
+    await new Promise(resolve => upstream.close(resolve));
+  }
+  const [record] = recordsAt(tracePath);
+  assert.equal(record.status, 499);
+  assert.equal(record.transportError, true);
+  assert.equal(record.streamDisposition, 'transport_error');
+  assert.equal(record.streamShortCircuit, false);
+  assert.equal(record.usableResponseObserved, false);
+  assert.equal(record.response, null);
+  assert.equal(upstreamRequests, 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('#538 upstream timeout remains a 504 transport failure', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-model-trace-timeout-'));
+  const tracePath = join(dir, 'trace.jsonl');
+  const upstream = http.createServer((_req, res) => {
+    const timer = setTimeout(() => {
+      if (!res.destroyed) res.end('{}');
+    }, 1000);
+    res.once('close', () => clearTimeout(timer));
+  });
+  const targetBaseUrl = await listen(upstream);
+  const proxy = await startModelTraceProxy({
+    targetBaseUrl,
+    tracePath,
+    stage: 'planner',
+    upstreamTimeoutMs: 25,
+  });
+  try {
+    const response = await fetch(`${proxy.baseUrl}/chat/completions`, { method: 'POST', body: '{}' });
+    assert.equal(response.status, 504);
+  } finally {
+    await proxy.close();
+    await new Promise(resolve => upstream.close(resolve));
+  }
+  const [record] = recordsAt(tracePath);
+  assert.equal(record.status, 504);
+  assert.equal(record.transportError, true);
+  assert.equal(record.streamDisposition, 'transport_error');
+  assert.equal(record.streamShortCircuit, false);
+  assert.equal(record.usableResponseObserved, false);
+  assert.equal(record.response, null);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -207,7 +397,7 @@ test('trace size cap keeps complete records, writes one marker, and leaves model
   const tracePath = join(dir, 'trace.jsonl');
   const upstream = http.createServer((_req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
   const targetBaseUrl = await listen(upstream);
-  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'implementer', maxBytes: 500 });
+  const proxy = await startModelTraceProxy({ targetBaseUrl, tracePath, stage: 'implementer', maxBytes: 1000 });
   try {
     for (let index = 0; index < 3; index += 1) {
       const response = await fetch(`${proxy.baseUrl}/chat/completions`, { method: 'POST', body: JSON.stringify({ index }) });
@@ -219,7 +409,7 @@ test('trace size cap keeps complete records, writes one marker, and leaves model
     await new Promise(resolve => upstream.close(resolve));
   }
   const text = readFileSync(tracePath, 'utf8');
-  assert.ok(Buffer.byteLength(text) <= 500);
+  assert.ok(Buffer.byteLength(text) <= 1000);
   assert.ok(text.endsWith('\n'));
   const lines = text.trim().split('\n');
   const items = lines.map(line => JSON.parse(line));
@@ -246,4 +436,89 @@ test('Implementer workflow uploads the stage-named temporary trace after failed 
   assert.match(docs, /any signed-in GitHub user/);
   assert.match(docs, /Streaming\/SSE responses are stored as the complete raw response text/);
   assert.doesNotMatch(proxySource, /console\.(?:log|info|warn|error)\s*\(/);
+});
+
+
+test('#469 model trace emits one timing callback per real provider exchange', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-model-trace-metrics-'));
+  const tracePath = join(dir, 'trace.jsonl');
+  const observed = [];
+  const upstream = http.createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end('{"ok":true}');
+  });
+  const targetBaseUrl = await listen(upstream);
+  const proxy = await startModelTraceProxy({
+    targetBaseUrl,
+    tracePath,
+    stage: 'implementer',
+    issue: '469',
+    onExchange: metric => observed.push(metric),
+  });
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      const response = await fetch(`${proxy.baseUrl}/chat/completions`, { method: 'POST', body: '{}' });
+      assert.equal(response.status, 200);
+      await response.text();
+    }
+  } finally {
+    await proxy.close();
+    await new Promise(resolve => upstream.close(resolve));
+  }
+  assert.deepEqual(observed.map(item => item.sequence), [1, 2, 3]);
+  assert.ok(observed.every(item => typeof item.traceSession === 'string' && item.traceSession.length > 0));
+  assert.equal(new Set(observed.map(item => item.traceSession)).size, 1, 'one proxy shares one provider session id');
+  assert.ok(observed.every(item => item.requestMethod === 'POST'));
+  assert.ok(observed.every(item => item.requestPath === '/v1/chat/completions'));
+  assert.ok(observed.every(item => item.status === 200 && item.elapsedMs >= 0 && item.transportError === false));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+
+test('#540 provider cache telemetry distinguishes missing, explicit zero, and positive cached tokens', () => {
+  assert.deepEqual(providerUsageTelemetry(JSON.stringify({
+    usage: { prompt_tokens: 100, completion_tokens: 5 },
+  })), {
+    promptTokens: 100,
+    outputTokens: 5,
+    cachedTokens: null,
+    cacheTelemetry: 'unknown',
+  });
+
+  assert.deepEqual(providerUsageTelemetry(JSON.stringify({
+    usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 0 } },
+  })), {
+    promptTokens: 100,
+    outputTokens: 5,
+    cachedTokens: 0,
+    cacheTelemetry: 'reported',
+  });
+
+  assert.deepEqual(providerUsageTelemetry([
+    'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":64}}}',
+    'data: [DONE]',
+    '',
+  ].join('\n')), {
+    promptTokens: 100,
+    outputTokens: 5,
+    cachedTokens: 64,
+    cacheTelemetry: 'reported',
+  });
+});
+
+test('#540 provider request classification identifies Planner, Main, and coding traffic', () => {
+  assert.equal(classifyProviderRequest({
+    messages: [{ role: 'system', content: '<active_agent name="implementation-planner"/>' }],
+  }, 'implementer'), 'planner');
+
+  assert.equal(classifyProviderRequest({
+    messages: [
+      { role: 'system', content: 'pi base system' },
+      { role: 'user', content: '<shared_agent_contract source="agents/AGENTS.md">x</shared_agent_contract>\n<role_contract source="agents/implementer/AGENTS.md">y</role_contract>' },
+    ],
+  }, 'implementer'), 'main');
+
+  assert.equal(classifyProviderRequest({
+    messages: [{ role: 'system', content: '<coding_role_contract source="agents/implementer/AGENTS.md">x</coding_role_contract>' }],
+  }, 'implementer'), 'coding');
 });

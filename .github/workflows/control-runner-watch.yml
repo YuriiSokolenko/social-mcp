@@ -1,0 +1,110 @@
+name: Control Runner Watch
+run-name: "🚨 Control runner queue watch"
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check-control-wake-queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fail when a control-plane wake waits too long for n150-control
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const thresholdMs = 10 * 60 * 1000;
+            const now = Date.now();
+            const { owner, repo } = context.repo;
+
+            const probes = [
+              {
+                workflowId: 'ci.yml',
+                branch: 'dev',
+                event: 'push',
+                jobName: 'wake-merge-gate',
+                purpose: 'post-dev merge-gate wake',
+              },
+              {
+                workflowId: 'ci-terminal-wake.yml',
+                event: 'workflow_run',
+                jobName: 'wake-pr-merge-gate',
+                purpose: 'PR CI terminal wake',
+              },
+            ];
+
+            async function listActiveRuns(probe) {
+              const runsById = new Map();
+
+              for (const status of ['queued', 'in_progress']) {
+                const params = {
+                  owner,
+                  repo,
+                  workflow_id: probe.workflowId,
+                  event: probe.event,
+                  status,
+                  per_page: 100,
+                };
+                if (probe.branch) params.branch = probe.branch;
+
+                const runs = await github.paginate(
+                  github.rest.actions.listWorkflowRuns,
+                  params,
+                );
+                for (const run of runs) runsById.set(run.id, run);
+              }
+
+              return [...runsById.values()];
+            }
+
+            const stale = [];
+            for (const probe of probes) {
+              const runs = await listActiveRuns(probe);
+
+              for (const run of runs) {
+                const jobs = await github.paginate(
+                  github.rest.actions.listJobsForWorkflowRun,
+                  {
+                    owner,
+                    repo,
+                    run_id: run.id,
+                    filter: 'latest',
+                    per_page: 100,
+                  },
+                );
+
+                for (const job of jobs) {
+                  if (job.name !== probe.jobName || job.status !== 'queued') continue;
+                  const queuedAt = Date.parse(job.created_at ?? run.created_at);
+                  if (!Number.isFinite(queuedAt) || now - queuedAt < thresholdMs) continue;
+                  stale.push({
+                    purpose: probe.purpose,
+                    workflowId: probe.workflowId,
+                    runId: run.id,
+                    jobId: job.id,
+                    ageMinutes: Math.floor((now - queuedAt) / 60000),
+                    url: job.html_url ?? run.html_url,
+                  });
+                }
+              }
+            }
+
+            if (!stale.length) {
+              core.info('No control-plane wake job has been queued for n150-control longer than 10 minutes.');
+              return;
+            }
+
+            for (const item of stale) {
+              core.error(
+                `${item.purpose} has been queued for ${item.ageMinutes}m: ${item.url} (workflow ${item.workflowId}, run ${item.runId}, job ${item.jobId})`,
+              );
+            }
+            core.setFailed(
+              `Detected ${stale.length} control-plane wake job(s) queued for n150-control longer than 10 minutes.`,
+            );

@@ -1,11 +1,20 @@
 import fs from 'node:fs';
 import { Type } from 'typebox';
 
+import { restoredWork } from './pi-common/restored-work.mjs';
 import { integrateLatestDev } from './pi-common/finalize-product-tree.mjs';
 import { baseRef } from './pi-common/project-config.mjs';
 import { runGit as git } from './pi-common/git.mjs';
-import { assertImplementerFileSet, writeImplementerResult } from './pi-common/implementer-result.mjs';
+import { assertNoScratchArtifacts, normalizeImplementerFiles, writeImplementerResult } from './pi-common/implementer-result.mjs';
 import { registerTerminalTool } from './pi-common/terminal-tool.mjs';
+import { assertAcceptedMutationScope, mutationScopeReceipt } from './pi-common/accepted-mutation-scope.mjs';
+import { mutationCleanupHints } from './pi-common/mutation-journal.mjs';
+import { capabilitySnapshotGuidance } from './pi-common/session-state.mjs';
+import { readPreparedImplementation } from './pi-common/implementation-planner.mjs';
+import {
+  assertCodingBehavioralValidation,
+  codingSessionSubmissionReadiness,
+} from './pi-common/coding-session-validation.mjs';
 
 const lines = (text) => text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
 const gitPaths = (text) => text.split('\0').filter(Boolean);
@@ -16,41 +25,132 @@ function changedPathsAgainstBase() {
 }
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 
-export const CHANGED_PUBLICATION_FIELDS = Object.freeze([
-  'title',
-  'summary',
-  'changes',
-  'files',
-  'security_notes',
-  'limitations',
-]);
-
-function normalizeStringArray(value) {
-  return Array.isArray(value) ? value.map(clean).filter(Boolean) : [];
-}
-
-export function missingChangedPublicationFields(params = {}) {
-  return CHANGED_PUBLICATION_FIELDS.filter(field => {
-    if (field === 'changes' || field === 'files') return normalizeStringArray(params[field]).length === 0;
-    return !clean(params[field]);
-  });
-}
-
-export function validateFreshChangedSubmission(params = {}) {
-  const missingFields = missingChangedPublicationFields(params);
-  if (missingFields.length) {
-    throw new Error(JSON.stringify({
-      code: 'missing_publication_fields',
-      missing_fields: missingFields,
-    }));
+// The candidate is always derived from Git, never from model-provided files.
+// Scope remains independently predeclared; deriving paths must not authorize them.
+function assertRuntimePublicationFiles(changedPaths, receipt) {
+  const files = normalizeImplementerFiles(changedPaths);
+  const accepted = new Set(receipt.accepted.map(entry => entry.path));
+  const scratch = file => /(^|\/)(?:\.probe(?:\d+)?\.txt|\.pi-tmp-[^/]+)$/.test(file);
+  const unpublishable = files.filter(file => !accepted.has(file) || scratch(file));
+  try {
+    assertNoScratchArtifacts(files);
+    const scopedFiles = assertAcceptedMutationScope({
+      cwd: process.cwd(), receipt, base: baseRef(),
+    });
+    if (JSON.stringify(normalizeImplementerFiles(scopedFiles)) !== JSON.stringify(files)) {
+      throw new Error('Runtime publication file set differs from accepted-scope Git diff');
+    }
+  } catch (error) {
+    const hints = mutationCleanupHints(process.cwd(), unpublishable, process.env);
+    if (!hints.length) throw error;
+    const expected = files.filter(file => accepted.has(file) && !scratch(file));
+    const calls = hints.map(hint =>
+      `undo_mutation({mutation_id:"${hint.mutation_id}",expected_files:${JSON.stringify(expected)},reason:"Remove accidental mutation from final candidate"})`
+    );
+    throw new Error(`${error.message} Targeted cleanup available: ${calls.join(' or ')}`);
   }
+  return files;
+}
+
+function trustedRestoredNoDiffProof(changedBeforeIntegration) {
+  if (changedBeforeIntegration.length) return true;
+  // An attested saved patch already present in Git is evidence; a mode flag is not.
+  const patch = process.env.PI_RESUME_PATCH;
+  return Boolean(patch && fs.existsSync(patch) && fs.statSync(patch).size > 0 &&
+    git(['apply', '--reverse', '--check', patch], { allowFailure: true }).status === 0);
+}
+
+// The only model-authored field for fresh changed work is opaque UTF-8 Markdown.
+// File names, PR title, validation and security status always belong to the runtime.
+export const RESULT_SUBMISSION_TOKENS = 4096;
+export const RESULT_SUBMISSION_RETRY_TOKENS = 8192;
+// Initial submission plus at most one correction and one truncation retry.
+export const RESULT_SUBMISSION_MAX_REQUESTS = 3;
+
+// Match Planner's singleton-tool / auto-choice provider transport. In the
+// dedicated changed-work request, the only valid argument shape is resultText.
+// Other registered Pi terminal modes keep their original flexible schema.
+export const CHANGED_WORK_SUBMISSION_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: { resultText: { type: 'string', minLength: 1 } },
+  required: ['resultText'],
+  additionalProperties: false,
+});
+const CHANGED_WORK_SUBMISSION_DESCRIPTION =
+  'Only successful Implementer changed-work terminal operation. Supply complete Markdown in resultText on this dedicated larger-budget request.';
+
+export function restrictResultSubmissionPayload(payload) {
+  const closed = { ...payload, tools: [], tool_choice: 'none' };
+  if (!Array.isArray(payload?.tools) || payload.tools.length !== 1 ||
+      Object.hasOwn(payload, 'toolChoice')) return closed;
+  const choice = payload.tool_choice;
+  const knownChoice = choice == null || ['auto', 'none', 'required'].includes(choice) ||
+    (typeof choice === 'object' && choice.type === 'function' &&
+      (choice.function?.name === 'submit_result' || choice.name === 'submit_result'));
+  if (!knownChoice) return closed;
+  const tool = payload.tools[0];
+  if (tool?.type === 'function' && tool.function?.name === 'submit_result' &&
+      tool.name == null) {
+    return { ...payload, tools: [{ ...tool, function: {
+      ...tool.function, description: CHANGED_WORK_SUBMISSION_DESCRIPTION,
+      parameters: CHANGED_WORK_SUBMISSION_SCHEMA,
+    } }], tool_choice: 'auto' };
+  }
+  if (tool?.type === 'function' && tool.name === 'submit_result' &&
+      tool.function == null) {
+    return { ...payload, tools: [{ ...tool,
+      description: CHANGED_WORK_SUBMISSION_DESCRIPTION,
+      parameters: CHANGED_WORK_SUBMISSION_SCHEMA,
+    }], tool_choice: 'auto' };
+  }
+  // Legacy Pi adapters omit the type discriminator.
+  if (tool?.type == null && tool?.function?.name === 'submit_result' &&
+      tool?.name == null) {
+    return { ...payload, tools: [{ ...tool, function: {
+      ...tool.function, description: CHANGED_WORK_SUBMISSION_DESCRIPTION,
+      parameters: CHANGED_WORK_SUBMISSION_SCHEMA,
+    } }], tool_choice: 'auto' };
+  }
+  return closed;
+}
+
+export function resultProviderBudgetEvidence(payload, expected) {
+  const fields = [
+    ['max_output_tokens', payload?.max_output_tokens],
+    ['max_completion_tokens', payload?.max_completion_tokens],
+    ['max_tokens', payload?.max_tokens],
+    ['maxTokens', payload?.maxTokens],
+    ['generationConfig.maxOutputTokens', payload?.generationConfig?.maxOutputTokens],
+    ['generation_config.max_output_tokens', payload?.generation_config?.max_output_tokens],
+  ].filter(([, value]) => value !== undefined && value !== null);
+  if (!fields.length) return { effective: null, verified: false, reason: 'budget_unverified' };
+  const valid = fields.every(([, value]) => Number.isSafeInteger(value) && value > 0);
+  const unique = new Set(fields.map(([, value]) => value));
+  const effective = valid && unique.size === 1 ? fields[0][1] : null;
   return {
-    title: clean(params.title),
-    summary: clean(params.summary),
-    changes: normalizeStringArray(params.changes),
-    files: normalizeStringArray(params.files),
-    security_notes: clean(params.security_notes),
-    limitations: clean(params.limitations),
+    effective, verified: effective === expected,
+    reason: !valid ? 'invalid_budget' : unique.size !== 1 ? 'conflicting_budgets'
+      : effective === expected ? 'verified' : 'budget_mismatch',
+  };
+}
+
+function deterministicTitle(context) {
+  const title = clean(context?.title).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ');
+  const issue = String(context?.number ?? process.env.PI_ISSUE ?? process.env.ISSUE ?? '').replace(/[^0-9]/g, '');
+  const safe = title.replace(/^\[(?:P[0-9]|priority[^\]]*)\]\s*/i, '').slice(0, 110).trim();
+  return (safe || (issue ? `Implement issue #${issue}` : 'Implement requested change')).slice(0, 120);
+}
+
+function runtimeChangedMetadata(resultText, files) {
+  const context = issueContext();
+  return {
+    title: deterministicTitle(context),
+    // Untrusted prose is for the PR description only; never parse it for metadata.
+    summary: resultText,
+    result_text: resultText,
+    changes: files,
+    security_notes: 'Security impact was not independently assessed by the model. CI and review remain authoritative.',
+    limitations: 'Authoritative product checks run after submission; any unverified assertions in the model description are not validation evidence.',
   };
 }
 
@@ -59,34 +159,18 @@ export function submitResultParameters() {
   // Outcome-specific required fields are enforced synchronously in execute before
   // integration or any publication-side effect.
   return Type.Object({
-    title: Type.Optional(Type.String({ description: 'Required for fresh changed work: PR title.' })),
-    summary: Type.Optional(Type.String({ description: 'Required for fresh changed work: PR summary.' })),
-    changes: Type.Optional(Type.Array(Type.String(), {
-      description: 'Required for fresh changed work: concrete repository changes.',
-    })),
-    files: Type.Optional(Type.Array(Type.String(), {
-      description: 'Required for fresh changed work: exact repository-relative changed-file set.',
+    resultText: Type.Optional(Type.String({
+      minLength: 1,
+      description: 'Fresh changed work only: complete Markdown/free-text implementation description on the dedicated submission request.',
     })),
     already_satisfied: Type.Optional(Type.Boolean({
-      description: 'Set true only when latest dev already contains the requested end state.',
+      description: 'Fresh work only: explicit, evidence-proven already-satisfied outcome.',
     })),
     blocked_reason: Type.Optional(Type.String({
       maxLength: 1000,
-      description: 'Fresh work only: concrete contradiction that makes a compliant mutation impossible.',
+      description: 'Fresh work only: concrete contradictory requirement, verified against the current repository.',
     })),
-    security_notes: Type.Optional(Type.String({
-      description: 'Required for fresh changed work, including an explicit no-impact statement.',
-    })),
-    limitations: Type.Optional(Type.String({
-      description: 'Required for fresh changed work, including an explicit none-known statement.',
-    })),
-  });
-}
-
-function restoredWork() {
-  if (process.env.PI_RESUME_ACTIVE != null) return process.env.PI_RESUME_ACTIVE === 'true';
-  const patch = process.env.PI_RESUME_PATCH;
-  return Boolean(patch && fs.existsSync(patch) && fs.statSync(patch).size > 0);
+  }, { additionalProperties: false });
 }
 
 function validationRepairWork() {
@@ -99,6 +183,70 @@ function issueContext() {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+function assertPreparedOutputsForChangedCodingSubmission({
+  alreadySatisfied,
+  blockedReason,
+  runtimeOwnedMetadata,
+} = {}) {
+  if (
+    runtimeOwnedMetadata ||
+    alreadySatisfied ||
+    blockedReason ||
+    !String(process.env.PI_CODING_SESSION ?? '').trim()
+  ) {
+    return;
+  }
+  const prepared = readPreparedImplementation(process.env.PI_PREPARED_IMPLEMENTATION_FILE);
+  const readiness = codingSessionSubmissionReadiness({
+    prepared,
+    cwd: process.cwd(),
+    resumed: false,
+    validationRepair: false,
+  });
+  if (readiness.ready) return;
+
+  const error = new Error(JSON.stringify({
+    code: 'PREPARED_OUTPUTS_REQUIRED',
+    message: 'Fresh changed coding-session work cannot submit while required prepared outputs are missing. Create the outputs, or use already_satisfied / blocked_reason only when that terminal outcome is actually true.',
+    missing_outputs: readiness.missing_outputs,
+  }));
+  error.code = 'PREPARED_OUTPUTS_REQUIRED';
+  error.missingOutputs = readiness.missing_outputs;
+  throw error;
+}
+
+const IMPLEMENTER_MUTATION_TOOLS = Object.freeze(['structural_edit', 'safe_edit', 'edit', 'write']);
+
+export function implementerActionNudge(activeToolNames, { restored = false, validationRepair = false } = {}) {
+  const names = [...new Set(Array.isArray(activeToolNames) ? activeToolNames : [])];
+  const active = new Set(names);
+  const parts = [
+    'ACTION REQUIRED. The next response must call one currently exposed productive tool; do not answer with prose-only reasoning.',
+  ];
+
+  if (active.has('undo_mutation')) {
+    parts.push('If submit_result reports a targeted cleanup mutation_id, call undo_mutation with that id and the intended final files, then retry submit_result.');
+  }
+  if (active.has('submit_result')) {
+    if (active.has('begin_result_submission')) parts.push('For completed changed work call begin_result_submission() once; the next request exposes only submit_result({resultText}).');
+    else if (!restored && !validationRepair) parts.push('Submission phase: call submit_result({resultText:"complete Markdown description"}) now; no other tools are available.');
+    if (restored || validationRepair) {
+      parts.push('For restored or harness validation-repair work call submit_result({}) now.');
+    } else {
+      parts.push('For fresh already-satisfied work call submit_result({already_satisfied:true}); for genuinely contradictory requirements call submit_result({blocked_reason:"..."}) from a clean worktree. For changed work use begin_result_submission() before the text-only submit_result.');
+    }
+  }
+  const mutationTools = IMPLEMENTER_MUTATION_TOOLS.filter(name => active.has(name));
+  if (mutationTools.length) {
+    parts.push(`When a change is required, mutate now with one of the currently exposed mutation tools: ${mutationTools.join(', ')}.`);
+  }
+  if (active.has('need_more_evidence')) {
+    parts.push('If exactly one concrete missing fact blocks safe action, call need_more_evidence once; after the single unlocked evidence action, act.');
+  }
+  parts.push(capabilitySnapshotGuidance(names));
+  return parts.join(' ');
+}
+
 export default function (pi) {
   // Snapshot run mode once so the advertised contract and execute path cannot
   // diverge if process.env or the resume patch changes later in the process.
@@ -106,17 +254,296 @@ export default function (pi) {
   const validationRepair = validationRepairWork();
   const runtimeOwnedMetadata = restored || validationRepair;
 
+  const submission = { phase: 'coding', budget: null, retryUsed: false, correctionUsed: false, control: null,
+    lastAssistant: null, providerEvidence: null, providerSurfaceVerified: false,
+    providerRequest: 0, lastInputTokens: null,
+    truncatedToolArguments: false, toolExecutionError: false, originalModel: null };
+
+  const resetSubmissionAttempt = () => {
+    submission.control = null;
+    submission.lastAssistant = null;
+    submission.providerEvidence = null;
+    submission.providerSurfaceVerified = false;
+    submission.truncatedToolArguments = false;
+    submission.toolExecutionError = false;
+  };
+
+  const restoreSubmissionBudget = async () => {
+    if (!submission.originalModel) return;
+    const original = submission.originalModel;
+    submission.originalModel = null;
+    try {
+      if (!(await pi.setModel(original))) console.warn('PI_IMPLEMENTER_SUBMISSION_BUDGET_RESTORE_UNAVAILABLE');
+    } catch (error) {
+      console.warn(`PI_IMPLEMENTER_SUBMISSION_BUDGET_RESTORE_FAILED ${String(error?.message ?? error)}`);
+    }
+  };
+
+  const submissionFailure = async (code, reason, ctx) => {
+    submission.phase = 'failed';
+    console.error(`PI_IMPLEMENTER_SUBMISSION_FAILED ${JSON.stringify({
+      code, reason, budget: submission.budget, checkpoint: { worktree_preserved: true },
+    })}`);
+    await restoreSubmissionBudget();
+    ctx?.abort?.();
+  };
+  const applySubmissionBudget = async (ctx, target) => {
+    if (!ctx?.model || typeof pi.setModel !== 'function') return false;
+    const contextWindow = Number(ctx.model.contextWindow);
+    if (Number.isFinite(contextWindow) && contextWindow > 0) {
+      if (contextWindow < target + 1024) return false;
+      if (target === RESULT_SUBMISSION_RETRY_TOKENS &&
+          (!Number.isFinite(submission.lastInputTokens) ||
+          submission.lastInputTokens + target + 1024 > contextWindow)) return false;
+    }
+    const before = { ...ctx.model };
+    const changed = await pi.setModel({ ...ctx.model, maxTokens: target });
+    if (!changed) return false;
+    submission.originalModel ??= before;
+    submission.budget = target;
+    return true;
+  };
+
+  if (!runtimeOwnedMetadata) {
+    pi.registerTool({
+      name: 'begin_result_submission',
+      label: 'Close Implementer coding',
+      description: 'NONTERMINAL control action. End coding and research; the NEXT model request will have only submit_result({resultText}) and a dedicated output budget. Does not publish or verify.',
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        return { content: [{ type: 'text', text: 'Coding closed. Next request: submit_result({resultText}) with complete Markdown; no other tools.' }] };
+      },
+    });
+    pi.on('before_provider_request', (event, ctx) => {
+      if (submission.phase !== 'submission_pending' && submission.phase !== 'failed') return undefined;
+      const payload = event?.payload;
+      if (!payload) return undefined;
+      submission.providerRequest += 1;
+      if (submission.providerRequest > RESULT_SUBMISSION_MAX_REQUESTS) {
+        submission.phase = 'failed';
+        submission.providerEvidence = null;
+        submission.providerSurfaceVerified = false;
+        console.error('PI_IMPLEMENTER_SUBMISSION_FAILED ' + JSON.stringify({
+          code: 'result_submission_request_limit', checkpoint: { worktree_preserved: true },
+        }));
+        ctx?.abort?.();
+        return { ...payload, tools: [], tool_choice: 'none' };
+      }
+      const restricted = submission.phase === 'submission_pending'
+        ? restrictResultSubmissionPayload(payload)
+        : { ...payload, tools: [], tool_choice: 'none' };
+      submission.providerEvidence = resultProviderBudgetEvidence(payload, submission.budget);
+      submission.providerSurfaceVerified = restricted.tools.length === 1 &&
+        restricted.tool_choice === 'auto';
+      console.log(`PI_IMPLEMENTER_SUBMISSION_REQUEST ${JSON.stringify({
+        request: submission.providerRequest, phase: submission.phase,
+        budget: submission.budget, actualBudget: submission.providerEvidence.effective,
+        verified: submission.providerEvidence.verified, reason: submission.providerEvidence.reason,
+        tools: restricted.tools.map(tool => tool.function?.name ?? tool.name),
+        toolChoice: restricted.tool_choice,
+        schemaRequired: restricted.tools[0]?.function?.parameters?.required ??
+          restricted.tools[0]?.parameters?.required ?? [],
+      })}`);
+      return restricted;
+    });
+    pi.on('tool_call', event => {
+      if (event.toolName === 'begin_result_submission') {
+        if (submission.phase !== 'coding' || submission.control ||
+            Object.keys(event.input ?? {}).length) {
+          return { block: true, reason: 'begin_result_submission is single-use and takes no arguments.' };
+        }
+        submission.control = { kind: 'begin', id: event.toolCallId, executed: false };
+      } else if (submission.phase === 'coding' && submission.control?.kind === 'begin') {
+        return { block: true, reason: 'begin_result_submission must be the sole tool call in its completed provider response.' };
+      } else if (submission.phase === 'submission_pending') {
+        if (event.toolName !== 'submit_result') {
+          return { block: true, reason: 'Implementer submission phase forbids repository evidence and mutations.' };
+        }
+        if (submission.control) {
+          submission.control.kind = 'invalid';
+          return { block: true, reason: 'Only one submit_result tool call is allowed per submission request.' };
+        }
+        const text = event.input?.resultText;
+        const onlyResultText = event.input && typeof event.input === 'object' &&
+          !Array.isArray(event.input) && Object.keys(event.input).length === 1 &&
+          Object.hasOwn(event.input, 'resultText');
+        submission.control = onlyResultText && typeof text === 'string' && text.trim()
+          ? { kind: 'submit', id: event.toolCallId, executed: false }
+          : { kind: 'invalid', id: event.toolCallId, executed: false };
+      } else if (submission.phase === 'failed' || submission.phase === 'submitted') {
+        return { block: true, reason: 'Submission is closed; no further tools may execute.' };
+      } else if (event.toolName === 'submit_result' && !event.input?.already_satisfied && !event.input?.blocked_reason) {
+        return { block: true, reason: 'Changed work requires begin_result_submission() on an earlier completed tool turn.' };
+      }
+      return undefined;
+    });
+    pi.on('message_end', event => {
+      const msg = event?.message;
+      if (msg?.role !== 'assistant') return;
+      const reason = String(msg.stopReason ?? msg.stop_reason ?? '').toLowerCase();
+      const calls = Array.isArray(msg.content)
+        ? msg.content.filter(part => part?.type === 'toolCall').map(part => ({ id: part.id, name: part.name }))
+        : [];
+      const input = Number(msg.usage?.inputTokens ?? msg.usage?.input_tokens ?? msg.usage?.input);
+      if (Number.isFinite(input) && input >= 0) submission.lastInputTokens = input;
+      submission.lastAssistant = { reason, calls, providerError: Boolean(msg.errorMessage) };
+    });
+    pi.on('tool_execution_end', async event => {
+      if (submission.control && event.toolCallId === submission.control.id) {
+        submission.control.executed = !event.isError;
+        if (event.isError) submission.toolExecutionError = true;
+      }
+      // Restore the pre-submission model budget once the terminal executor has
+      // committed a result; terminal completion may skip the turn_end event.
+      if (submission.phase === 'submission_pending' && !event.isError &&
+          event.toolName === 'submit_result' && submission.control?.kind === 'submit' &&
+          submission.control?.executed) await restoreSubmissionBudget();
+    });
+    pi.on('tool_result', event => {
+      if (submission.phase === 'submission_pending' && event.toolName === 'submit_result' && event.isError &&
+          /output token limit|arguments may be truncated|unterminated|unexpected end of json/i.test(
+            (event.content ?? []).map(item => item.text ?? '').join(' '))) {
+        submission.truncatedToolArguments = true;
+      }
+    });
+    pi.on('turn_end', async (event, ctx) => {
+      const last = submission.lastAssistant;
+      const control = submission.control;
+      const complete = last?.reason === 'tooluse' && last.calls.length === 1 &&
+        last.calls[0].id === control?.id &&
+        last.calls[0].name === (control?.kind === 'begin' ? 'begin_result_submission' : 'submit_result');
+      if (submission.phase === 'coding') {
+        if (control?.kind !== 'begin') return;
+        submission.control = null;
+        if (!control.executed || !complete) return;
+        if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_TOKENS))) {
+          await submissionFailure('result_submission_budget_unavailable', '4096 token submission request unavailable', ctx);
+          return;
+        }
+        submission.phase = 'submission_pending';
+        resetSubmissionAttempt();
+        pi.setActiveTools?.(['submit_result']);
+        console.log(`PI_IMPLEMENTER_SUBMISSION_PHASE ${JSON.stringify({ phase: 'submission_pending', budget: submission.budget })}`);
+        await pi.sendUserMessage?.('CODING CLOSED. On this NEW request call only submit_result({resultText}) with your complete Markdown description. No repository tools or structured metadata.', { deliverAs: 'steer' });
+        return;
+      }
+      if (submission.phase !== 'submission_pending') return;
+      // A raw tool_calls delta or assistant prose is not execution. Keep the
+      // verified Pi toolUse + executor + durable adapter receipt contract intact.
+      if (control?.kind === 'submit' && control.executed && complete &&
+          submission.providerEvidence?.verified && submission.providerSurfaceVerified) {
+        submission.phase = 'submitted';
+        console.log(`PI_IMPLEMENTER_SUBMISSION_ACCEPTED ${JSON.stringify({
+          budget: submission.budget, providerBudgetVerified: true, toolExecuted: true,
+          stopReason: last?.reason,
+        })}`);
+        return;
+      }
+      const providerFailed = last?.providerError ||
+        ['error', 'abort', 'aborted', 'timeout', 'cancelled'].includes(last?.reason);
+      const failureKind = !submission.providerEvidence?.verified ? 'budget_unverified'
+        : !submission.providerSurfaceVerified ? 'surface_unverified'
+        : providerFailed ? 'provider_error'
+        : last?.reason === 'length' || submission.truncatedToolArguments ? 'truncated'
+        : !last?.calls?.length ? 'missing_tool_call'
+        : last?.reason !== 'tooluse' ? 'stop_reason_mismatch'
+        : submission.toolExecutionError ? 'tool_execution_failed'
+        : control?.kind !== 'submit' ? 'invalid_arguments_or_extra_tools'
+        : !control.executed ? 'tool_not_executed' : 'terminal_incomplete';
+      console.warn(`PI_IMPLEMENTER_SUBMISSION_OUTCOME ${JSON.stringify({
+        request: submission.providerRequest, outcome: failureKind,
+        stopReason: last?.reason ?? null, toolCalls: last?.calls?.length ?? 0,
+        terminalCalls: last?.calls?.filter(call => call.name === 'submit_result').length ?? 0,
+        admitted: control?.kind === 'submit', executed: control?.executed === true,
+        toolExecutionError: submission.toolExecutionError,
+        budgetVerified: submission.providerEvidence?.verified === true,
+        surfaceVerified: submission.providerSurfaceVerified,
+      })}`);
+      // The executor may already have committed a terminal result. A later
+      // malformed/incomplete turn must not request another submit_result, even
+      // if an extra blocked tool_call marked the earlier control as invalid.
+      // Never accept without complete verification; preserve work and abort.
+      if (control?.executed === true) {
+        await submissionFailure('result_submission_post_execution_incomplete',
+          'Terminal tool executed but the provider turn did not complete verification', ctx);
+        return;
+      }
+      if (!submission.providerEvidence?.verified) {
+        await submissionFailure('result_submission_budget_unverified', 'Actual provider output budget does not match submission phase', ctx);
+        return;
+      }
+      if (!submission.providerSurfaceVerified) {
+        await submissionFailure('result_submission_surface_unverified', 'Unknown provider tool or tool-choice format', ctx);
+        return;
+      }
+      if (providerFailed) {
+        await submissionFailure('result_submission_provider_error', 'Provider returned an error during terminal submission', ctx);
+        return;
+      }
+      const truncated = last?.reason === 'length' || submission.truncatedToolArguments;
+      if (truncated) {
+        if (submission.retryUsed) {
+          await submissionFailure('result_submission_retry_exhausted', 'Truncation retry was incomplete', ctx);
+          return;
+        }
+        submission.retryUsed = true;
+        if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_RETRY_TOKENS))) {
+          await submissionFailure('result_submission_context_exhausted', '8192 token retry unsupported or cannot fit', ctx);
+          return;
+        }
+      } else {
+        if (submission.correctionUsed) {
+          await submissionFailure('result_submission_correction_exhausted', 'No complete and valid submit_result tool call after correction', ctx);
+          return;
+        }
+        submission.correctionUsed = true;
+        if (!(await applySubmissionBudget(ctx, RESULT_SUBMISSION_TOKENS))) {
+          await submissionFailure('result_submission_budget_unavailable', '4096 token correction request unavailable', ctx);
+          return;
+        }
+      }
+      resetSubmissionAttempt();
+      pi.setActiveTools?.(['submit_result']);
+      console.log(`PI_IMPLEMENTER_SUBMISSION_RETRY ${JSON.stringify({
+        mode: truncated ? 'truncation' : 'correction', budget: submission.budget,
+        correctionUsed: submission.correctionUsed, truncationUsed: submission.retryUsed,
+        requestLimit: RESULT_SUBMISSION_MAX_REQUESTS,
+      })}`);
+      const steer = truncated
+        ? 'TRUNCATED SUBMISSION: Call ONLY submit_result({resultText:"FULL Markdown result"}) once, with complete arguments. No prose response, repository inspection, or mutation.'
+        : 'FORMAT CORRECTION ONLY: Your last submission was not a complete valid tool call. You MUST call ONLY submit_result({resultText:"COMPLETE Markdown implementation description"}) with one nonblank string argument. Do not reply in prose or inspect/mutate the repository.';
+      await pi.sendUserMessage?.(steer, { deliverAs: 'steer' });
+    });
+  }
+
   registerTerminalTool(pi, {
     label: 'Sync and submit implementation candidate',
-    description: 'TERMINAL ACTION. Preserve current implementation changes, merge latest dev into them without resetting/checking them out, and record the implementation candidate. The outer stage harness runs authoritative final product validation after this agent exits and will start a focused repair attempt with exact diagnostics if validation fails. For restored or harness validation-repair work call submit_result with {} immediately. For fresh already-satisfied work call submit_result with {already_satisfied:true, changes:[]}. If authoritative current-code evidence proves explicit issue requirements or constraints are mutually incompatible so no compliant mutation exists, call submit_result with {blocked_reason:"..."} from a clean worktree. Fresh changed work must include title, summary, changes, files, security_notes, and limitations on the first call. The runtime validates that complete publication contract before integrating latest dev and returns code=missing_publication_fields with every missing field. `changes` is human-readable; `files` is the exact repository-relative changed-file set.',
+    description: 'TERMINAL ACTION. For fresh changed work, ONLY after begin_result_submission call submit_result({resultText}) with complete Markdown on the next provider request. Do not provide title, paths, arrays, security claims or validation claims as metadata. For authoritative already-satisfied work use {already_satisfied:true}; for proven contradictory requirements use {blocked_reason:"..."} from a clean worktree. Restored and validation-repair work use {} immediately. The runtime derives Git changes and PR metadata, integrates latest dev and independently validates after termination.',
     parameters: submitResultParameters(),
     customType: 'implementer-result',
-    nudgeText: 'ACTION REQUIRED. The next response must call a productive tool; do not answer with prose-only reasoning. If submit_result just reported missing publication fields, retry submit_result immediately with exactly those fields; do not call evidence or exploration tools. For restored or harness validation-repair work call submit_result({}) now. For fresh work call structural_edit/safe_edit/edit/write now when a change is required, submit_result({already_satisfied:true, changes:[]}) when latest dev already contains the exact requested end state, or submit_result({blocked_reason:"..."}) when authoritative current-code evidence proves explicit written requirements or constraints are mutually incompatible. If exactly one concrete missing fact blocks safe action before submission, call need_more_evidence once, gather exactly one fact, then act.',
+    nudgeText: () => implementerActionNudge(pi.getActiveTools?.() ?? [], { restored, validationRepair }),
     nudgeRepeatWhile: () => process.env.PI_PRODUCTIVE_STATE === 'action_required',
     nudgeMaxCount: 3,
     successText: 'SUCCESS. Latest dev is integrated and the implementation candidate is recorded. The harness will run authoritative final checks. Stop now.',
-    execute: async (params) => {
+    execute: async (params, { toolCallId } = {}) => {
       const alreadySatisfied = params.already_satisfied === true;
+      if (!runtimeOwnedMetadata && !alreadySatisfied && !clean(params.blocked_reason)) {
+        const last = submission.lastAssistant;
+        const admitted = submission.phase === 'submission_pending' &&
+          submission.providerEvidence?.verified === true &&
+          submission.providerSurfaceVerified === true &&
+          submission.providerRequest <= RESULT_SUBMISSION_MAX_REQUESTS &&
+          params && typeof params === 'object' && !Array.isArray(params) &&
+          Object.keys(params).length === 1 && Object.hasOwn(params, 'resultText') &&
+          submission.control?.kind === 'submit' && submission.control.id === toolCallId &&
+          last?.reason === 'tooluse' && last.calls.length === 1 &&
+          last.calls[0].name === 'submit_result' && last.calls[0].id === toolCallId &&
+          clean(params.resultText);
+        if (!admitted) {
+          throw new Error(JSON.stringify({ code: 'result_submission_not_complete',
+            phase: submission.phase, provider_budget_verified: submission.providerEvidence?.verified ?? false }));
+        }
+      }
       const blockedReason = clean(params.blocked_reason);
       if (runtimeOwnedMetadata && alreadySatisfied) {
         throw new Error('Restored or validation-repair work cannot use already_satisfied');
@@ -153,15 +580,35 @@ export default function (pi) {
         return { data, text: 'BLOCKED. Human clarification is required before implementation can continue. Stop now.' };
       }
 
-      const freshChangedMetadata = !runtimeOwnedMetadata && !alreadySatisfied
-        ? validateFreshChangedSubmission(params)
-        : null;
+      assertPreparedOutputsForChangedCodingSubmission({
+        alreadySatisfied,
+        blockedReason,
+        runtimeOwnedMetadata,
+      });
+
+      const freshResultText = !runtimeOwnedMetadata && !alreadySatisfied ? params.resultText : null;
+      let knownChangedBeforeIntegration = null;
+      if (!alreadySatisfied) {
+        knownChangedBeforeIntegration = changedPathsAgainstBase();
+        assertCodingBehavioralValidation({
+          changedFiles: knownChangedBeforeIntegration,
+          env: process.env,
+          cwd: process.cwd(),
+        });
+      }
 
       integrateLatestDev({
         conflictMessage: files => `Latest dev conflicts with the implementation. Resolve these files and retry submit_result: ${files.join(', ')}`,
       });
       const changedPaths = changedPathsAgainstBase();
       const hasDiff = changedPaths.length > 0;
+      const acceptedScope = mutationScopeReceipt(process.cwd(), process.env);
+      const publicationFiles = hasDiff
+        ? assertRuntimePublicationFiles(changedPaths, acceptedScope)
+        : [];
+      if (runtimeOwnedMetadata && !hasDiff && !trustedRestoredNoDiffProof(knownChangedBeforeIntegration)) {
+        throw new Error('Restored or validation-repair no-diff result lacks trusted replay proof; cannot infer already_satisfied from an empty diff');
+      }
       let data;
 
       if (runtimeOwnedMetadata) {
@@ -172,8 +619,8 @@ export default function (pi) {
           ? {
               title: clean(context.title),
               summary: `${summaryPrefix}${issue ? ` for issue #${issue}` : ''} was prepared against latest dev.`,
-              changes: changedPaths,
-              files: changedPaths,
+              changes: publicationFiles,
+              files: publicationFiles,
               already_satisfied: false,
               security_notes: 'No additional security notes were supplied for restored work.',
               limitations: 'No additional limitations were supplied for restored work.',
@@ -203,7 +650,8 @@ export default function (pi) {
         };
       } else {
         data = {
-          ...freshChangedMetadata,
+          ...runtimeChangedMetadata(freshResultText, publicationFiles),
+          files: publicationFiles,
           already_satisfied: false,
         };
       }
@@ -214,12 +662,12 @@ export default function (pi) {
       if (data.already_satisfied && data.files.length) throw new Error('already_satisfied requires files: []');
       // Shared invariant for runtime-owned restored/validation-repair results too.
       if (!data.already_satisfied && !data.changes.length) throw new Error('at least one concrete change is required');
-      if (!data.already_satisfied && !data.files.length) throw new Error('at least one declared file is required');
-      if (!runtimeOwnedMetadata && !data.already_satisfied) {
-        assertImplementerFileSet(changedPaths, data.files);
-      }
-
-      data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, data);
+      if (!data.already_satisfied && !data.files.length) throw new Error('at least one changed file is required');
+      data = writeImplementerResult(process.env.PI_IMPLEMENTER_RESULT_FILE, {
+        ...data,
+        scope_enforcement: 'predeclared',
+        accepted_scope: acceptedScope,
+      });
       return { data };
     },
   });

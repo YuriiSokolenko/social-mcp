@@ -1,24 +1,49 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const clean = value => typeof value === 'string' ? value.trim() : '';
 
-function normalizeFiles(value) {
+function invalidResultPath(file, reason) {
+  const error = new Error(`INVALID_RESULT_PATH: ${reason}: ${String(file)}`);
+  error.code = 'INVALID_RESULT_PATH';
+  error.path = file;
+  return error;
+}
+
+export function normalizeImplementerFiles(value) {
   if (!Array.isArray(value)) return [];
   const files = [...value];
   for (const file of files) {
     if (typeof file !== 'string' || !file.length) {
-      throw new Error('Implementer result files must be non-empty strings');
+      throw invalidResultPath(file, 'Implementer result files must be non-empty strings');
     }
-    if (file.startsWith('/') || file.startsWith('./') || file.split('/').includes('..')) {
-      throw new Error(`Implementer result files must be exact repository-relative git paths: ${file}`);
+    if (/^[A-Za-z]:[\\/]/.test(file) || file.startsWith('\\\\')) {
+      throw invalidResultPath(file, 'Windows absolute paths are not repository-relative git paths');
+    }
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(file)) {
+      throw invalidResultPath(file, 'URI-like paths are not repository-relative git paths');
+    }
+    if (file.startsWith('/') || file.startsWith('./')) {
+      throw invalidResultPath(file, 'Implementer result files must use repository-relative git paths');
+    }
+    const segments = file.split('/');
+    if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
+      throw invalidResultPath(file, 'Implementer result files cannot contain empty, dot, or parent traversal segments');
     }
   }
   return [...new Set(files)].sort();
 }
 
+export function assertNoScratchArtifacts(files) {
+  const scratch = files.filter(file => /(^|\/)(?:\.probe(?:\d+)?\.txt|\.pi-tmp-[^/]+)$/.test(file));
+  if (scratch.length) throw new Error(`Runtime scratch artifacts cannot be submitted: ${scratch.join(', ')}. Use recover_worktree to remove or revert them.`);
+}
+
 export function assertImplementerFileSet(actualFiles, declaredFiles) {
-  const actual = normalizeFiles(actualFiles);
-  const declared = normalizeFiles(declaredFiles);
+  assertNoScratchArtifacts(actualFiles);
+  const actual = normalizeImplementerFiles(actualFiles);
+  const declared = normalizeImplementerFiles(declaredFiles);
   const actualSet = new Set(actual);
   const declaredSet = new Set(declared);
   const unexpected = actual.filter(file => !declaredSet.has(file));
@@ -46,7 +71,8 @@ export function normalizeImplementerResult(input) {
   const changes = Array.isArray(input.changes)
     ? input.changes.map(clean).filter(Boolean)
     : [];
-  const files = normalizeFiles(input.files);
+  const files = normalizeImplementerFiles(input.files);
+  assertNoScratchArtifacts(files);
   const blockedReason = clean(input.blocked_reason);
   const inferredOutcome = input.blocked === true
     ? IMPLEMENTER_OUTCOMES.blocked
@@ -92,7 +118,23 @@ export function normalizeImplementerResult(input) {
 export function writeImplementerResult(target, input) {
   if (!target) throw new Error('PI_IMPLEMENTER_RESULT_FILE is not configured');
   const data = normalizeImplementerResult(input);
-  fs.writeFileSync(target, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  // The terminal receipt is the atomic commit point for publication. Publish
+  // complete, flushed metadata first so a crash cannot expose torn JSON under
+  // the path whose exact bytes will subsequently be hashed into the receipt.
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(data, null, 2) + '\n', 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
   return data;
 }
 

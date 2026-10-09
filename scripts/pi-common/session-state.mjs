@@ -1,10 +1,9 @@
 // Runtime-owned record of completed one-shot control transitions (LSP startup, subagent
-// enablement, preparation). The runtime knows these deterministically, so it materializes them
+// enablement). The runtime knows these deterministically, so it materializes them
 // into model-visible context and the active tool surface instead of trusting model memory.
 
 export const SUBAGENTS_ENABLE_TOOL = 'subagents_enable';
 export const LSP_START_TOOL = 'lsp_start_server';
-export const PREPARATION_KEY = 'preparation';
 
 export function mergeNewlyActiveTools(baseline, current) {
   const known = new Set(baseline);
@@ -21,9 +20,423 @@ export function activeToolGuidance(activeToolNames) {
     : 'CURRENTLY EXPOSED TOOLS (authoritative): none. Do not invent a tool call.';
 }
 
+export function providerToolNames(payload) {
+  if (!Array.isArray(payload?.tools)) return [];
+  return [...new Set(payload.tools
+    .map(tool => tool?.function?.name ?? tool?.name)
+    .filter(name => typeof name === 'string' && name.length > 0))];
+}
+
+/**
+ * Produce phase facts for the outbound Implementer snapshot from trusted
+ * controller/runtime state. A resumed checkpoint never grants a general repair
+ * window: only a concrete, separately selected terminalRecoveryRequiredTool
+ * can override its terminal-only routing. The coding child owns its own repair
+ * gate and must retain its isolated-session instructions.
+ */
+export function implementerRequestPhaseSnapshot({
+  codingSession = false,
+  preparationState = null,
+  resumed = false,
+  validationRepair = false,
+  codingRepair = false,
+  verificationState = null,
+  terminalRecoveryRequiredTool = null,
+} = {}) {
+  const coding = codingSession === true;
+  const restored = resumed === true;
+  const validation = validationRepair === true;
+  return {
+    mode: coding ? 'coding' : 'main',
+    preparationState,
+    resumed: restored,
+    validationRepair: validation,
+    codingRepair: coding && codingRepair === true,
+    repairAuthorized: !coding && !restored && validation,
+    verificationState,
+    terminalRecoveryRequiredTool,
+  };
+}
+
+/**
+ * Request-local routing, never a second capability registry. Keep instructions
+ * small: the registered descriptions and JSON schemas remain the canonical
+ * explanation of each tool's arguments. Every named callable tool below must
+ * exist in the final serialized provider request, including Pi builtins and
+ * extension/MCP functions.
+ */
+export function requestLocalToolUseGuidance(snapshot, serializedToolNames) {
+  const names = [...new Set(Array.isArray(serializedToolNames) ? serializedToolNames : [])];
+  const exposed = new Set(names);
+  const has = name => exposed.has(name);
+  const hints = [];
+  const mode = snapshot?.mode === 'coding' ? 'coding' : 'main';
+  const state = snapshot?.productiveState;
+  const preparation = snapshot?.preparationState;
+  const resumed = snapshot?.resumed === true;
+  const validationRepair = snapshot?.validationRepair === true;
+  // Runtime authorization alone is not a capability grant: every routing hint
+  // must also match a tool in this exact serialized provider request.
+  const authorizedRepair = mode === 'main' && !resumed && validationRepair &&
+    snapshot?.repairAuthorized === true;
+  const terminalOnly = names.length === 1 && has('submit_result');
+  const append = (name, guidance) => { if (has(name)) hints.push(guidance); };
+
+  // Exact recovery wins over restored/validation-repair submission. Never
+  // advertise a fallback when the required tool is missing or deferred.
+  const requiredRecovery = snapshot?.terminalRecoveryRequiredTool;
+  if (typeof requiredRecovery === 'string' && requiredRecovery.length > 0) {
+    if (has(requiredRecovery)) {
+      hints.push('Terminal recovery: use ' + requiredRecovery + ' only for the current exact obligation; do not edit, inspect, or submit through another route.');
+    } else {
+      hints.push('Terminal recovery remains required, but its exact tool is unavailable in this request. Preserve the worktree; no other action or terminal tool is an alternative.');
+    }
+    return hints.join(' ');
+  }
+
+  // A dedicated submit_result-only request is terminal even in a validation
+  // repair attempt. Do not suggest an edit when no repair tool is serialized.
+  if ((resumed || validationRepair) && (terminalOnly || (mode === 'main' && !authorizedRepair))) {
+    append('submit_result', 'Restored/validation-repair terminal-only state: call submit_result with no arguments immediately. Do not inspect, edit, or validate before submission.');
+    if (!has('submit_result')) {
+      hints.push('Restored/validation-repair terminal-only state: the terminal action submit_result is unavailable in this request. Preserve the worktree; do not invent a call or restart fresh work.');
+    }
+    return hints.join(' ');
+  }
+
+  if (authorizedRepair) {
+    hints.push('Trusted targeted repair: address only the current concrete integration or validation diagnostic. This is not fresh work or broad discovery.');
+    if (has('read')) {
+      hints.push('Targeted repair evidence: read only a runtime-authorized failing or changed path; do not browse the repository.');
+    }
+    const edits = names.filter(name => ['structural_edit', 'safe_edit', 'edit', 'write'].includes(name));
+    if (edits.length) {
+      hints.push('Targeted mutation tools available: ' + edits.join(', ') + '. Fix only the diagnosed issue within accepted mutation scope.');
+    }
+    append('accept_mutation_scope', 'accept_mutation_scope may record only the specifically authorized repair path; it does not widen the task.');
+    append('retry_last_failed_check', 'Use retry_last_failed_check only for the exact recorded unresolved failure after its targeted fix.');
+    append('run_check', 'Use run_check only for permitted focused verification of the targeted diagnostic, not broad tests.');
+    const recovery = names.filter(name => ['rollback_last_mutation', 'undo_mutation', 'recover_worktree'].includes(name));
+    if (recovery.length) {
+      hints.push('Targeted recovery tools available: ' + recovery.join(', ') + '; use only for the concrete failed mutation or worktree obligation.');
+    }
+    append('submit_result', 'After completing the authorized targeted repair, call submit_result with no arguments; do not restart planning or broad inspection.');
+    if (!has('submit_result') && (resumed || validationRepair)) {
+      hints.push('The terminal action submit_result is unavailable in this request; do not invent a terminal call.');
+    }
+    return hints.join(' ');
+  }
+
+  if (has('begin_result_submission')) {
+    hints.push('Changed work: finish the necessary changes and focused checks, then call begin_result_submission. The next provider request carries the dedicated terminal submission; do not combine the two requests.');
+  } else if (terminalOnly) {
+    hints.push('Terminal-only request: call submit_result with the resultText required for completed changed work, or the exact small outcome required by trusted recovery state. Do not inspect or mutate.');
+  }
+
+  if (!terminalOnly) {
+    if (mode === 'coding') {
+      hints.push('Isolated coding session: the parent tool inventory and navigation policy are not executable here. Work from the runtime-provided issue, prepared implementation (if available), worktree state, and any explicit parent execution delta; make a permitted change or resolve one concrete blocker.');
+    } else if (preparation === 'PREPARED') {
+      hints.push('Prepared fresh Main: execute the supplied plan against current worktree facts; direct repository inspection does not require an evidence-unlock transition.');
+    } else if (preparation === 'PREPARATION_FALLBACK') {
+      hints.push('Preparation fallback: no completed Planner handoff; follow the current runtime evidence permits before committing to a change.');
+    }
+    if (state === 'evidence_allowed') {
+      hints.push('Evidence phase: answer the one outstanding question with a currently exposed inspection tool; do not treat this permit as a permanent tool grant.');
+    } else if (state === 'action_required') {
+      hints.push('Action-required phase: choose one exposed productive action without a prose-only investigation turn.');
+    }
+    const inspection = names.filter(name =>
+      ['read', 'repo_search', 'indexed_repo_search', 'bash'].includes(name));
+    if (inspection.length) {
+      const descriptions = {
+        read: 'known-path source text',
+        repo_search: 'authoritative current-worktree text search',
+        indexed_repo_search: 'fast indexed literal/path discovery',
+        bash: 'bounded task-specific shell work (not a permission bypass)',
+      };
+      hints.push(`Direct inspection: ${inspection.map(name => `${name} for ${descriptions[name]}`).join('; ')}. Inspect exact target text before an anchored edit when needed.`);
+    }
+    append('lsp_start_server', 'For an uninitialized named-symbol semantic lookup, lsp_start_server is a one-shot setup using the configured server and exact workspace root; do not repeat a completed startup.');
+    append('lsp_find_symbol', 'Use lsp_find_symbol for a named source symbol when semantic lookup is more useful than literal search.');
+    const orbit = names.filter(name => /^(?:orbit_|mcp__.*orbit)/i.test(name));
+    if (orbit.length) hints.push(`For structural/dependency questions that need indexing, use an appropriate exposed tool among: ${orbit.join(', ')}; confirm source text before mutation.`);
+    append('need_more_evidence', 'If exactly one concrete fact blocks a safe action, need_more_evidence requests that fact; it is not required before already-exposed direct inspection.');
+    append('subagents_enable', 'subagents_enable is a one-shot transition only if bounded delegated evidence is necessary; use the next request surface after it succeeds.');
+    append('begin_coding_session', preparation === 'PREPARATION_FALLBACK'
+      ? 'Use begin_coding_session for larger mutations. No Planner planText is available: pass a short handoff with essential repository findings or decisions learned during Main exploration that are missing from the issue and runtime state. Do not copy raw evidence, code drafts, or the transcript.'
+      : 'Use begin_coding_session for larger mutations. For prepared work, omit handoff by default: runtime already supplies the issue, plan, and worktree state. Add only a brief new post-planning execution delta; never copy the parent transcript.');
+    const edits = names.filter(name => ['structural_edit', 'safe_edit', 'edit', 'write'].includes(name));
+    if (edits.length) {
+      hints.push(`Mutation tools available: ${edits.join(', ')}. Prefer an exact structural or bounded edit when appropriate; a successful returned preview is enough to continue.`);
+    }
+    append('accept_mutation_scope', 'Before a new publishable path is mutated, accept_mutation_scope must record that task-specific path and rationale.');
+    append('retry_last_failed_check', 'Use retry_last_failed_check after fixing the exact unresolved check failure, for the same recorded verification scope rather than inventing a broader check.');
+    append('run_check', 'Use focused run_check only for the currently permitted changed state; an infrastructure error does not authorize a shell workaround.');
+    const recovery = names.filter(name => ['rollback_last_mutation', 'undo_mutation', 'recover_worktree'].includes(name));
+    if (recovery.length) hints.push(`Recovery tools available: ${recovery.join(', ')}; select one only for its documented exact state, not speculative cleanup.`);
+  }
+  return hints.join(' ');
+}
+
+/**
+ * Terminal recovery is a strict single-tool obligation, not a preference.
+ * If the exact executor is missing/deferred, the outbound tool surface is
+ * empty rather than offering otherwise-active edit/inspection/terminal tools.
+ * The caller supplies the same canonicalizer used by the controller gate.
+ */
+export function constrainTerminalRecoveryTools(tools, requiredTool, canonicalize = name => name) {
+  if (!requiredTool) return tools;
+  if (!Array.isArray(tools)) return [];
+  return tools.filter(tool => {
+    const name = tool?.function?.name ?? tool?.name;
+    return typeof name === 'string' && canonicalize(name) === requiredTool;
+  });
+}
+
+/**
+ * Pi's serialized tool definitions have already been captured from the executor registry.
+ * Intersect those definitions with the current phase's exposed tools; getAllTools() may
+ * report a narrower inventory in delegated coding sessions and must not veto a definition.
+ * Never inject a newly active tool into an already assembled provider request.
+ */
+export function reconcileProviderToolSurface(payload, { activeTools = [] } = {}) {
+  if (!Array.isArray(payload?.tools)) return { payload };
+  const active = new Set(activeTools);
+  const tools = payload.tools.filter(tool => {
+    const name = tool?.function?.name ?? tool?.name;
+    return typeof name === 'string' && active.has(name);
+  });
+  return {
+    payload: tools.length === payload.tools.length && tools.every((tool, i) => tool === payload.tools[i])
+      ? payload
+      : { ...payload, tools },
+  };
+}
+
+/**
+ * Keep the request-local capability guidance in ONE stable carrier: the final
+ * serialized tool definition. Switching between message text and tool schema
+ * changes a much earlier llama.cpp prompt prefix on tool-result turns.
+ * An empty tool list has no schema carrier; fall back to an existing safe text
+ * message without adding a chat role. Never modify tool results or linked
+ * assistant calls. The dispatch gate remains authoritative either way.
+ */
+function replaceCapabilityTextSuffix(text, suffix) {
+  const start = text.lastIndexOf(CAPABILITY_CONTRACT_START);
+  const original = start >= 0 && text.endsWith(CAPABILITY_CONTRACT_END)
+    ? text.slice(0, start)
+    : text;
+  return original + CAPABILITY_CONTRACT_START + suffix + CAPABILITY_CONTRACT_END;
+}
+
+function appendCapabilitySuffix(message, suffix, { responses = false } = {}) {
+  if (!message || typeof message !== 'object') return null;
+  if (responses && message.type === 'function_call_output') return null;
+  if (responses && message.type !== 'message') return null;
+  if (message.role !== 'user' && message.role !== 'assistant') return null;
+  // An assistant message can contain both text and tool_calls. Neither that
+  // text nor its arguments are a safe instruction carrier while tool linkage
+  // is pending. Fall back to an existing provider tool description instead.
+  if (message.role === 'assistant' &&
+      (message.tool_calls != null || message.function_call != null || message.tool_call_id != null)) return null;
+  // Do not invent content on tool-call linkage or replace multimodal parts.
+  if (typeof message.content === 'string') {
+    const content = replaceCapabilityTextSuffix(message.content, suffix);
+    return content === message.content ? message : { ...message, content };
+  }
+  if (!Array.isArray(message.content)) return null;
+  const parts = message.content;
+  const last = parts[parts.length - 1];
+  const allowedTypes = responses ? ['input_text', 'output_text'] : ['text', 'input_text'];
+  if (!last || !allowedTypes.includes(last.type) || typeof last.text !== 'string') return null;
+  const text = replaceCapabilityTextSuffix(last.text, suffix);
+  return text === last.text ? message
+    : { ...message, content: [...parts.slice(0, -1), { ...last, text }] };
+}
+
+const CAPABILITY_CONTRACT_START = '\n\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_START]\n';
+const CAPABILITY_CONTRACT_END = '\n[RUNTIME_PROVIDER_CAPABILITY_CONTRACT_END]';
+
+function appendToolDescriptionGuidance(payload, instructions) {
+  const definitions = payload.tools;
+  if (!Array.isArray(definitions) || definitions.length === 0) return payload;
+  // Tool definitions are already reconciled against the active phase. Keep
+  // the rest of the schema array intact for llama.cpp prefix-cache reuse.
+  const index = definitions.findLastIndex(tool => {
+    const definition = tool?.function ?? tool;
+    return typeof definition?.name === 'string' && definition.name.length > 0;
+  });
+  if (index < 0) return payload;
+  const current = definitions[index];
+  const nested = current.function && typeof current.function === 'object';
+  const definition = nested ? current.function : current;
+  const description = typeof definition.description === 'string' ? definition.description : '';
+  const start = description.lastIndexOf(CAPABILITY_CONTRACT_START);
+  const original = start >= 0 && description.endsWith(CAPABILITY_CONTRACT_END)
+    ? description.slice(0, start)
+    : description;
+  const next = original + CAPABILITY_CONTRACT_START + instructions + CAPABILITY_CONTRACT_END;
+  if (description === next) return payload; // repeated provider hook: no double append
+  const patchedDefinition = { ...definition, description: next };
+  const patchedTool = nested ? { ...current, function: patchedDefinition } : patchedDefinition;
+  return { ...payload, tools: [...definitions.slice(0, index), patchedTool, ...definitions.slice(index + 1)] };
+}
+
+// Pi assembles its system <tools> catalog before the final provider-request
+// filters run. Keeping that catalog can advertise read (or another hidden tool)
+// after the wire schema has removed it. Both system and developer roles
+// can carry this generated catalog, depending on the Pi/provider adapter.
+// Neutralize ONLY the generated catalog,
+// leaving the rest of the stable system prompt, trusted role contracts and
+// tool-call/result transcript unchanged. Request-local routing lives in the
+// final provider tool description (or the zero-tool safe-text carrier).
+const STATIC_TOOL_CATALOG_PATTERN = /<tools(?:\s[^>]*)?>[\s\S]*?<\/tools>/g;
+const NEUTRAL_TOOL_CATALOG = '<tools>\nExecutable tools and their arguments are defined only by this provider request\'s tool schemas. Earlier inventories are not permissions.\n</tools>';
+const BUILTIN_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
+
+export function neutralizeStaleProviderToolCatalog(payload, { candidateNames = [] } = {}) {
+  if (!payload || typeof payload !== 'object') {
+    return { payload, neutralized: 0, mentionedNames: [] };
+  }
+  const candidates = [...new Set([...BUILTIN_TOOL_NAMES, ...candidateNames])]
+    .filter(name => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  const mentioned = new Set();
+  let neutralized = 0;
+  const sanitize = value => {
+    if (typeof value !== 'string' || !value.includes('<tools')) return value;
+    return value.replace(STATIC_TOOL_CATALOG_PATTERN, catalog => {
+      if (catalog === NEUTRAL_TOOL_CATALOG) return catalog;
+      neutralized++;
+      for (const name of candidates) {
+        if (new RegExp('(?:^|[^A-Za-z0-9_])' + name + '(?![A-Za-z0-9_])').test(catalog)) {
+          mentioned.add(name);
+        }
+      }
+      return NEUTRAL_TOOL_CATALOG;
+    });
+  };
+  const sanitizeMessage = message => {
+    if (message?.role !== 'system' && message?.role !== 'developer') return message;
+    if (typeof message.content === 'string') {
+      const content = sanitize(message.content);
+      return content === message.content ? message : { ...message, content };
+    }
+    if (!Array.isArray(message.content)) return message;
+    const content = message.content.map(part => {
+      if (!part || !['text', 'input_text'].includes(part.type) || typeof part.text !== 'string') return part;
+      const next = sanitize(part.text);
+      return next === part.text ? part : { ...part, text: next };
+    });
+    return content.every((part, index) => part === message.content[index])
+      ? message : { ...message, content };
+  };
+  let result = payload;
+  for (const key of ['messages', 'input']) {
+    if (!Array.isArray(result[key])) continue;
+    const messages = result[key].map(sanitizeMessage);
+    if (messages.some((message, index) => message !== result[key][index])) {
+      result = { ...result, [key]: messages };
+    }
+  }
+  if (typeof result.instructions === 'string') {
+    const instructions = sanitize(result.instructions);
+    if (instructions !== result.instructions) result = { ...result, instructions };
+  }
+  return { payload: result, neutralized, mentionedNames: [...mentioned] };
+}
+
+export function withProviderCapabilityInstructions(payload, snapshot, { trustedRuntimeEnvelope = false, onMissingCarrier = null, onCatalogAudit = null } = {}) {
+  if (!payload || !snapshot || !trustedRuntimeEnvelope) return payload;
+  const hasMessages = Array.isArray(payload.messages);
+  const hasInput = Array.isArray(payload.input);
+  if (hasMessages === hasInput) return payload; // unknown or ambiguous provider envelope
+  // Trust comes from the installed Implementer runtime, not tool-result contents.
+  // This also survives compaction that removes the original role overlay.
+  const key = hasMessages ? 'messages' : 'input';
+  if (payload[key].length === 0) return payload; // no real conversation envelope to update
+  const catalog = neutralizeStaleProviderToolCatalog(payload, {
+    candidateNames: [...(snapshot.liveActiveTools ?? []), ...(snapshot.deferredTools ?? []), ...providerToolNames(payload)],
+  });
+  payload = catalog.payload;
+  const schemaNames = providerToolNames(payload);
+  onCatalogAudit?.({
+    schemaNames,
+    guidanceNames: [...schemaNames],
+    neutralizedCatalogCount: catalog.neutralized,
+    staleStaticMentions: catalog.mentionedNames.filter(name => !schemaNames.includes(name)),
+  });
+  const history = payload[key];
+  // Never use snapshot.activeTools or a historical prompt as a source for
+  // callable names. Derive both inventory and routing from the *final* payload.
+  const executableTools = schemaNames;
+  const explainDeferred = snapshot.explainDeferred === true;
+  const deferred = explainDeferred
+    ? (snapshot.deferredTools ?? []).filter(name => !executableTools.includes(name))
+    : [];
+  const instructions = [
+    'RUNTIME EXECUTABLE TOOL CONTRACT (this provider request only):',
+    activeToolGuidance(executableTools),
+    'Earlier tool names in system contracts, task handoffs, or conversation history do not grant execution.',
+    requestLocalToolUseGuidance(snapshot, executableTools),
+    ...(deferred.length
+      ? [`DEFERRED / NOT EXECUTABLE IN THIS REQUEST: ${deferred.join(', ')}. Do not call these now; only a subsequent provider request that actually lists a tool can enable its use.`]
+      : []),
+    snapshot.terminalRecoveryRequiredTool
+      ? 'Exact terminal-recovery obligations forbid alternative actions, including when the required tool is deferred. Preserve the worktree if it is unavailable.'
+      : 'If a required capability is absent, use an exposed transition to a later request, or preserve the worktree and report the blocker. Never invent a tool or use unrestricted bash as a substitute.',
+  ].filter(Boolean).join(' ');
+  if (Array.isArray(payload.tools) && payload.tools.length > 0) {
+    // Always prefer the same tool-description carrier on every tool-bearing
+    // request, regardless of whether the final turn is user, assistant or tool.
+    const updated = appendToolDescriptionGuidance(payload, instructions);
+    if (updated === payload && providerToolNames(payload).length === 0) {
+      onMissingCarrier?.('no_serialized_tool_definition');
+    }
+    return updated;
+  }
+  const index = history.length - 1;
+  const patchedLast = appendCapabilitySuffix(history[index], instructions, { responses: hasInput });
+  if (!patchedLast) {
+    onMissingCarrier?.('no_safe_text_or_tool_carrier');
+    return payload;
+  }
+  if (patchedLast === history[index]) return payload; // repeat hook is an identity-preserving no-op
+  return { ...payload, [key]: [...history.slice(0, index), patchedLast] };
+}
+
+/**
+ * Classifies pi's `Tool X not found` result against the authoritative provider-request snapshot.
+ * pi resolves tool calls against the turn context captured with the request, so:
+ * - a tool the request advertised but pi cannot execute is a real tool-contract failure;
+ * - a tool deliberately hidden by a fresh Main profile requires explicit capability escalation;
+ * - a tool activated after assembly (deferred) is a lifecycle mismatch: pi may expose it next request;
+ * - any other tool was never offered to the model and is an ordinary unavailable-tool attempt.
+ * Without a snapshot nothing proves the tool was not advertised, so it stays a contract failure.
+ */
+export function classifyMissingExecutor(toolName, snapshot) {
+  if (!snapshot || snapshot.executableTools?.includes(toolName)) return 'contract_failure';
+  if (snapshot.profileHiddenTools?.includes(toolName)) return 'profile_hidden';
+  if (snapshot.deferredTools?.includes(toolName)) return 'deferred';
+  return 'unavailable';
+}
+
+// Check a decoded provider tool name only against the final request-local wire inventory.
+// A host-active or historically known tool is never promoted into that request.
+export function classifyProviderReturnedTool(toolName, snapshot, { activeTools = [], knownTools = [] } = {}) {
+  if (!snapshot || !Array.isArray(snapshot.executableTools)) return 'missing_request_snapshot';
+  if (snapshot.executableTools.includes(toolName)) return 'allowed';
+  if (snapshot.deferredTools?.includes(toolName) || activeTools.includes(toolName)) return 'deferred';
+  if (knownTools.includes(toolName)) return 'known_disabled';
+  return 'unknown';
+}
+
+export function capabilitySnapshotGuidance(activeToolNames) {
+  return `${activeToolGuidance(activeToolNames)} This capability snapshot is authoritative for this provider request. Tool names mentioned in earlier history or static contracts but absent from this list are not directly callable now; use only an exposed runtime transition to make another capability available.`;
+}
+
 export class SessionTransitions {
-  constructor({ preparationTool = null } = {}) {
-    this.preparationTool = preparationTool;
+  constructor() {
     this.completed = new Map();
   }
 
@@ -36,7 +449,6 @@ export class SessionTransitions {
       if (!serverId || !root) return null;
       return `${LSP_START_TOOL}:${serverId}:${root}`;
     }
-    if (this.preparationTool && toolName === this.preparationTool) return PREPARATION_KEY;
     return null;
   }
 
@@ -56,15 +468,13 @@ export class SessionTransitions {
   satisfiedToolNames() {
     const names = new Set();
     if (this.completed.has(SUBAGENTS_ENABLE_TOOL)) names.add(SUBAGENTS_ENABLE_TOOL);
-    if (this.preparationTool && this.completed.has(PREPARATION_KEY)) names.add(this.preparationTool);
     return names;
   }
 
   lines() {
     const lines = [];
     for (const record of this.completed.values()) {
-      if (record.key === PREPARATION_KEY) lines.push(`- preparation: ${record.fallback ? 'fallback-complete' : 'complete'}`);
-      else if (record.key === SUBAGENTS_ENABLE_TOOL) lines.push('- subagents: enabled');
+      if (record.key === SUBAGENTS_ENABLE_TOOL) lines.push('- subagents: enabled');
       else if (record.key.startsWith(`${LSP_START_TOOL}:`)) {
         lines.push(`- ${record.serverId} LSP: running (workspace ${record.workspaceRoot})`);
       }
@@ -121,12 +531,9 @@ export class SessionTransitions {
   }
 
   transitionNotice(record, verification = {}) {
-    const subject = record.key === PREPARATION_KEY
-      ? `preparation: ${record.fallback ? 'fallback-complete' : 'complete'}`
-      : record.key === SUBAGENTS_ENABLE_TOOL
-        ? 'subagents: enabled'
-        : `${record.serverId} LSP: running`;
-    const repeatTool = record.key === PREPARATION_KEY ? this.preparationTool : record.tool;
+    const subject = record.key === SUBAGENTS_ENABLE_TOOL
+      ? 'subagents: enabled'
+      : `${record.serverId} LSP: running`;
     const validation = this.verificationGuidance(verification);
     const activeToolNames = verification?.activeToolNames ?? null;
     const active = new Set(activeToolNames ?? []);
@@ -145,7 +552,7 @@ export class SessionTransitions {
       '',
       subject,
       'Result is already applied to this session.',
-      `Do not call ${repeatTool} again.`,
+      `Do not call ${record.tool} again.`,
       '',
       tail,
     ].join('\n');

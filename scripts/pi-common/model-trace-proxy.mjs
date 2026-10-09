@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 
 const DEFAULT_MAX_BYTES = 100 * 1024 * 1024;
 const CREDENTIAL_FIELDS = new Set([
@@ -88,9 +89,221 @@ function parseBody(buffer) {
   try { return redact(JSON.parse(text)); } catch { return redact(text); }
 }
 
+function parsedProviderPayloads(value) {
+  const text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value ?? '');
+  try { return [JSON.parse(text)]; } catch { /* SSE or non-JSON response */ }
+  return text.split(/\r?\n/)
+    .filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trim())
+    .filter(data => data && data !== '[DONE]')
+    .flatMap(data => {
+      try { return [JSON.parse(data)]; } catch { return []; }
+    });
+}
+
+// Evidence-only, transport-level comparison. Reconstructs decoded Chat Completions
+// tool names from SSE deltas or non-streaming messages; never interprets model prose
+// as a call, never parses arguments into executable instructions.
+export function providerToolContractEvidence(request, rawResponse) {
+  const requestedToolNames = [...new Set((Array.isArray(request?.tools) ? request.tools : [])
+    .map(tool => tool?.function?.name ?? tool?.name)
+    .filter(name => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,95}$/.test(name)))];
+  const advertised = new Set(requestedToolNames);
+  const safeName = name => /^[A-Za-z_][A-Za-z0-9_]{0,95}$/.test(name ?? '')
+    ? name : '[invalid_tool_name]';
+  const choice = request?.tool_choice;
+  const tool_choice = typeof choice === 'string' ? choice
+    : choice && typeof choice === 'object' ? { name: safeName(choice.function?.name ?? choice.name) }
+      : null;
+  const reconstructed = new Map();
+  const appendName = (key, part, replace = false) => {
+    const existing = reconstructed.get(key) ?? '';
+    if (typeof part !== 'string' || !part) return;
+    // Most SSE parsers emit the name once, but some emit name fragments.
+    reconstructed.set(key, replace || part.startsWith(existing) ? part : existing + part);
+  };
+  for (const payload of parsedProviderPayloads(rawResponse)) {
+    for (const choice of Array.isArray(payload?.choices) ? payload.choices : []) {
+      const index = choice?.index ?? 0;
+      for (const call of Array.isArray(choice?.delta?.tool_calls) ? choice.delta.tool_calls : []) {
+        appendName(`chat:${index}:${call?.index ?? 0}`, call?.function?.name);
+      }
+      for (const [i, call] of (Array.isArray(choice?.message?.tool_calls) ? choice.message.tool_calls : []).entries()) {
+        appendName(`chat:${index}:${call?.index ?? i}`, call?.function?.name, true);
+      }
+    }
+    // Responses-compatible transports use function_call items instead of chat choices.
+    const item = payload?.item;
+    if (item?.type === 'function_call') {
+      appendName(`response:${payload?.output_index ?? item?.id ?? payload?.item_id ?? 0}`, item.name, true);
+    }
+    for (const [i, item] of (Array.isArray(payload?.output) ? payload.output : []).entries()) {
+      if (item?.type === 'function_call') appendName(`response:${item.id ?? i}`, item.name, true);
+    }
+  }
+  const returnedToolNames = [...reconstructed.values()].map(safeName).filter(Boolean);
+  const violations = returnedToolNames.filter(name => !advertised.has(name));
+  return { requestedToolNames, returnedToolNames, tool_choice, violations,
+    outcome: violations.length ? 'absent_name_in_provider_response' : 'no_absent_names_observed' };
+}
+
+function nonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function usageCandidate(payload) {
+  return payload?.usage ?? payload?.response?.usage ?? payload?.data?.usage ?? null;
+}
+
+export function providerUsageTelemetry(value) {
+  let promptTokens = null;
+  let outputTokens = null;
+  let cachedTokens = null;
+  let cacheReported = false;
+  for (const payload of parsedProviderPayloads(value)) {
+    const usage = usageCandidate(payload);
+    if (!usage || typeof usage !== 'object') continue;
+    const prompt = nonNegativeInteger(usage.prompt_tokens) ?? nonNegativeInteger(usage.input_tokens);
+    const output = nonNegativeInteger(usage.completion_tokens) ?? nonNegativeInteger(usage.output_tokens);
+    if (prompt != null) promptTokens = prompt;
+    if (output != null) outputTokens = output;
+    const cacheCandidates = [
+      usage?.prompt_tokens_details?.cached_tokens,
+      usage?.input_tokens_details?.cached_tokens,
+      usage?.cache_read_input_tokens,
+      usage?.cached_tokens,
+      usage?.cacheRead,
+    ];
+    for (const candidate of cacheCandidates) {
+      const cached = nonNegativeInteger(candidate);
+      if (cached != null) {
+        cachedTokens = cached;
+        cacheReported = true;
+        break;
+      }
+    }
+  }
+  return {
+    promptTokens,
+    outputTokens,
+    cachedTokens: cacheReported ? cachedTokens : null,
+    cacheTelemetry: cacheReported ? 'reported' : 'unknown',
+  };
+}
+
+function messageContentText(message) {
+  if (typeof message?.content === 'string') return message.content;
+  if (!Array.isArray(message?.content)) return '';
+  return message.content.map(part => typeof part === 'string' ? part : String(part?.text ?? '')).join('\n');
+}
+
+export function classifyProviderRequest(body, stage) {
+  if (stage !== 'implementer' || !body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const system = messages.filter(message => message?.role === 'system').map(messageContentText).join('\n');
+  const firstUser = messages.find(message => message?.role === 'user');
+  const user = messageContentText(firstUser);
+  if (system.includes('<active_agent name="implementation-planner"/>')) return 'planner';
+  if (system.includes('<coding_role_contract') || user.includes('<coding_role_contract')) return 'coding';
+  if (user.includes('<role_contract source="agents/implementer/AGENTS.md">')) return 'main';
+  return null;
+}
+
+function usableToolArguments(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+function responsePayloads(buffer) {
+  const text = buffer.toString('utf8');
+  const payloads = [];
+  let sawDone = false;
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const data = block
+      .split(/\r?\n/)
+      .filter(line => /^data:/.test(line))
+      .map(line => line.replace(/^data:\s?/, ''))
+      .join('\n')
+      .trim();
+    if (!data) continue;
+    if (data === '[DONE]') {
+      sawDone = true;
+      continue;
+    }
+    try { payloads.push(JSON.parse(data)); } catch { /* partial/non-JSON SSE event */ }
+  }
+  if (!payloads.length && text.trim()) {
+    try { payloads.push(JSON.parse(text)); } catch { /* streamed/plain text response */ }
+  }
+  return { payloads, sawDone };
+}
+
+function hasUsableModelResponse(buffer) {
+  if (!buffer?.length) return false;
+  const { payloads, sawDone } = responsePayloads(buffer);
+  const toolCalls = new Map();
+  const toolState = key => {
+    const state = toolCalls.get(key) ?? { name: '', arguments: '' };
+    toolCalls.set(key, state);
+    return state;
+  };
+  const updateTool = (key, name, args, { replaceArguments = false } = {}) => {
+    const state = toolState(key);
+    if (typeof name === 'string' && name) state.name ||= name;
+    if (typeof args === 'string') state.arguments = replaceArguments ? args : state.arguments + args;
+    return Boolean(state.name && usableToolArguments(state.arguments));
+  };
+
+  for (const payload of payloads) {
+    for (const choice of Array.isArray(payload?.choices) ? payload.choices : []) {
+      const choiceIndex = choice?.index ?? 0;
+      for (const call of Array.isArray(choice?.delta?.tool_calls) ? choice.delta.tool_calls : []) {
+        if (updateTool(
+          `chat:${choiceIndex}:${call?.index ?? 0}`,
+          call?.function?.name,
+          call?.function?.arguments,
+        )) return true;
+      }
+      for (const call of Array.isArray(choice?.message?.tool_calls) ? choice.message.tool_calls : []) {
+        if (updateTool(
+          `chat:${choiceIndex}:${call?.index ?? 0}`,
+          call?.function?.name,
+          call?.function?.arguments,
+          { replaceArguments: true },
+        )) return true;
+      }
+      if (choice?.finish_reason != null) return true;
+    }
+
+    const item = payload?.item;
+    const responseKey = `response:${payload?.output_index ?? item?.id ?? payload?.item_id ?? 0}`;
+    if (item?.type === 'function_call' && updateTool(
+      responseKey,
+      item?.name,
+      item?.arguments,
+      { replaceArguments: typeof item?.arguments === 'string' && item.arguments.length > 0 },
+    )) return true;
+    if (payload?.type === 'response.function_call_arguments.delta' &&
+        updateTool(responseKey, payload?.name, payload?.delta)) return true;
+    if (payload?.type === 'response.function_call_arguments.done' &&
+        updateTool(responseKey, payload?.name, payload?.arguments, { replaceArguments: true })) return true;
+    if (payload?.type === 'response.output_item.done' && item?.type === 'function_call' &&
+        updateTool(responseKey, item?.name, item?.arguments, { replaceArguments: true })) return true;
+    if (payload?.type === 'response.completed' || payload?.response?.status === 'completed') return true;
+    if (payload?.type === 'message_stop') return true;
+  }
+  return sawDone;
+}
+
 /** A local OpenAI-compatible forwarding proxy that records one JSONL exchange per call. */
-export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES }) {
+export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, issue = '', provider = '', model = '', maxBytes = DEFAULT_MAX_BYTES, traceSession = randomUUID(), onExchange = null, upstreamTimeoutMs = 20 * 60 * 1000 }) {
   let nextSequence = 0;
+  const logicalSequences = new Map();
   let writtenBytes = 0;
   let traceDisabled = false;
   try {
@@ -105,20 +318,36 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
     let requestBody = Buffer.alloc(0);
     let status = null;
     let responseBody = Buffer.alloc(0);
+    const responseChunks = [];
     let error = null;
     let transportError = false;
+    let streamShortCircuit = false;
+    let usableResponseObserved = false;
+    let clientSideFailure = false;
+    let firstResponseByteAt = null;
+    let logicalCall = null;
+    let logicalResponse = null;
     const controller = new AbortController();
     const disconnectError = Object.assign(new Error('Client disconnected'), { name: 'AbortError' });
-    const abortOnRequestClose = () => { if (!incoming.complete) controller.abort(disconnectError); };
-    const abortOnClientClose = () => { if (!outgoing.writableEnded) controller.abort(disconnectError); };
-    const abortOnError = error => { if (!controller.signal.aborted) controller.abort(error); };
+    const abortOnRequestClose = () => { if (!incoming.complete && !controller.signal.aborted) controller.abort(disconnectError); };
+    const abortOnClientClose = () => { if (!outgoing.writableEnded && !controller.signal.aborted) controller.abort(disconnectError); };
+    const abortOnClientError = cause => {
+      clientSideFailure = true;
+      if (!controller.signal.aborted) controller.abort(cause);
+    };
     incoming.on('aborted', abortOnRequestClose);
     incoming.on('close', abortOnRequestClose);
-    incoming.on('error', abortOnError);
+    incoming.on('error', abortOnClientError);
     outgoing.on('close', abortOnClientClose);
-    outgoing.on('error', abortOnError);
+    outgoing.on('error', abortOnClientError);
     try {
       requestBody = await collect(incoming, controller.signal);
+      const parsedRequest = parseBody(requestBody);
+      logicalCall = classifyProviderRequest(parsedRequest, stage);
+      if (logicalCall) {
+        logicalResponse = (logicalSequences.get(logicalCall) ?? 0) + 1;
+        logicalSequences.set(logicalCall, logicalResponse);
+      }
       const base = new URL(targetBaseUrl);
       const requestUrl = new URL(incoming.url || '/', 'http://trace-proxy.invalid');
       const basePath = base.pathname.replace(/\/$/, '');
@@ -136,45 +365,76 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
         method: incoming.method,
         headers,
         body: ['GET', 'HEAD'].includes(incoming.method) ? undefined : requestBody,
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20 * 60 * 1000)]),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(upstreamTimeoutMs)]),
       });
       status = response.status;
       if (!response.ok) error = { name: 'HttpError', message: `Model endpoint returned HTTP ${response.status}` };
       outgoing.writeHead(response.status, responseHeaders(response.headers));
-      const chunks = [];
       if (response.body) {
         for await (const chunk of response.body) {
+          if (firstResponseByteAt == null) firstResponseByteAt = Date.now();
           const bytes = Buffer.from(chunk);
-          chunks.push(bytes);
-          if (!outgoing.write(bytes)) await once(outgoing, 'drain');
+          responseChunks.push(bytes);
+          if (outgoing.destroyed) {
+            if (!controller.signal.aborted) controller.abort(disconnectError);
+            throw disconnectError;
+          }
+          if (!outgoing.write(bytes)) {
+            await Promise.race([
+              once(outgoing, 'drain'),
+              once(outgoing, 'close').then(() => {
+                if (!controller.signal.aborted) controller.abort(disconnectError);
+                throw disconnectError;
+              }),
+            ]);
+          }
         }
       }
-      responseBody = Buffer.concat(chunks);
+      responseBody = Buffer.concat(responseChunks);
+      usableResponseObserved = hasUsableModelResponse(responseBody);
       outgoing.end();
     } catch (cause) {
-      transportError = true;
-      const clientDisconnected = controller.signal.aborted && controller.signal.reason === disconnectError;
-      status = clientDisconnected ? 499 : cause?.name === 'TimeoutError' ? 504 : 502;
-      error = {
-        name: clientDisconnected ? 'AbortError' : cause?.name || 'Error',
-        message: redact(clientDisconnected ? 'Client disconnected' : String(cause?.message || cause)),
-      };
-      if (outgoing.headersSent) {
-        outgoing.destroy();
-      } else if (!outgoing.destroyed) {
-        outgoing.writeHead(status, { 'content-type': 'application/json' });
-        outgoing.end(JSON.stringify({ error: { message: 'Model request failed' } }));
+      responseBody = Buffer.concat(responseChunks);
+      usableResponseObserved = hasUsableModelResponse(responseBody);
+      const cleanClientDisconnect = controller.signal.aborted && controller.signal.reason === disconnectError;
+      const shortCircuit = cleanClientDisconnect &&
+        Number.isInteger(status) && status >= 200 && status < 300 &&
+        usableResponseObserved;
+      if (shortCircuit) {
+        streamShortCircuit = true;
+        transportError = false;
+        error = null;
+      } else {
+        transportError = true;
+        const clientDisconnected = cleanClientDisconnect || clientSideFailure;
+        status = clientDisconnected ? 499 : cause?.name === 'TimeoutError' ? 504 : 502;
+        error = {
+          name: clientDisconnected ? (cause?.name || 'AbortError') : cause?.name || 'Error',
+          message: redact(cleanClientDisconnect ? 'Client disconnected' : String(cause?.message || cause)),
+        };
+        if (outgoing.headersSent) {
+          outgoing.destroy();
+        } else if (!outgoing.destroyed) {
+          outgoing.writeHead(status, { 'content-type': 'application/json' });
+          outgoing.end(JSON.stringify({ error: { message: 'Model request failed' } }));
+        }
       }
     } finally {
       incoming.off('aborted', abortOnRequestClose);
       incoming.off('close', abortOnRequestClose);
-      incoming.off('error', abortOnError);
+      incoming.off('error', abortOnClientError);
       outgoing.off('close', abortOnClientClose);
-      outgoing.off('error', abortOnError);
+      outgoing.off('error', abortOnClientError);
     }
 
+    const telemetry = transportError
+      ? { promptTokens: null, outputTokens: null, cachedTokens: null, cacheTelemetry: 'unknown' }
+      : providerUsageTelemetry(responseBody);
+    const ttftMs = firstResponseByteAt == null ? null : Math.max(0, firstResponseByteAt - started);
+    const contract = providerToolContractEvidence(parseBody(requestBody), responseBody);
     const record = {
       sequence,
+      traceSession,
       timestamp,
       stage,
       issue: issue || null,
@@ -182,9 +442,46 @@ export async function startModelTraceProxy({ targetBaseUrl, tracePath, stage, is
       request: { method: incoming.method, path: safePath(incoming.url), body: parseBody(requestBody) },
       response: transportError ? null : parseBody(responseBody),
       status,
+      transportError,
+      streamDisposition: streamShortCircuit ? 'client_short_circuit' : transportError ? 'transport_error' : 'completed',
+      streamShortCircuit,
+      usableResponseObserved,
       elapsedMs: Date.now() - started,
+      ttftMs,
+      logicalCall,
+      logicalResponse,
+      telemetry,
+      toolContract: { ...contract, providerRoute: safeUrl(targetBaseUrl) },
       ...(error ? { error } : {}),
     };
+    if (typeof onExchange === 'function') {
+      try {
+        onExchange({
+          sequence: record.sequence,
+          traceSession: record.traceSession,
+          stage: record.stage,
+          issue: record.issue,
+          requestMethod: record.request.method,
+          requestPath: record.request.path,
+          status: record.status,
+          elapsedMs: record.elapsedMs,
+          ttftMs: record.ttftMs,
+          logicalCall: record.logicalCall,
+          logicalResponse: record.logicalResponse,
+          promptTokens: record.telemetry.promptTokens,
+          outputTokens: record.telemetry.outputTokens,
+          cachedTokens: record.telemetry.cachedTokens,
+          cacheTelemetry: record.telemetry.cacheTelemetry,
+          transportError,
+          streamDisposition: record.streamDisposition,
+          streamShortCircuit: record.streamShortCircuit,
+          usableResponseObserved: record.usableResponseObserved,
+          toolContract: record.toolContract,
+        });
+      } catch {
+        // Provider accounting is best effort and must never affect model traffic.
+      }
+    }
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line);
     const marker = `${JSON.stringify({ sequence, timestamp: new Date().toISOString(), stage, issue: issue || null, traceLimitReached: true, maxBytes })}\n`;

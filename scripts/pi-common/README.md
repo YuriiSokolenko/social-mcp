@@ -30,12 +30,14 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `issue-context.mjs` — performs the Implementer's one fresh issue read and validates `open + pi:ready` before model work.
 - `issue-worktree.mjs` — creates/resumes/cleans the Implementer's latest-`dev` worktree without treating saved work as a base branch.
 - `issue-publication.mjs` — safely checkpoints and publishes verified issue work, upserts its PR, and hands the PR to Reviewer.
+- `accepted-mutation-scope.mjs` — Implementer-only intent/provenance guard. Publishable paths must be accepted before their first mutation; temporary scratch paths must be removed/restored before publication and may be re-accepted only after that cleanup. A restored baseline path with no trusted receipt is intentionally cleanup-only (delete it or restore it to `dev`); it cannot be retroactively authorized on resume. PR Fix does not use this Implementer receipt gate and continues to validate the repaired PR through the normal final product checks.
 - `pr-labels.mjs` — canonical pure helpers for clearing/applying the small `review:*` verdict family.
 - `review-state.mjs` — owns stale/human/HEAD rechecks, review verdict publication, comments, and Reviewer handoff dispatches.
 - `repair-publication.mjs` — owns safe PR Fix publication and the single handoff back to a fresh Reviewer.
 - `automation-control.mjs` — owns RUNNING/DRAINING/PAUSED variable mutation; RUNNING wakes only Dispatcher, never Reconciler.
 - `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow wakes; it keeps authenticated REST and the trusted `dev` ref out of YAML.
 - `terminal-tool.mjs` / `result-jsonl.mjs` — one machine-checkable terminal-tool contract plus tolerant Pi JSONL reading; free-text result markers are not pipeline state.
+- `restored-work.mjs` — shared Implementer resume predicate, kept self-contained for the pinned Pi coding adapter's source injection via `toString()` during Docker build.
 - `stage-config.mjs` — single source of per-agent runtime defaults and prompt builders (shared + role contract injection into the initial prompt, turn/repeat limits, complexity mode, bash timeout, fixed token budget, result tool, stage prompt).
 - `stage-run-contract.mjs` — backend-neutral `StageRunSpec`/`StageRunResult` shapes passed between `pi-run-stage.mjs` and a backend.
 - `pi-stage-backend.mjs` / `mini-swe-stage-backend.mjs` — the two stage backends (Pi and the experimental, implementer-only mini-swe).
@@ -45,6 +47,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `prepare-environment.mjs` — runs a stage's fixed-argv toolchain steps from `.agent-harness.json` `environment`.
 - `run-check-docker-backend.mjs` — the Linux Docker sandbox backend used by `run-check.mjs`.
 - `mutation-target.mjs` / `mutation-snapshot.mjs` — worktree/`.git`/symlink containment for every agent mutation, plus before/after snapshots for rollback and no-op detection.
+- `worktree-recovery.mjs` — deterministic single-file untracked deletion or HEAD restore, containment checks, mutation ledger and immediate file-set validation. Recovery records are excluded from verification evidence.
 - `safe-edit.mjs` / `structural-edit.mjs` — the `safe_edit` (line/range) and `structural_edit` (single ast-grep match) mutation tools.
 - `semantic-loop-guard.mjs` — Implementer repeated-strategy/observation/no-op/state-revisit detection (`PI_LOOP_GUARD_*`).
 - `session-state.mjs` — runtime record of completed one-shot control transitions (LSP startup, subagent enablement, preparation).

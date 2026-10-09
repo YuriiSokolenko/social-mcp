@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { ruffArgs } from './ruff-spec.mjs';
 import { duplicatePackageRootDiagnostics } from './package-root-check.mjs';
 import { expandCommand, projectConfig } from './project-config.mjs';
 import { createDockerSandboxBackend } from './run-check-docker-backend.mjs';
+import { appendDiagnostic } from './diagnostics-artifact.mjs';
 
 /**
  * Backend-neutral focused verification for agents that have no unrestricted
@@ -17,7 +19,7 @@ import { createDockerSandboxBackend } from './run-check-docker-backend.mjs';
  * both use the repository-owned Ruff spec.
  */
 
-export const CHECK_KINDS = Object.freeze(['python_compile', 'ruff', 'pytest', 'profile']);
+export const CHECK_KINDS = Object.freeze(['python_compile', 'ruff', 'pytest', 'node_test', 'profile']);
 
 // `infra_error` means the runner could not run the check at all (sandbox or tool missing/broken).
 // It is never a verdict on the agent's change, unlike `fail`, and must not be answered with a retry or a shell.
@@ -28,12 +30,36 @@ const MAX_DIAGNOSTICS = 20;
 const MAX_MESSAGE_CHARS = 400;
 const TAIL_CHARS = 3000;
 const CAPTURE_LIMIT_BYTES = 4 * 1024 * 1024;
+const OUTPUT_SPOOL_LIMIT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_TIMEOUT_SECONDS = 600;
 const PREFLIGHT_TIMEOUT_MS = 15000;
 
-// Only these variables reach a check subprocess: never the caller's token/secret environment.
-const ENV_ALLOWLIST = ['PATH', 'LANG', 'LC_ALL'];
+// Versioned producer/executor handshake. Preflight must prove that the deployed trusted executor
+// accepts exactly this request-side environment vocabulary before any model work begins.
+export const RUN_CHECK_ENV_CONTRACT = Object.freeze({
+  version: 2,
+  keys: Object.freeze([
+    'HOME',
+    'LANG',
+    'LC_ALL',
+    'PATH',
+    'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
+    'PI_TRUSTED_ACCEPTANCE_TARGETS',
+    'PYTHONDONTWRITEBYTECODE',
+    'PYTHONIOENCODING',
+    'TMPDIR',
+  ]),
+});
+
+// Only optional caller values from this contract are copied; fixed keys below are runtime-owned.
+const ENV_ALLOWLIST = [
+  'PATH',
+  'LANG',
+  'LC_ALL',
+  'PI_TRUSTED_ACCEPTANCE_TARGETS',
+  'PI_TRUSTED_ACCEPTANCE_BASELINE_TARGETS',
+];
 
 // Compiles in memory so a focused check never writes __pycache__ into the worktree.
 const PYTHON_COMPILE_SCRIPT = [
@@ -87,7 +113,7 @@ export function normalizeRunCheckPaths(root, params, canonicalRoot = root) {
     return { ...params, paths: Array.isArray(params.paths)
       ? params.paths.map(item => relativeCheckPath(root, item, canonicalRoot)) : params.paths };
   }
-  if (params?.kind === 'pytest') {
+  if (params?.kind === 'pytest' || params?.kind === 'node_test') {
     return { ...params, targets: Array.isArray(params.targets) ? params.targets.map(target => {
       if (typeof target !== 'string') throw new InvalidCheck('targets must be strings');
       const [file, ...selectors] = target.split('::');
@@ -163,6 +189,35 @@ function pathList(root, value, field, options) {
   return value.map(item => containedRelativePath(root, item, options));
 }
 
+// Target paths are never commands: they must be real workspace entries and must match
+// the chosen test runner before either the runner or recovery ledger sees a failure.
+function focusedTestTargets(root, targets, kind) {
+  if (!Array.isArray(targets) || targets.length < 1 || targets.length > MAX_PATHS) {
+    throw new InvalidCheck(`targets must be an array of 1-${MAX_PATHS} strings`);
+  }
+  return targets.map(target => {
+    if (typeof target !== 'string') throw new InvalidCheck('targets must be strings');
+    const [file, ...selectors] = target.split('::');
+    if (kind === 'node_test' && selectors.length) {
+      throw new InvalidCheck('node_test takes .test.mjs/.test.js file paths without pytest :: selectors');
+    }
+    const relative = containedRelativePath(root, file, { mustBeFile: kind === 'node_test' });
+    if (kind === 'node_test') {
+      if (!/\.test\.(?:mjs|js)$/.test(relative)) {
+        throw new InvalidCheck('node_test accepts .test.mjs or .test.js files only; use kind=pytest for Python .py tests');
+      }
+      return relative;
+    }
+    if (fs.statSync(path.resolve(root, relative)).isFile() && !relative.endsWith('.py')) {
+      throw new InvalidCheck('pytest accepts Python .py test files only; use kind=node_test for .test.mjs/.test.js files');
+    }
+    if (selectors.length && !fs.statSync(path.resolve(root, relative)).isFile()) {
+      throw new InvalidCheck('pytest :: selectors require a Python .py test file');
+    }
+    return [relative, ...selectors].join('::');
+  });
+}
+
 function commandFor(root, params, bins) {
   switch (params.kind) {
     case 'python_compile': {
@@ -178,18 +233,16 @@ function commandFor(root, params, bins) {
     }
     case 'pytest': {
       rejectUnknownFields(params, ['kind', 'targets']);
-      if (!Array.isArray(params.targets) || params.targets.length < 1 || params.targets.length > MAX_PATHS) {
-        throw new InvalidCheck(`targets must be an array of 1-${MAX_PATHS} strings`);
-      }
-      const targets = params.targets.map(target => {
-        if (typeof target !== 'string') throw new InvalidCheck('targets must be strings');
-        const [file, ...rest] = target.split('::');
-        return [containedRelativePath(root, file), ...rest].join('::');
-      });
+      const targets = focusedTestTargets(root, params.targets, 'pytest');
       return {
         command: bins.pytest,
         args: ['-q', '--tb=short', '-rfE', '--no-header', '-p', 'no:cacheprovider', ...targets],
       };
+    }
+    case 'node_test': {
+      rejectUnknownFields(params, ['kind', 'targets']);
+      const targets = focusedTestTargets(root, params.targets, 'node_test');
+      return { command: bins.node, args: ['--test', '--test-reporter=tap', ...targets] };
     }
     case 'profile': {
       rejectUnknownFields(params, ['kind', 'profile']);
@@ -211,6 +264,7 @@ export function buildRunCheckSpec(root, params, options = {}) {
     python: options.bins?.python ?? env.PI_PYTHON_BIN ?? 'python3',
     ruff: options.bins?.ruff ?? 'ruff',
     pytest: options.bins?.pytest ?? 'pytest',
+    node: options.bins?.node ?? 'node',
   };
   const request = normalizeRunCheckPaths(root, params, fs.realpathSync(root));
   return { request, spec: commandFor(root, request, bins) };
@@ -253,6 +307,17 @@ function execute({ command, args, cwd, env, timeoutMs }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const chunks = { stdout: [], stderr: [] };
+    let fullOutputDir = null;
+    let fullOutputPaths = null;
+    try {
+      fullOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-run-check-output-'));
+      fullOutputPaths = { stdout: path.join(fullOutputDir, 'stdout'), stderr: path.join(fullOutputDir, 'stderr') };
+    } catch { /* The bounded in-memory tails remain available if spooling cannot start. */ }
+    let fullOutputCaptureFailed = false;
+    const captureFailedByStream = { stdout: false, stderr: false };
+    const spooledBytes = { stdout: 0, stderr: 0 };
+    const totalBytes = { stdout: 0, stderr: 0 };
+    const spoolTruncated = { stdout: false, stderr: false };
     const sizes = { stdout: 0, stderr: 0 };
     let dropped = false;
     let timedOut = false;
@@ -260,6 +325,22 @@ function execute({ command, args, cwd, env, timeoutMs }) {
 
     const child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const collect = (name) => (data) => {
+      totalBytes[name] += data.length;
+      const remaining = Math.max(0, OUTPUT_SPOOL_LIMIT_BYTES - spooledBytes[name]);
+      const spoolChunk = data.subarray(0, remaining);
+      if (data.length > remaining) spoolTruncated[name] = true;
+      if (spoolChunk.length && fullOutputPaths) {
+        try {
+          fs.appendFileSync(fullOutputPaths[name], spoolChunk);
+          spooledBytes[name] += spoolChunk.length;
+        } catch {
+          fullOutputCaptureFailed = true;
+          captureFailedByStream[name] = true;
+        }
+      } else if (spoolChunk.length) {
+        fullOutputCaptureFailed = true;
+        captureFailedByStream[name] = true;
+      }
       chunks[name].push(data);
       sizes[name] += data.length;
       while (sizes[name] > CAPTURE_LIMIT_BYTES) {
@@ -284,15 +365,45 @@ function execute({ command, args, cwd, env, timeoutMs }) {
       settled = true;
       clearTimeout(timer);
       killTree(); // reap any grandchildren that outlived the direct child
+      const readFullOutput = name => {
+        try {
+          const prefix = fullOutputPaths && fs.existsSync(fullOutputPaths[name])
+            ? fs.readFileSync(fullOutputPaths[name], 'utf8')
+            : '';
+          if (captureFailedByStream[name] && totalBytes[name] > 0) {
+            const tail = Buffer.concat(chunks[name]).toString('utf8');
+            return `${prefix}\n[complete output spool unavailable; retained bounded tail follows]\n${tail}`;
+          }
+          if (spoolTruncated[name]) {
+            const tail = Buffer.concat(chunks[name]).toString('utf8');
+            return `${prefix}\n[output spool truncated after ${OUTPUT_SPOOL_LIMIT_BYTES} bytes; omitted ${totalBytes[name] - OUTPUT_SPOOL_LIMIT_BYTES} bytes]\n${tail}`;
+          }
+          return prefix;
+        }
+        catch {
+          fullOutputCaptureFailed = true;
+          captureFailedByStream[name] = true;
+          return Buffer.concat(chunks[name]).toString('utf8');
+        }
+      };
+      const fullStdout = readFullOutput('stdout');
+      const fullStderr = readFullOutput('stderr');
       resolve({
         exitCode,
         timedOut,
-        dropped,
+        dropped: dropped || fullOutputCaptureFailed || Object.values(spoolTruncated).some(Boolean),
+        outputCaptureFailed: fullOutputCaptureFailed,
+        outputSpoolTruncated: Object.values(spoolTruncated).some(Boolean),
+        outputSpoolOmittedBytes: Object.fromEntries(Object.keys(spoolTruncated).map(name => [name, Math.max(0, totalBytes[name] - OUTPUT_SPOOL_LIMIT_BYTES)])),
         spawnError,
         durationMs: Date.now() - started,
-        stdout: Buffer.concat(chunks.stdout).toString('utf8'),
-        stderr: Buffer.concat(chunks.stderr).toString('utf8'),
+        stdout: fullStdout,
+        stderr: fullStderr,
       });
+      if (fullOutputDir) {
+        try { fs.rmSync(fullOutputDir, { recursive: true, force: true }); }
+        catch { /* Temporary diagnostic cleanup is best-effort. */ }
+      }
     };
     child.once('error', error => finish(null, error));
     child.once('close', code => finish(code, null));
@@ -361,6 +472,79 @@ function pytestSummary(text) {
   return null;
 }
 
+function parseNodeTest(text) {
+  const lines = text.split('\n');
+  const failures = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const failure = /^(\s*)not ok \d+ - (.+)$/.exec(lines[index]);
+    if (!failure) continue;
+    // Node's TAP reporter puts YAML-like metadata between --- and ... for
+    // each failing test. Do not search a fixed window: nested failures can
+    // otherwise borrow their parent or sibling's metadata.
+    const metadata = [];
+    let inDetails = false;
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (!inDetails) {
+        if (/^\s*---\s*$/.test(line)) inDetails = true;
+        else if (line.trim()) break;
+        continue;
+      }
+      if (/^\s*\.\.\.\s*$/.test(line) || /^\s*not ok \d+ - /.test(line)) break;
+      metadata.push(line);
+    }
+    const readField = name => {
+      const position = metadata.findIndex(line => line.trimStart().startsWith(name + ':'));
+      if (position < 0) return null;
+      const value = metadata[position].trimStart().slice(name.length + 1).trim();
+      if (!/^\|[+-]?$/.test(value)) {
+        if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
+          return value.slice(1, -1);
+        }
+        return value;
+      }
+      // Assertion failures usually use "error: |-" followed by indented
+      // human-readable details. Capture useful lines, bounded by shorten().
+      const indent = /^\s*/.exec(metadata[position])[0].length;
+      const content = [];
+      for (let cursor = position + 1; cursor < metadata.length; cursor += 1) {
+        const line = metadata[cursor];
+        if (line.trim() && /^\s*/.exec(line)[0].length <= indent) break;
+        if (line.trim()) content.push(line.trim());
+        if (content.length === 3) break;
+      }
+      return content.join(' ');
+    };
+    const location = /^(.*):(\d+):(\d+)$/.exec(readField('location') ?? '');
+    const error = readField('error');
+    failures.push({
+      offset: failure[1].length,
+      failureType: readField('failureType'),
+      diagnostic: {
+        file: location?.[1] ?? null,
+        line: location ? Number(location[2]) : null,
+        column: location ? Number(location[3]) : null,
+        code: 'NodeTestFailure',
+        message: shorten(error ? failure[2] + ': ' + error : failure[2]),
+      },
+    });
+  }
+  // An outer "subtestsFailed" record only repeats the nested leaf failure.
+  // Retain it if there is no nested record (e.g. truncated TAP output).
+  const diagnostics = failures.filter((failure, index) => {
+    if (failure.failureType !== 'subtestsFailed') return true;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      if (failures[cursor].offset <= failure.offset) break;
+      return false;
+    }
+    return true;
+  }).map(failure => failure.diagnostic);
+  const passed = /^\s*# pass (\d+)/m.exec(text);
+  const failed = /^\s*# fail (\d+)/m.exec(text);
+  const summary = passed && failed ? passed[1] + ' passed, ' + failed[1] + ' failed' : null;
+  return { diagnostics, summary };
+}
+
 function analyze(request, run, root, sandboxRoot = root) {
   const combined = `${run.stdout}\n${run.stderr}`;
   let diagnostics = [];
@@ -382,6 +566,23 @@ function analyze(request, run, root, sandboxRoot = root) {
   } else if (request.kind === 'pytest' || request.profile === 'pytest_all') {
     diagnostics = parsePytest(combined);
     summary = pytestSummary(combined);
+  } else if (request.kind === 'node_test') {
+    ({ diagnostics, summary } = parseNodeTest(combined));
+    // TAP locations originate inside /workspace in Docker, not on the runner.
+    // Render only paths within that sandbox root; never leak host paths.
+    diagnostics = diagnostics.map(item => {
+      if (!item.file) return item;
+      let source = item.file;
+      try {
+        if (source.startsWith('file://')) source = fileURLToPath(source);
+      } catch { return { ...item, file: null }; }
+      const base = path.resolve(sandboxRoot);
+      const relative = path.relative(base, path.isAbsolute(source) ? source : path.resolve(base, source));
+      return {
+        ...item,
+        file: relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? null : relative,
+      };
+    });
   }
   return { diagnostics, summary };
 }
@@ -456,11 +657,35 @@ export async function runCheck(root, params, options = {}) {
     stdout_tail: stdoutTail.text,
     stderr_tail: stderrTail.text,
     truncated,
+    ...(run.outputCaptureFailed ? { output_capture_failed: true } : {}),
+    ...(run.outputSpoolTruncated ? {
+      output_spool_truncated: true,
+      output_spool_omitted_bytes: run.outputSpoolOmittedBytes,
+    } : {}),
     ...(run.image ? { sandbox_image: run.image } : {}),
     ...(run.image_id ? { sandbox_image_id: run.image_id } : {}),
     ...(run.sandbox_security ? { sandbox_security: run.sandbox_security } : {}),
     ...(run.container_removed !== undefined ? { sandbox_container_removed: run.container_removed } : {}),
   };
+
+  const checkDiagnosticId = `check-${process.pid}-${Date.now()}`;
+  const diagnosticStored = (truncated || run.exitCode !== 0 || run.timedOut) && appendDiagnostic(env.PI_DIAGNOSTICS_FILE, {
+    id: checkDiagnosticId,
+    at: new Date().toISOString(),
+    type: 'run_check',
+    kind,
+    profile: request.profile ?? null,
+    status: run.timedOut ? 'timeout' : run.exitCode === 0 ? 'pass' : 'fail',
+    exit_code: run.exitCode,
+    duration_ms: run.durationMs,
+    stdout: run.stdout,
+    stderr: run.stderr,
+    capture_incomplete: Boolean(run.outputCaptureFailed),
+    spool_truncated: Boolean(run.outputSpoolTruncated),
+    spool_omitted_bytes: run.outputSpoolOmittedBytes,
+  });
+  if (diagnosticStored) base.diagnostic_ref = `${path.basename(env.PI_DIAGNOSTICS_FILE)}#${checkDiagnosticId}`;
+  else if (truncated || run.exitCode !== 0 || run.timedOut) base.diagnostic_artifact_failed = true;
 
   if (run.timedOut) {
     return { status: 'timeout', ...base, summary: `Timed out after ${Math.round(timeoutMs / 1000)}s; process tree killed`, diagnostics: [] };
@@ -501,7 +726,12 @@ export async function sandboxPreflight(options = {}) {
       : selectSandboxBackend(env));
     if (!backend) return fail({ component: 'sandbox', code: 'UNSUPPORTED_PLATFORM', command: null, message: `No check sandbox is available on ${process.platform}` });
     if (backend.preflight) {
-      const result = await backend.preflight({ root: probeRoot, env: checkEnv(env), timeoutMs });
+      const result = await backend.preflight({
+        root: probeRoot,
+        env: checkEnv(env),
+        envContract: RUN_CHECK_ENV_CONTRACT,
+        timeoutMs,
+      });
       if (result?.ok) return result;
       const summary = String(result?.summary || 'The trusted sandbox preflight failed');
       return {

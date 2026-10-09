@@ -55,13 +55,26 @@ export function isBoundedDirectBash(command) {
 }
 const TERMINAL_TOOLS = new Set(['submit_result', 'submit_repair']);
 const ROLLBACK_TOOL = 'rollback_last_mutation';
+const ACCEPT_MUTATION_SCOPE_TOOL = 'accept_mutation_scope';
 // `begin_coding_session` hands the rest of the work to a 16k fork of this session that mutates
 // the worktree through the normal tools, so it earns the same progress/verification accounting.
-const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
-// The set of tools a one-shot elevated mutation response is allowed to spend
-// its turn on: an actual mutation, a rollback, or a terminal submission.
+const MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session', 'recover_worktree', 'undo_mutation']);
+// Actual finish actions that consume a one-shot elevated mutation response.
 export const FINISH_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
-const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS]);
+// Scope declaration is a trusted prelude, not the mutation payload itself. It is allowed while
+// an elevated mutation budget is active, but must not consume that budget before the real edit.
+export const ELEVATED_MUTATION_TURN_TOOLS = new Set([...FINISH_TOOLS, ACCEPT_MUTATION_SCOPE_TOOL]);
+// Closing coding is a nonterminal control transition, but it is productive progress:
+// the watchdog must not classify this deliberate phase change as a prose-only turn.
+const PROGRESS_TOOLS = new Set([...MUTATION_TOOLS, ROLLBACK_TOOL, ...TERMINAL_TOOLS, 'begin_result_submission']);
+const ANCHOR_GATED_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write', 'begin_coding_session']);
+
+function normalizedRepositoryPath(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.startsWith('/') || text.startsWith('./') || /\\/.test(text)) return null;
+  if (/(^|\/)\.\.(\/|$)/.test(text) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return null;
+  return text.replace(/\/{2,}/g, '/');
+}
 
 function positiveInteger(value, name) {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
@@ -81,6 +94,35 @@ export function toolCallSignature(toolName, input) {
   return `${toolName}:${JSON.stringify(canonicalize(input ?? {}))}`;
 }
 
+function recoveryVerificationSignature(toolName, input) {
+  const normalized = {};
+  const kind = typeof input?.kind === 'string' ? input.kind.trim() : '';
+  const profile = typeof input?.profile === 'string' ? input.profile.trim() : '';
+  const normalizeList = value => [...new Set(
+    (Array.isArray(value) ? value : [])
+      .filter(item => typeof item === 'string' && item.trim())
+      .map(item => item.trim()),
+  )].sort();
+  const paths = normalizeList(input?.paths);
+  const targets = normalizeList(input?.targets);
+  if (kind) normalized.kind = kind;
+  if (profile) normalized.profile = profile;
+  if (paths.length) normalized.paths = paths;
+  if (targets.length) normalized.targets = targets;
+  return toolCallSignature(toolName, normalized);
+}
+
+export function validateSingleEvidenceRequest(input = {}) {
+  const missing = typeof input.missing === 'string' ? input.missing.trim() : '';
+  if (!missing) return { ok: false, reason: 'need_more_evidence requires one concrete missing fact.' };
+
+  // Natural-language fact counting is not reliable: punctuation, conjunctions, words such as
+  // "plus", and multi-path comparisons all have legitimate single-fact uses. The enforceable
+  // boundary is therefore operational, not lexical: one blocker invocation opens exactly one
+  // evidence tool call, after which the controller returns to action_required.
+  return { ok: true };
+}
+
 const TRUNCATED_TOOL_CALL_PATTERN = /output token limit|arguments may be truncated/i;
 
 export function classifyTruncatedToolCall({ toolName, isError, text }) {
@@ -90,12 +132,80 @@ export function classifyTruncatedToolCall({ toolName, isError, text }) {
 
 const DIRECT_PAYLOAD_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
 
-export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null, codingSessionTool = null } = {}) {
+// Only inspect the final serialized provider request, not ctx.model, an environment
+// variable, or the desired Pi response cap. An absent, contradictory or invalid wire
+// ceiling is unverifiable and must never authorize an elevated recovery.
+export function serializedProviderOutputBudget(payload) {
+  const fields = ['max_completion_tokens', 'max_output_tokens', 'max_tokens']
+    .filter(name => Object.hasOwn(payload ?? {}, name));
+  if (!fields.length) return { verified: false, ceiling: null, reason: 'missing_wire_ceiling' };
+  const values = fields.map(name => payload[name]);
+  if (values.some(value => !Number.isSafeInteger(value) || value < 1)) {
+    return { verified: false, ceiling: null, reason: 'invalid_wire_ceiling' };
+  }
+  if (new Set(values).size > 1) {
+    return { verified: false, ceiling: null, reason: 'conflicting_wire_ceilings' };
+  }
+  return { verified: true, ceiling: values[0], field: fields.join('+') };
+}
+
+// Pi can parse a length-cut JSON fragment into an object containing "content"
+// but no "path". Its schema error is emitted AFTER the provider response and
+// BEFORE turn_end, so collect it, then correlate it with the actual wire budget.
+// An ordinary complete-json missing path is not itself truncation evidence.
+export function incompleteCodingToolError({ toolName, isError, text }) {
+  if (!DIRECT_PAYLOAD_TOOLS.has(toolName) || isError !== true) return null;
+  const message = String(text ?? '');
+  if (TRUNCATED_TOOL_CALL_PATTERN.test(message)) {
+    return { toolName, evidence: 'explicit_incomplete_transport' };
+  }
+  if (!/Validation failed for tool ["']?(?:write|edit|safe_edit|structural_edit)["']?:/i.test(message) ||
+      !/path:\s*must have required properties path/i.test(message) ||
+      !/Received arguments:/i.test(message) ||
+      !/"(?:content|newText|oldText|edits)"\s*:/i.test(message)) return null;
+  return { toolName, evidence: 'missing_path_with_payload' };
+}
+
+export function verifiedCodingToolTruncation({ candidates, requestBudget, outputTokens, stopReason }) {
+  if (!Array.isArray(candidates) || !candidates.length ||
+      !requestBudget?.verified ||
+      stopReason === 'error' || stopReason === 'aborted') return null;
+  const explicit = candidates.find(item => item.evidence === 'explicit_incomplete_transport');
+  // The provider's explicit "output token limit" error is direct transport
+  // evidence. The provider can omit usage on this path; do not manufacture 0.
+  if (explicit) return {
+    ...explicit, ceiling: requestBudget.ceiling,
+    outputTokens: Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null,
+  };
+  if (!Number.isFinite(outputTokens) || outputTokens < 0) return null;
+  // The exact provider ceiling plus a large malformed write/edit payload is the
+  // #627/#628 signature. Never reinterpret a short complete-JSON schema failure
+  // or reasoning-only length turn as a truncated tool transport.
+  if (outputTokens < requestBudget.ceiling) return null;
+  const candidate = candidates.find(item => item.evidence === 'missing_path_with_payload');
+  return candidate ? { ...candidate, ceiling: requestBudget.ceiling, outputTokens } : null;
+}
+
+export function codingTruncationCorrectionTool(failedTool, executableTools) {
+  if (!Array.isArray(executableTools)) return null;
+  if (DIRECT_PAYLOAD_TOOLS.has(failedTool) && executableTools.includes(failedTool)) {
+    return { tool: failedTool, mode: 'direct' };
+  }
+  if (executableTools.includes('begin_coding_session')) {
+    return { tool: 'begin_coding_session', mode: 'handoff' };
+  }
+  const alternative = [...DIRECT_PAYLOAD_TOOLS].find(name => executableTools.includes(name));
+  return alternative ? { tool: alternative, mode: 'split' } : null;
+}
+
+export function truncatedToolCallGuidance(toolName, { largeMutationBudgetTool = null, codingSessionTool = null, preparationState = null } = {}) {
   if (codingSessionTool && DIRECT_PAYLOAD_TOOLS.has(toolName)) {
     return `Your previous "${toolName}" tool call was NOT executed: the response hit the completion-token limit, so its arguments were cut off and nothing was changed. `
       + 'The change is too large for the normal Implementer response. Do not regenerate the payload in this response. '
-      + `Call ${codingSessionTool} now: the runtime continues this same session with a large output ceiling, `
-      + 'where you write the code and tests, run checks, fix and submit.';
+      + (preparationState === 'PREPARATION_FALLBACK'
+        ? `Call ${codingSessionTool} now: no Planner planText exists, so include a concise handoff of essential Main exploration findings missing from issue/runtime state (not raw evidence or draft code). `
+        : `Call ${codingSessionTool} now WITHOUT handoff for prepared work: runtime supplies issue, plan and worktree state. Include a handoff only for a new post-planning execution fact. `)
+      + 'The isolated coding child writes code/tests, checks, fixes and submits.';
   }
   const splitAdvice = 'Make the next mutation smaller: split the change across several smaller write/edit/safe_edit calls '
     + '(for a new file, write a minimal skeleton first, then add sections with separate edits).';
@@ -155,12 +265,19 @@ export function nextCeilingWithoutToolTurns(
 
 export function actionRequiredToolNames(
   activeToolNames,
-  { actionTools = [], controlTools = [], blockerTool = null, verificationTools = [] } = {},
+  { actionTools = [], controlTools = [], directTools = [], blockerTool = null, verificationTools = [] } = {},
 ) {
   if (!Array.isArray(activeToolNames)) {
     throw new Error('activeToolNames must be an array');
   }
-  const allowed = new Set([...actionTools, ...controlTools, ...verificationTools]);
+  const allowed = new Set([...actionTools, ...controlTools, ...directTools, ...verificationTools]);
+  if (blockerTool) allowed.add(blockerTool);
+  return activeToolNames.filter(name => allowed.has(name));
+}
+
+export function elevatedMutationTurnToolNames(activeToolNames, { blockerTool = null } = {}) {
+  if (!Array.isArray(activeToolNames)) throw new Error('activeToolNames must be an array');
+  const allowed = new Set(ELEVATED_MUTATION_TURN_TOOLS);
   if (blockerTool) allowed.add(blockerTool);
   return activeToolNames.filter(name => allowed.has(name));
 }
@@ -205,24 +322,30 @@ export class ProgressController {
     this.boundedDirectBash = config.boundedDirectBash === true;
     this.singleUseTools = new Set(config.singleUseTools ?? []);
     this.usedSingleUseTools = new Set();
-    this.transitions = new SessionTransitions({
-      preparationTool: config.productiveProgress?.activationTool ?? null,
-    });
+    this.transitions = new SessionTransitions();
     this.lastAlreadySatisfied = null;
 
     this.productiveProgress = config.productiveProgress ?? null;
     this.productiveState = this.productiveProgress?.startState ?? 'inactive';
-    this.productiveActivationTool = this.productiveProgress?.activationTool ?? null;
     this.productiveActivationReadSuffix = this.productiveProgress?.activationReadSuffix ?? null;
     this.productiveBlockerTool = this.productiveProgress?.blockerTool ?? null;
     this.productiveActionTools = new Set(this.productiveProgress?.actionTools ?? []);
     this.productiveControlTools = new Set(this.productiveProgress?.controlTools ?? []);
+    this.productiveDirectActionTools = new Set(this.productiveProgress?.directActionTools ?? []);
+    // Enabled only by a successful fresh PreparedImplementation handoff. Resumed work,
+    // validation repair and coding sessions enter action_required without calling
+    // applyPreparedImplementation(), so their existing tool policies stay unchanged.
+    this.preparedDirectActionToolsEnabled = false;
     // Focused verification (run_check) is evidence about a mutation, not progress:
     // one permit is granted per successful mutation, so it cannot become an
     // unlimited escape hatch from the action-required state.
     this.productiveVerificationTool = this.productiveProgress?.verificationTool ?? null;
     this.verificationPermits = 0;
     this.verificationState = this.productiveVerificationTool ? 'not_yet_available' : null;
+    // Terminal recovery may require one exact authoritative verification even after the
+    // ordinary mutation-scoped verification permit was consumed. Keep this separate from
+    // verificationPermits so recovery cannot reopen arbitrary run_check access.
+    this.recoveryVerificationSignature = null;
     this.productiveInitialEvidenceBudget = positiveInteger(
       Number(this.productiveProgress?.initialEvidenceBudget ?? 1),
       'productiveProgress.initialEvidenceBudget',
@@ -237,12 +360,21 @@ export class ProgressController {
       ]),
     );
     this.productiveEvidenceRemaining = 0;
-    // Set by `setEvidenceBudget` from the planner's own per-task estimate. When present it
-    // takes priority over the by-complexity table: complexity is not a valid proxy for how
-    // much repository evidence a task actually needs before it is safe to mutate.
+    // Legacy/direct-classification compatibility only. Successful PreparedImplementation
+    // handoffs do not install a numeric evidence allowance; they start action-oriented and use
+    // explicit required mutation anchors plus need_more_evidence for unresolved facts.
     this.productiveEvidenceBudgetOverride = null;
+    this.requiredMutationAnchors = new Set();
     this.lastEvidenceRequestSignature = null;
     this.evidenceUnlockUsedSinceProgress = false;
+    // Snapshot only an accepted need_more_evidence transition. Blocked attempts may still
+    // produce tool_execution_end(isError=true) in Pi core, so execution-end rollback must
+    // never infer ownership from tool name alone.
+    this.pendingEvidenceUnlock = null;
+    // Distinguish the one-action escape hatch opened by need_more_evidence from the
+    // planner/bootstrap evidence window, which may legitimately contain several actions.
+    this.blockerEvidenceWindowActive = false;
+    this.pendingEvidenceConsumptionNotice = null;
     this.semanticLookupAwaitingRead = false;
     this.semanticFallbackEvidenceUsed = false;
     this.requireLspStartBeforeFindSymbol = config.requireLspStartBeforeFindSymbol === true;
@@ -254,6 +386,7 @@ export class ProgressController {
     this.largeMutationBudgetTool = this.productiveProgress?.largeMutationBudgetTool ?? null;
     this.largeMutationBudgetMaxTokens = this.productiveProgress?.largeMutationBudgetMaxTokens ?? null;
     this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
     // Planner-owned intent is separate from the pending/active grant so evidence turns
     // stay on the normal budget until the action phase is actually reached.
     this.automaticLargeMutationBudgetArmed = false;
@@ -297,9 +430,7 @@ export class ProgressController {
     return { complexity: name, previous, changed: previous !== name };
   }
 
-  // Records the planner's own bounded evidence estimate for this task, independent of the
-  // trivial/nontrivial complexity classification. `null` clears any override and restores
-  // the by-complexity table as a fallback.
+  // Legacy/direct-classification evidence override. New successful Planner handoffs do not use it.
   setEvidenceBudget(value) {
     if (value == null) {
       this.productiveEvidenceBudgetOverride = null;
@@ -313,12 +444,53 @@ export class ProgressController {
     return budget;
   }
 
+  installRequiredMutationAnchors(paths = []) {
+    if (!Array.isArray(paths)) throw new Error('required mutation anchors must be an array');
+    const normalized = paths.map(normalizedRepositoryPath);
+    if (normalized.some(path => !path)) throw new Error('required mutation anchor must be a safe repository-relative path');
+    this.requiredMutationAnchors = new Set(normalized);
+    return this.pendingRequiredMutationAnchors();
+  }
+
+  pendingRequiredMutationAnchors() {
+    return [...this.requiredMutationAnchors].sort();
+  }
+
+  isRequiredMutationAnchorRead(toolName, input) {
+    const candidate = toolName === 'read' ? normalizedRepositoryPath(input?.path) : null;
+    return Boolean(candidate && this.requiredMutationAnchors.has(candidate));
+  }
+
   verificationPermitted() {
     return this.verificationPermits > 0;
   }
 
   verificationLifecycleState() {
     return this.verificationState;
+  }
+
+  armRecoveryVerification(input) {
+    if (!this.productiveVerificationTool) return false;
+    this.recoveryVerificationSignature = recoveryVerificationSignature(this.productiveVerificationTool, input ?? {});
+    return true;
+  }
+
+  recoveryVerificationArmed() {
+    return this.recoveryVerificationSignature != null;
+  }
+
+  clearRecoveryVerification() {
+    const armed = this.recoveryVerificationSignature != null;
+    this.recoveryVerificationSignature = null;
+    return armed;
+  }
+
+  commitRecoveryVerification(input) {
+    if (!this.productiveVerificationTool || this.recoveryVerificationSignature == null) return false;
+    const signature = recoveryVerificationSignature(this.productiveVerificationTool, input ?? {});
+    if (signature !== this.recoveryVerificationSignature) return false;
+    this.recoveryVerificationSignature = null;
+    return true;
   }
 
   armAutomaticLargeMutationBudget(enabled) {
@@ -335,11 +507,29 @@ export class ProgressController {
   maybeGrantAutomaticLargeMutationBudget() {
     if (!this.automaticLargeMutationBudgetArmed ||
         this.largeMutationBudgetState !== 'idle' ||
-        this.productiveState !== 'action_required') {
+        this.productiveState !== 'action_required' ||
+        this.requiredMutationAnchors.size > 0) {
       return false;
     }
     this.automaticLargeMutationBudgetArmed = false;
     this.largeMutationBudgetState = 'pending';
+    this.largeMutationBudgetSource = 'automatic';
+    return true;
+  }
+
+  // Reuses the same pending -> active -> consumed one-shot grant as the normal
+  // request_large_mutation_budget tool. Recovery is chosen by the transport
+  // controller only after a corroborated, non-executed coding-tool call.
+  grantTruncatedCodingToolBudget() {
+    if (!this.largeMutationBudgetTool ||
+        !Number.isSafeInteger(this.largeMutationBudgetMaxTokens) ||
+        this.largeMutationBudgetMaxTokens < 1 ||
+        this.largeMutationBudgetState !== 'idle' ||
+        this.productiveState !== 'action_required' ||
+        this.requiredMutationAnchors.size > 0) return false;
+    this.automaticLargeMutationBudgetArmed = false;
+    this.largeMutationBudgetState = 'pending';
+    this.largeMutationBudgetSource = 'transport_recovery';
     return true;
   }
 
@@ -365,11 +555,49 @@ export class ProgressController {
   resetLargeMutationBudget() {
     const wasActive = this.largeMutationBudgetState === 'active';
     this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
     return wasActive;
+  }
+
+  yieldLargeMutationBudgetForEvidence() {
+    if (this.largeMutationBudgetState !== 'active' || this.productiveState !== 'evidence_allowed' || !this.evidenceUnlockUsedSinceProgress) {
+      return { yielded: false, rearmed: false };
+    }
+    const rearmed = this.largeMutationBudgetSource === 'automatic';
+    this.largeMutationBudgetState = 'idle';
+    this.largeMutationBudgetSource = null;
+    if (rearmed) this.automaticLargeMutationBudgetArmed = true;
+    return { yielded: true, rearmed };
   }
 
   productiveProgressState() {
     return this.productiveState;
+  }
+
+  evidenceUnlockAvailable() {
+    return Boolean(
+      this.productiveBlockerTool &&
+      this.productiveState === 'action_required' &&
+      !this.evidenceUnlockUsedSinceProgress
+    );
+  }
+
+  consumeEvidenceActionNotice() {
+    const notice = this.pendingEvidenceConsumptionNotice;
+    this.pendingEvidenceConsumptionNotice = null;
+    return notice;
+  }
+
+  restoreRuntimeBlockedEvidenceAction(notice) {
+    if (!notice || !this.productiveProgress || !this.productiveBlockerTool) return false;
+    // need_more_evidence grants exactly one executable evidence action. A harness/runtime policy
+    // rejection is not an evidence attempt, so restore the same open permit instead of forcing the
+    // model to lose it or request a second unlock.
+    this.pendingEvidenceConsumptionNotice = null;
+    this.productiveEvidenceRemaining = Math.max(1, this.productiveEvidenceRemaining);
+    this.productiveState = 'evidence_allowed';
+    this.blockerEvidenceWindowActive = true;
+    return true;
   }
 
   complexityRecorded() {
@@ -382,12 +610,8 @@ export class ProgressController {
     return this.complexityRecorded() || this.preparationState === 'PREPARATION_FALLBACK';
   }
 
-  enterPreparationFallback() {
-    if (!this.requiredFirstReadDone ||
-        !this.usedSingleUseTools.has(this.productiveActivationTool) ||
-        this.preparationSatisfied()) {
-      throw new Error('Preparation fallback requires an attempted, unresolved preparation action');
-    }
+  // Bootstrap resolved planner infrastructure failure before the first provider request.
+  installPreparationFallback() {
     this.preparationState = 'PREPARATION_FALLBACK';
     // No planner estimate is available, so grant a small deterministic orientation window
     // to establish the canonical source/test layout before mutation. The normal bounded
@@ -401,6 +625,59 @@ export class ProgressController {
       complexity: this.complexity,
       evidenceBudget: PREPARATION_FALLBACK_EVIDENCE_BUDGET,
     };
+  }
+
+  // Installs a PreparedImplementation artifact resolved by the runtime bootstrap before the main
+  // session's first provider request. New handoffs are action-oriented: opaque Planner planText stays
+  // untrusted while runtime-owned metadata drives controller state, and directActionTools remain
+  // available for execution-time repository inspection. Legacy artifacts with evidenceBudget retain
+  // their previous numeric startup window only for compatibility.
+  applyPreparedImplementation(prepared) {
+    if (prepared.status === 'fallback') {
+      this.preparedDirectActionToolsEnabled = false;
+      return { ...this.installPreparationFallback(), largeMutationArmed: false };
+    }
+    this.preparedDirectActionToolsEnabled = true;
+    this.setComplexity(prepared.complexity);
+    this.installRequiredMutationAnchors(prepared.requiredMutationAnchors ?? []);
+    const largeMutationArmed = this.armAutomaticLargeMutationBudget(prepared.largeMutation);
+    const legacyEvidenceBudget = Object.hasOwn(prepared, 'evidenceBudget');
+    if (legacyEvidenceBudget) {
+      this.setEvidenceBudget(prepared.evidenceBudget);
+      const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
+      this.productiveEvidenceRemaining = evidenceBudget;
+      this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
+      this.evidenceUnlockUsedSinceProgress = false;
+      return {
+        preparationState: this.preparationState,
+        complexity: this.complexity,
+        evidenceBudget,
+        requiredMutationAnchors: this.pendingRequiredMutationAnchors(),
+        largeMutationArmed,
+      };
+    }
+
+    this.setEvidenceBudget(null);
+    this.productiveEvidenceRemaining = 0;
+    this.productiveState = 'action_required';
+    this.evidenceUnlockUsedSinceProgress = false;
+    return {
+      preparationState: this.preparationState,
+      complexity: this.complexity,
+      requiredMutationAnchors: this.pendingRequiredMutationAnchors(),
+      largeMutationArmed,
+    };
+  }
+
+  directActionToolNames() {
+    if (!this.preparedDirectActionToolsEnabled || this.productiveState !== 'action_required') return [];
+    return [...this.productiveDirectActionTools];
+  }
+
+  directActionToolAllowed(toolName) {
+    return this.preparedDirectActionToolsEnabled &&
+      this.productiveState === 'action_required' &&
+      this.productiveDirectActionTools.has(toolName);
   }
 
   preComplexityActionRequired() {
@@ -433,7 +710,12 @@ export class ProgressController {
     this.turnUsedTool = false;
   }
 
-  checkToolCall(toolName, input) {
+  checkToolCall(toolName, input, { productiveEvidenceIndependent = false } = {}) {
+    const recoveryVerificationCall =
+      Boolean(this.productiveVerificationTool) &&
+      toolName === this.productiveVerificationTool &&
+      this.recoveryVerificationSignature === recoveryVerificationSignature(toolName, input ?? {});
+
     if (!this.requiredFirstReadDone) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const allowed = toolName === 'read' &&
@@ -449,10 +731,18 @@ export class ProgressController {
     // spend it on nothing but an actual mutation, rollback, or terminal submission. This is
     // the real guarantee; the runtime's tool-surface restriction is UX on top of it, not a
     // substitute for it.
-    if (this.largeMutationBudgetTool && this.largeMutationBudgetState === 'active' && !FINISH_TOOLS.has(toolName)) {
+    const elevatedEvidenceUnlock = Boolean(this.productiveBlockerTool && toolName === this.productiveBlockerTool);
+    if (
+      this.largeMutationBudgetTool &&
+      this.largeMutationBudgetState === 'active' &&
+      !ELEVATED_MUTATION_TURN_TOOLS.has(toolName) &&
+      !elevatedEvidenceUnlock &&
+      !recoveryVerificationCall
+    ) {
+      const blockerGuidance = this.productiveBlockerTool ? `, or ${this.productiveBlockerTool} for one concrete missing fact` : '';
       return {
         block: true,
-        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only structural_edit, safe_edit, edit, write, rollback_last_mutation, or a terminal submit action are allowed.`,
+        reason: `BLOCKED: ${toolName} did not execute. The elevated mutation budget is active this turn; only accept_mutation_scope, structural_edit, safe_edit, edit, write, rollback_last_mutation, a terminal submit action${blockerGuidance} are allowed.`,
       };
     }
 
@@ -473,6 +763,7 @@ export class ProgressController {
       };
     }
 
+    let acceptedEvidenceUnlock = null;
     const pendingComplexityTransition =
       this.requireComplexity &&
       !this.preparationSatisfied() &&
@@ -480,6 +771,7 @@ export class ProgressController {
     const terminalTool = TERMINAL_TOOLS.has(toolName);
     const finishTool = FINISH_TOOLS.has(toolName);
     let acceptedVerificationCall = false;
+    let acceptedRecoveryVerificationCall = false;
 
     const preComplexityEvidenceTool =
       this.requireComplexity &&
@@ -532,10 +824,21 @@ export class ProgressController {
           reason: `BLOCKED: ${toolName} did not execute. A large mutation budget can only be requested once productive progress is action_required; finish gathering evidence first.`,
         };
       }
+      if (this.requiredMutationAnchors.size > 0) {
+        return {
+          block: true,
+          reason: `BLOCKED: ${toolName} did not execute. Read required mutation anchor(s) first: ${this.pendingRequiredMutationAnchors().join(', ')}.`,
+        };
+      }
     }
 
-    if (toolName === 'bash' && this.boundedDirectBash && !isBoundedDirectBash(input?.command)) {
-      return { block: true, reason: 'Direct main-agent bash is limited to a bounded git diff/status on one known path. Delegate searches, tests, logs, and broader commands.' };
+    if (
+      toolName === 'bash' &&
+      this.boundedDirectBash &&
+      !this.directActionToolAllowed('bash') &&
+      !isBoundedDirectBash(input?.command)
+    ) {
+      return { block: true, reason: 'Direct main-agent bash is limited to a bounded git diff/status on one known path. Delegate searches, tests, logs, and broader commands in this mode.' };
     }
 
     if (this.delegatedTools.has(toolName)) {
@@ -568,7 +871,30 @@ export class ProgressController {
       };
     }
 
-    if (this.productiveProgress) {
+    if (productiveEvidenceIndependent && toolName !== 'read') {
+      return {
+        block: true,
+        reason: `BLOCKED: productiveEvidenceIndependent is reserved for bounded repair reads; ${toolName} did not execute.`,
+      };
+    }
+
+    const requiredAnchorRead = this.isRequiredMutationAnchorRead(toolName, input);
+    if (ANCHOR_GATED_MUTATION_TOOLS.has(toolName) && this.requiredMutationAnchors.size > 0) {
+      const mutationPath = normalizedRepositoryPath(input?.path);
+      const blocksSpecificAnchor = mutationPath && this.requiredMutationAnchors.has(mutationPath);
+      const blocksCodingSession = toolName === 'begin_coding_session';
+      if (blocksSpecificAnchor || blocksCodingSession) {
+        return {
+          block: true,
+          reason: `BLOCKED: read required mutation anchor(s) before this mutation: ${this.pendingRequiredMutationAnchors().join(', ')}.`,
+        };
+      }
+    }
+
+    // Repair reads and exact PreparedImplementation mutation-anchor reads may be admitted without
+    // reopening a general repository evidence window. Every generic controller invariant and
+    // repeat/turn guard still applies.
+    if (this.productiveProgress && !productiveEvidenceIndependent) {
       const requestedPath = typeof input?.path === 'string' ? input.path : '';
       const activatesOnRead =
         this.productiveState === 'inactive' &&
@@ -581,6 +907,10 @@ export class ProgressController {
         this.productiveState = 'action_required';
       } else if (this.productiveState === 'action_required') {
         if (this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+          const evidenceRequest = validateSingleEvidenceRequest(input);
+          if (!evidenceRequest.ok) {
+            return { block: true, reason: `BLOCKED: ${evidenceRequest.reason}` };
+          }
           const blockerSignature = toolCallSignature(toolName, input);
           if (blockerSignature === this.lastEvidenceRequestSignature) {
             return {
@@ -594,12 +924,25 @@ export class ProgressController {
               reason: 'BLOCKED: an extra evidence permit was already used since the last successful structural_edit/safe_edit/edit/write/submit_result. Act on the evidence already gathered before requesting more.',
             };
           }
-          this.lastEvidenceRequestSignature = blockerSignature;
-          this.evidenceUnlockUsedSinceProgress = true;
-          this.productiveEvidenceRemaining = 1;
-          this.productiveState = 'evidence_allowed';
+          acceptedEvidenceUnlock = {
+            signature: blockerSignature,
+            previous: {
+              lastEvidenceRequestSignature: this.lastEvidenceRequestSignature,
+              evidenceUnlockUsedSinceProgress: this.evidenceUnlockUsedSinceProgress,
+              productiveEvidenceRemaining: this.productiveEvidenceRemaining,
+              productiveState: this.productiveState,
+              blockerEvidenceWindowActive: this.blockerEvidenceWindowActive,
+            },
+          };
         } else if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
-          if (this.verificationPermits > 0) {
+          if (recoveryVerificationCall) {
+            acceptedRecoveryVerificationCall = true;
+          } else if (this.recoveryVerificationSignature) {
+            return {
+              block: true,
+              reason: `BLOCKED: terminal recovery requires the exact authoritative verification action; this ${toolName} input does not match it.`,
+            };
+          } else if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
           } else {
             return {
@@ -609,7 +952,12 @@ export class ProgressController {
                 : `BLOCKED: ${toolName} is not yet available; it becomes available after a successful mutation.`,
             };
           }
-        } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
+        } else if (
+          !requiredAnchorRead &&
+          !this.productiveActionTools.has(toolName) &&
+          !this.productiveControlTools.has(toolName) &&
+          !this.directActionToolAllowed(toolName)
+        ) {
           return {
             block: true,
             reason: this.productiveBlockerTool
@@ -625,7 +973,14 @@ export class ProgressController {
           };
         }
         if (this.productiveVerificationTool && toolName === this.productiveVerificationTool) {
-          if (this.verificationPermits > 0) {
+          if (recoveryVerificationCall) {
+            acceptedRecoveryVerificationCall = true;
+          } else if (this.recoveryVerificationSignature) {
+            return {
+              block: true,
+              reason: `BLOCKED: terminal recovery requires the exact authoritative verification action; this ${toolName} input does not match it.`,
+            };
+          } else if (this.verificationPermits > 0) {
             acceptedVerificationCall = true;
           } else {
             return {
@@ -636,27 +991,36 @@ export class ProgressController {
             };
           }
         } else if (!this.productiveActionTools.has(toolName) && !this.productiveControlTools.has(toolName)) {
-          const semanticFallback = this.semanticLookupAwaitingRead &&
-            !this.semanticFallbackEvidenceUsed &&
-            toolName !== 'read' &&
-            toolName !== 'lsp_find_symbol';
-          if (semanticFallback) {
-            // A name lookup can complete successfully at the transport level yet
-            // return no useful match. Permit exactly one deterministic fallback
-            // discovery action without stealing the authoritative source read.
-            this.semanticFallbackEvidenceUsed = true;
+          if (this.blockerEvidenceWindowActive) {
+            // need_more_evidence is a strict one-action escape hatch: the first accepted
+            // evidence call consumes the permit immediately, whatever evidence tool it is.
+            this.productiveEvidenceRemaining = 0;
+            this.productiveState = 'action_required';
+            this.blockerEvidenceWindowActive = false;
+            this.pendingEvidenceConsumptionNotice = { tool: toolName };
           } else {
-            // Consume bounded evidence budget at accepted call time. This still
-            // prevents unbounded parallel exploration, while allowing a short
-            // locate -> read -> anchor sequence before mutation is required.
-            this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
-            if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+            const semanticFallback = this.semanticLookupAwaitingRead &&
+              !this.semanticFallbackEvidenceUsed &&
+              toolName !== 'read' &&
+              toolName !== 'lsp_find_symbol';
+            if (semanticFallback) {
+              // Planner/bootstrap evidence windows retain the deterministic semantic fallback.
+              this.semanticFallbackEvidenceUsed = true;
+            } else {
+              this.productiveEvidenceRemaining = Math.max(0, this.productiveEvidenceRemaining - 1);
+              if (this.productiveEvidenceRemaining === 0) this.productiveState = 'action_required';
+            }
           }
         }
       }
     }
 
-    if (this.absoluteTurn >= this.turnLimit && !finishTool && !pendingComplexityTransition) {
+    if (
+      this.absoluteTurn >= this.turnLimit &&
+      !finishTool &&
+      !pendingComplexityTransition &&
+      !acceptedRecoveryVerificationCall
+    ) {
       return {
         block: true,
         reason: `BLOCKED: ${toolName} did not execute. Global execution limit reached (${this.turnLimit} turns). Exploration is closed; use only the pending preparation/classification action or terminal submit tool to finish.`,
@@ -664,21 +1028,36 @@ export class ProgressController {
     }
 
     const signature = toolCallSignature(toolName, input);
-    if (signature === this.lastSignature) this.repeatCount += 1;
-    else {
+    if (acceptedRecoveryVerificationCall) {
+      // The terminal obligation itself is fresh authoritative reason to retry this exact check.
+      // Do not let the ordinary consecutive-call guard veto the one recovery permit.
       this.lastSignature = signature;
       this.repeatCount = 1;
-    }
-    if (this.repeatCount > this.repeatThreshold) {
-      return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
+    } else {
+      if (signature === this.lastSignature) this.repeatCount += 1;
+      else {
+        this.lastSignature = signature;
+        this.repeatCount = 1;
+      }
+      if (this.repeatCount > this.repeatThreshold) {
+        return { block: true, reason: `You already ran this exact ${toolName} call ${this.repeatCount - 1} times consecutively; reuse the result or change strategy.` };
+      }
     }
     if (preComplexityEvidenceTool && this.preComplexityEvidenceRemaining != null) {
       this.preComplexityEvidenceRemaining = Math.max(0, this.preComplexityEvidenceRemaining - 1);
     }
     if (toolName === 'lsp_start_server') this.lspServerStartPending = true;
-    if (acceptedVerificationCall) {
+    if (acceptedVerificationCall && !acceptedRecoveryVerificationCall) {
       this.verificationPermits -= 1;
       if (this.verificationPermits === 0) this.verificationState = 'exhausted';
+    }
+    if (acceptedEvidenceUnlock) {
+      this.pendingEvidenceUnlock = acceptedEvidenceUnlock;
+      this.lastEvidenceRequestSignature = acceptedEvidenceUnlock.signature;
+      this.evidenceUnlockUsedSinceProgress = true;
+      this.productiveEvidenceRemaining = 1;
+      this.blockerEvidenceWindowActive = true;
+      this.productiveState = 'evidence_allowed';
     }
     this.turnUsedTool = true;
     return undefined;
@@ -693,11 +1072,33 @@ export class ProgressController {
       tool: toolName,
       serverId: input?.server_id,
       workspaceRoot: input?.workspace_root,
-      fallback: key === 'preparation' && this.preparationState === 'PREPARATION_FALLBACK',
     });
   }
 
-  onToolExecutionEnd(toolName, isError, { madeProgress = true } = {}) {
+  onToolExecutionEnd(toolName, isError, {
+    madeProgress = true,
+    input = null,
+    strictBlockerEvidence = false,
+    verificationEligible = madeProgress,
+    requiredAnchorMissing = false,
+  } = {}) {
+    if (this.productiveProgress && this.productiveBlockerTool && toolName === this.productiveBlockerTool) {
+      const pending = this.pendingEvidenceUnlock;
+      const executionSignature = input == null ? null : toolCallSignature(toolName, input);
+      if (pending && executionSignature === pending.signature) {
+        // Only the exact blocker call that opened this evidence window owns its rollback.
+        // Pi core also emits tool_execution_end for locally blocked attempts; those calls
+        // have no accepted-input record and therefore cannot reset the per-epoch limit.
+        this.pendingEvidenceUnlock = null;
+        if (isError) {
+          this.lastEvidenceRequestSignature = pending.previous.lastEvidenceRequestSignature;
+          this.evidenceUnlockUsedSinceProgress = pending.previous.evidenceUnlockUsedSinceProgress;
+          this.productiveEvidenceRemaining = pending.previous.productiveEvidenceRemaining;
+          this.productiveState = pending.previous.productiveState;
+          this.blockerEvidenceWindowActive = pending.previous.blockerEvidenceWindowActive;
+        }
+      }
+    }
     if (
       isError &&
       this.requireComplexity &&
@@ -711,6 +1112,16 @@ export class ProgressController {
         this.preComplexityEvidenceRemaining + 1,
       );
     }
+    if (toolName === 'read') {
+      const anchor = normalizedRepositoryPath(input?.path);
+      // A required anchor normally clears only after a successful read. If the runtime
+      // independently proves the path is absent after that exact read fails, the planner's
+      // "existing file" assumption is stale: release the anchor so the path can be treated as
+      // a new-file target instead of deadlocking mutation/coding-session startup.
+      if (anchor && (!isError || requiredAnchorMissing === true)) {
+        this.requiredMutationAnchors.delete(anchor);
+      }
+    }
     if (toolName === 'lsp_start_server') {
       this.lspServerStartPending = false;
       if (this.requireLspStartBeforeFindSymbol) this.lspServerReady = !isError;
@@ -722,11 +1133,13 @@ export class ProgressController {
       } else if (isError) {
         this.semanticLookupAwaitingRead = false;
         this.semanticFallbackEvidenceUsed = false;
-        // Failed semantic discovery produced no evidence. Restore the permit
-        // consumed when the call was accepted so fallback search + exact read
-        // can still fit inside the same bounded evidence window.
-        this.productiveEvidenceRemaining += 1;
-        if (this.productiveState === 'action_required') this.productiveState = 'evidence_allowed';
+        if (!strictBlockerEvidence) {
+          // Planner/bootstrap evidence windows may recover from a failed semantic lookup.
+          // A need_more_evidence window is different: its one accepted action is consumed
+          // regardless of outcome, so failure must return to action_required.
+          this.productiveEvidenceRemaining += 1;
+          if (this.productiveState === 'action_required') this.productiveState = 'evidence_allowed';
+        }
       }
     }
     if (this.productiveProgress && toolName === 'read' && !isError && this.semanticLookupAwaitingRead) {
@@ -734,15 +1147,6 @@ export class ProgressController {
       this.semanticFallbackEvidenceUsed = false;
       this.productiveEvidenceRemaining = 0;
       if (this.productiveState === 'evidence_allowed') this.productiveState = 'action_required';
-    }
-    if (!isError && this.productiveProgress && toolName === this.productiveActivationTool &&
-        this.preparationState !== 'PREPARATION_FALLBACK') {
-      const evidenceBudget = this.productiveInitialEvidenceBudgetForComplexity();
-      this.productiveEvidenceRemaining = evidenceBudget;
-      // A task whose planner-reported evidence need is zero has nothing to gather: go
-      // straight to action_required instead of granting one incidental evidence action.
-      this.productiveState = evidenceBudget > 0 ? 'evidence_allowed' : 'action_required';
-      this.evidenceUnlockUsedSinceProgress = false;
     }
     if (!isError && this.automaticLargeMutationBudgetArmed &&
         (FINISH_TOOLS.has(toolName) || toolName === this.codingSessionTool)) {
@@ -753,15 +1157,24 @@ export class ProgressController {
     if (!isError && this.largeMutationBudgetTool && toolName === this.largeMutationBudgetTool) {
       this.automaticLargeMutationBudgetArmed = false;
       this.largeMutationBudgetState = 'pending';
+      this.largeMutationBudgetSource = 'manual';
     }
-    if (!isError && this.productiveVerificationTool && MUTATION_TOOLS.has(toolName)) {
+    if (
+      !isError &&
+      verificationEligible === true &&
+      this.productiveVerificationTool &&
+      MUTATION_TOOLS.has(toolName)
+    ) {
       this.verificationPermits = 1;
       this.verificationState = 'available';
     }
     if (!isError && this.productiveProgress && this.productiveActionTools.has(toolName)) {
       this.semanticLookupAwaitingRead = false;
       this.semanticFallbackEvidenceUsed = false;
-      if (madeProgress) this.evidenceUnlockUsedSinceProgress = false;
+      if (madeProgress) {
+        this.evidenceUnlockUsedSinceProgress = false;
+        this.blockerEvidenceWindowActive = false;
+      }
       if (toolName === ROLLBACK_TOOL || this.productiveState === 'evidence_allowed') {
         this.productiveState = 'action_required';
       }

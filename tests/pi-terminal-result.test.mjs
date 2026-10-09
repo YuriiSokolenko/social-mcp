@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { terminalResult, registerSubmitNudge, registerTerminalTool } from '../scripts/pi-common/terminal-tool.mjs';
+import { terminalMarkerSubmitted, terminalResult, registerSubmitNudge, registerTerminalTool } from '../scripts/pi-common/terminal-tool.mjs';
 
 test('terminalResult returns one terminating text result with details intact', () => {
   const details = { ok: true };
@@ -23,6 +23,31 @@ test('terminalResult records the shared terminal marker when configured', () => 
   } finally {
     if (previous === undefined) delete process.env.PI_TERMINAL_RESULT_FILE;
     else process.env.PI_TERMINAL_RESULT_FILE = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('implementer never accepts or creates the legacy bare terminal marker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-strict-'));
+  const marker = path.join(dir, 'submitted');
+  try {
+    fs.writeFileSync(marker, 'submitted\n');
+    assert.equal(
+      terminalMarkerSubmitted({ PI_STAGE: 'implementer', PI_TERMINAL_RESULT_FILE: marker }),
+      false,
+    );
+    assert.equal(
+      terminalMarkerSubmitted({ PI_STAGE: 'reviewer', PI_TERMINAL_RESULT_FILE: marker }),
+      true,
+    );
+    assert.throws(
+      () => terminalResult('done', undefined, null, {
+        PI_STAGE: 'implementer',
+        PI_TERMINAL_RESULT_FILE: marker,
+      }),
+      /implementer_terminal_receipt_required/,
+    );
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -154,5 +179,26 @@ test('failed terminal action keeps settle recovery active until a successful ret
 
   const result = await tool.execute('second', {});
   assert.equal(result.terminate, true);
+  assert.equal(settle(), undefined);
+});
+
+test('#426 repeated failed terminal action stops nudging after a bounded count', async () => {
+  let tool;
+  let settle;
+  const pi = {
+    registerTool(value) { tool = value; },
+    appendEntry() {},
+    on(event, fn) { if (event === 'agent_before_settle') settle = fn; },
+  };
+  registerTerminalTool(pi, {
+    label: 'Submit',
+    description: 'Submit result',
+    parameters: { type: 'object', properties: {} },
+    nudgeText: 'retry submit_result',
+    execute: async () => { throw new Error('submission_file_set_mismatch'); },
+  });
+
+  await assert.rejects(tool.execute('first', {}), /submission_file_set_mismatch/);
+  for (let index = 0; index < 3; index += 1) assert.equal(settle().continue, true);
   assert.equal(settle(), undefined);
 });

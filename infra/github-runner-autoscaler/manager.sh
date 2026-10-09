@@ -7,8 +7,8 @@ GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}"
 MAX_RUNNERS="${MAX_RUNNERS:-8}"
 MODEL_MAX_CONCURRENCY="${MODEL_MAX_CONCURRENCY:-8}"
 POLL_SECONDS="${POLL_SECONDS:-6}"
-RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:0.89.1-mini-swe}"
-RUN_CHECK_SANDBOX_IMAGE="${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.0}"
+RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3}"
+RUN_CHECK_SANDBOX_IMAGE="${RUN_CHECK_SANDBOX_IMAGE:-n150/run-check-sandbox:0.1.2}"
 RUN_CHECK_EXECUTOR_URL="${RUN_CHECK_EXECUTOR_URL:-http://127.0.0.1:17343}"
 RUN_CHECK_EXECUTOR_PORT="${RUN_CHECK_EXECUTOR_PORT:-17343}"
 RUN_CHECK_STAGE_VOLUME="${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}"
@@ -37,6 +37,18 @@ MODEL_STATUS_URL="${MODEL_STATUS_URL:-}"
 CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-5}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-15}"
 DOCKER_TIMEOUT_SECONDS="${DOCKER_TIMEOUT_SECONDS:-30}"
+DOCKER_DEEP_PROBE_INTERVAL_SECONDS="${DOCKER_DEEP_PROBE_INTERVAL_SECONDS:-300}"
+DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS=60
+DOCKER_HEALTH_RETRY_SECONDS=5
+[[ "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "DOCKER_DEEP_PROBE_INTERVAL_SECONDS must be a positive integer" >&2
+  exit 1
+}
+# Optional durable infra evidence (#437). Workers run with --rm and GitHub job
+# logs can expire, so quarantine events and worker diagnostics go to a volume.
+INFRA_EVIDENCE_DIR="${INFRA_EVIDENCE_DIR:-}"
+INFRA_EVIDENCE_VOLUME="${INFRA_EVIDENCE_VOLUME:-}"
+INFRA_EVIDENCE_MAX_EVENTS=500
 CURL_TIMEOUT_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS")
 
 if [ -n "$PIP_CACHE_HOST_DIR" ]; then
@@ -307,8 +319,161 @@ verify_run_check_sandbox() {
   return 1
 }
 
+# A fresh named volume is root:root 0755, but workers run as `runner`. Open it up
+# before any worker starts, not lazily on the first event.
+init_infra_evidence_dir() {
+  [ -n "$INFRA_EVIDENCE_DIR" ] || return 0
+  { mkdir -p "$INFRA_EVIDENCE_DIR" && chmod 1777 "$INFRA_EVIDENCE_DIR"; } 2>/dev/null \
+    || log "warning: could not initialise infra evidence dir $INFRA_EVIDENCE_DIR"
+}
+
+record_infra_evidence() {
+  local event="$1" detail="$2" file="${INFRA_EVIDENCE_DIR}/events.jsonl" containers=""
+  [ -n "$INFRA_EVIDENCE_DIR" ] || return 0
+  if [ "$event" == quarantined ]; then
+    containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Status}}' 2>&1 | head -n 40)" || true
+  fi
+  {
+    init_infra_evidence_dir
+    jq -nc --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --arg event "$event" --arg prefix "$RUNNER_PREFIX" \
+      --arg detail "${detail:0:2000}" --arg containers "${containers:0:4000}" \
+      '{ts: $ts, event: $event, pool: $prefix, detail: $detail, containers: $containers}' >> "$file"
+    if [ "$(wc -l < "$file")" -gt "$INFRA_EVIDENCE_MAX_EVENTS" ]; then
+      tail -n "$INFRA_EVIDENCE_MAX_EVENTS" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    fi
+  } 2>/dev/null || log "warning: could not record infra evidence for $event"
+}
+
+# Quarantine is pool-wide: no registration tokens or containers while unhealthy.
+# Never prune/restart a shared daemon automatically; that could kill busy jobs.
+DOCKER_QUARANTINED=false
+DOCKER_HEALTHY_POLLS=0
+DOCKER_LAST_DEEP_PROBE_EPOCH=0
+DOCKER_DEEP_PROBE_REQUIRED=true
+DOCKER_FORCED_DEEP_PROBE_PENDING=false
+
+docker_health_now() {
+  date +%s
+}
+
+request_docker_deep_probe() {
+  [ "$MOUNT_DOCKER_SOCKET" == true ] || return 0
+  DOCKER_FORCED_DEEP_PROBE_PENDING=true
+}
+
+docker_deep_probe_due() {
+  [ "$MOUNT_DOCKER_SOCKET" == true ] || return 1
+  [ "$DOCKER_QUARANTINED" == true ] && return 0
+  [ "$DOCKER_DEEP_PROBE_REQUIRED" == true ] && return 0
+
+  local now elapsed
+  now="$(docker_health_now)" || return 0
+  [[ "$now" =~ ^[0-9]+$ ]] || return 0
+  [ "$now" -ge "$DOCKER_LAST_DEEP_PROBE_EPOCH" ] || return 0
+  elapsed=$((now - DOCKER_LAST_DEEP_PROBE_EPOCH))
+
+  # Container-start failures are a useful corruption signal, but failures such
+  # as a missing image or a busy daemon must not turn the expensive metadata
+  # walk back into a per-poll hot loop. Quarantine bypasses this throttle above.
+  if [ "$DOCKER_FORCED_DEEP_PROBE_PENDING" == true ] \
+    && [ "$elapsed" -ge "$DOCKER_FORCED_DEEP_PROBE_MIN_INTERVAL_SECONDS" ]; then
+    return 0
+  fi
+
+  [ "$elapsed" -ge "$DOCKER_DEEP_PROBE_INTERVAL_SECONDS" ]
+}
+
+run_docker_health_check() {
+  local command="$1" output code attempts=0
+  while true; do
+    if [ "$command" == info ]; then
+      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker info 2>&1)"; then
+        return 0
+      fi
+    else
+      # Unlike `ps`, system df traverses rw snapshots and detects the #401 corruption.
+      if output="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker system df 2>&1)"; then
+        return 0
+      fi
+    fi
+
+    if [ "$attempts" -eq 0 ]; then
+      attempts=1
+      log "warning: Docker $command health check failed; retrying once in ${DOCKER_HEALTH_RETRY_SECONDS}s: $output"
+      sleep "$DOCKER_HEALTH_RETRY_SECONDS"
+      continue
+    fi
+
+    code=DOCKER_DAEMON_UNHEALTHY
+    [[ "$output" != *'rw layer snapshot not found'* ]] || code=DOCKER_METADATA_CORRUPTION
+    DOCKER_HEALTHY_POLLS=0
+    if [ "$DOCKER_QUARANTINED" != true ]; then
+      DOCKER_QUARANTINED=true
+      record_infra_evidence quarantined "code=$code check=$command diagnostic=$output"
+    fi
+    log "infra_error code=$code general pool quarantined check=$command diagnostic=$output; inspect Docker/containerd journals and stale container IDs; repair host before retrying (no automatic prune/restart)"
+    return 1
+  done
+}
+
+run_docker_deep_probe() {
+  run_docker_health_check metadata || return 1
+
+  local now
+  now="$(docker_health_now)" || now=
+  if [[ "$now" =~ ^[0-9]+$ ]]; then
+    DOCKER_LAST_DEEP_PROBE_EPOCH="$now"
+    DOCKER_DEEP_PROBE_REQUIRED=false
+    DOCKER_FORCED_DEEP_PROBE_PENDING=false
+  else
+    DOCKER_DEEP_PROBE_REQUIRED=true
+  fi
+  log "Docker metadata health probe healthy interval=${DOCKER_DEEP_PROBE_INTERVAL_SECONDS}s"
+}
+
+general_daemon_health() {
+  [ "$MOUNT_DOCKER_SOCKET" == true ] || return 0
+
+  # Keep the scheduler fast path cheap: daemon liveness is checked every poll,
+  # while the storage/metadata walk is startup/cadence/failure/recovery only.
+  run_docker_health_check info || return 1
+  if docker_deep_probe_due; then
+    run_docker_deep_probe || return 1
+  fi
+
+  if [ "$DOCKER_QUARANTINED" == true ]; then
+    DOCKER_HEALTHY_POLLS=$((DOCKER_HEALTHY_POLLS + 1))
+    [ "$DOCKER_HEALTHY_POLLS" -ge 2 ] || return 1
+    DOCKER_QUARANTINED=false
+    DOCKER_HEALTHY_POLLS=0
+    log "general pool recovered after two healthy daemon polls"
+    record_infra_evidence recovered "two healthy daemon polls"
+  fi
+}
+
+quarantine_general_runners() {
+  local names name id
+  # GitHub refuses deletion of busy runners. Stop idle registrations accepting
+  # unrelated jobs even if Docker cannot enumerate/stop their containers.
+  names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
+    .runners | if type != "array" then error("missing runners") else
+      map(select((.name | startswith($prefix)) and .busy == false
+        and any(.labels[]?; (.name | ascii_downcase) == "general"))) |
+      map([.id, .name] | @tsv) | join("\n") end')" || return 1
+  [ -n "$names" ] || return 0
+  while IFS=$'\t' read -r id name; do
+    [[ "$id" =~ ^[0-9]+$ && "$name" == "${RUNNER_PREFIX}-"* ]] || continue
+    log "quarantine: removing idle general runner registration id=$id"
+    curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || {
+      log "warning: quarantine deletion refused for runner id=$id (possibly newly busy); continuing with remaining idle runners"
+      continue
+    }
+  done <<< "$names"
+}
+
 spawn_runner() {
   local token name docker_args run_check_token
+  general_daemon_health || return 1
   if [ "$MOUNT_PI_CONFIG" == true ]; then
     verify_run_check_sandbox || return 1
   fi
@@ -344,6 +509,10 @@ spawn_runner() {
   fi
   if [ "$MOUNT_DOCKER_SOCKET" == true ]; then
     docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+    if [ -n "$INFRA_EVIDENCE_DIR" ] && [ -n "$INFRA_EVIDENCE_VOLUME" ]; then
+      init_infra_evidence_dir
+      docker_args+=(-v "${INFRA_EVIDENCE_VOLUME}:/evidence" -e INFRA_EVIDENCE_DIR=/evidence)
+    fi
   fi
   if [ -n "$PIP_CACHE_HOST_DIR" ]; then
     docker_args+=(--mount "type=bind,source=${PIP_CACHE_HOST_DIR},target=/home/runner/.cache/pip")
@@ -351,12 +520,26 @@ spawn_runner() {
 
   log "starting ephemeral runner $name (labels=${RUNNER_LABELS})"
 
-  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run "${docker_args[@]}" "${RUNNER_IMAGE}" >/dev/null
+  if ! run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker run "${docker_args[@]}" "${RUNNER_IMAGE}" >/dev/null; then
+    # A failed container create/start can be the first visible symptom of
+    # snapshot metadata corruption. Request an early deep validation, bounded
+    # by the forced-probe minimum gap so unrelated persistent failures cannot
+    # recreate a per-poll metadata hot loop. Pi runners never take this path.
+    request_docker_deep_probe
+    general_daemon_health || true
+    return 1
+  fi
 }
 
 main() {
   log "started repo=${GITHUB_REPOSITORY} max=${MAX_RUNNERS} poll=${POLL_SECONDS}s workflows=${WORKFLOW_FILES} labels=${RUNNER_LABELS}"
+  init_infra_evidence_dir
   while true; do
+    if ! general_daemon_health; then
+      quarantine_general_runners || log "warning: unable to quarantine idle general registrations"
+      sleep "$POLL_SECONDS"
+      continue
+    fi
     cleanup_stale_registrations || log "warning: stale-runner cleanup failed"
 
     if ! queued="$(queued_jobs)" || ! busy="$(busy_ephemeral_runners)" || ! active="$(active_containers)"; then
@@ -398,7 +581,7 @@ main() {
     log "queued=$queued busy=$busy active=$active desired=$desired model_slots_total=$model_total model_slots_busy=$model_busy model_capacity=$available spawning=$to_start"
     if [ "$to_start" -gt 0 ]; then
       for _ in $(seq 1 "$to_start"); do
-        spawn_runner || log "warning: failed to start runner"
+        spawn_runner || { log "warning: failed to start runner; stopping spawn batch"; break; }
       done
     fi
 

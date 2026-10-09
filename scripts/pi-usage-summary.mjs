@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { completenessNote, summarizeUsage } from "./pi-common/usage-ledger.mjs";
 
 // A run this large or slow almost always means the model got stuck repeating
 // itself rather than doing proportionally more useful work: normal Architect
@@ -13,11 +14,11 @@ export function usageWarning(responses, modelSeconds, {
   maxSeconds = Number(process.env.PI_USAGE_WARN_SECONDS ?? 5400),
 } = {}) {
   if (responses > maxResponses) {
-    return `Pi usage: ${responses} responses exceeds the ${maxResponses}-response guard threshold; `
+    return `Pi usage: ${responses} provider responses exceeds the ${maxResponses}-response guard threshold; `
       + "the run likely got stuck repeating tool calls instead of converging.";
   }
   if (modelSeconds > maxSeconds) {
-    return `Pi usage: ${modelSeconds.toFixed(1)}s of model time exceeds the ${maxSeconds}s guard threshold; `
+    return `Pi usage: ${modelSeconds.toFixed(1)}s of provider response time exceeds the ${maxSeconds}s guard threshold; `
       + "the run likely got stuck repeating tool calls instead of converging.";
   }
   return null;
@@ -32,41 +33,34 @@ const records = file && existsSync(file)
     try { return [JSON.parse(line)]; } catch { return []; }
   })
   : [];
-const unique = new Map(records.map((record) => [`${record.call}:${record.response}`, record]));
-const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, responseMs: 0 };
-const calls = new Map();
-for (const record of unique.values()) {
-  const usage = record.usage ?? {};
-  const row = calls.get(record.call) ?? {
-    responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, responseMs: 0,
-  };
-  for (const target of [row, totals]) {
-    target.input += usage.input ?? 0;
-    target.output += usage.output ?? 0;
-    target.cacheRead += usage.cacheRead ?? 0;
-    target.cacheWrite += usage.cacheWrite ?? 0;
-    target.total += usage.totalTokens
-      ?? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
-    target.responseMs += record.responseMs ?? 0;
-  }
-  row.responses += 1;
-  calls.set(record.call, row);
-}
+const ledger = summarizeUsage(records);
+const { calls, totals } = ledger;
 const n = (value) => value.toLocaleString("en-US");
+function cacheReadDisplay(row) {
+  if ((row.cacheReadUnknownResponses ?? 0) > 0) {
+    return (row.cacheReadKnownResponses ?? 0) > 0 ? `${n(row.cacheRead)} + unknown` : "unknown";
+  }
+  return n(row.cacheRead);
+}
 const lines = [
   `### Pi usage · ${issue ? `issue #${issue}` : "issue unavailable"} · ${phase}`,
   "",
-  "| Call | Responses | Fresh input | Output | Cache read | Cache write | Total tokens | Model time |",
-  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+  "| Call | Logical usage records | Provider responses | Fresh input | Output | Cache read | Cache write | Total tokens | Known provider response time | Delegated lifecycle time |",
+  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
 ];
 for (const [call, row] of calls) {
-  lines.push(`| ${call} | ${row.responses} | ${n(row.input)} | ${n(row.output)} | ${n(row.cacheRead)} | ${n(row.cacheWrite)} | ${n(row.total)} | ${(row.responseMs / 1000).toFixed(1)} s |`);
+  lines.push(`| ${call} | ${row.responses} | ${row.providerResponses} | ${n(row.input)} | ${n(row.output)} | ${cacheReadDisplay(row)} | ${n(row.cacheWrite)} | ${n(row.total)} | ${(row.providerResponseMs / 1000).toFixed(1)} s | ${(row.delegatedLifecycleMs / 1000).toFixed(1)} s |`);
 }
-lines.push(`| **Total** | **${unique.size}** | **${n(totals.input)}** | **${n(totals.output)}** | **${n(totals.cacheRead)}** | **${n(totals.cacheWrite)}** | **${n(totals.total)}** | **${(totals.responseMs / 1000).toFixed(1)} s** |`);
-lines.push("", "Total tokens include repeated cache reads. Fresh input/output and cache traffic are shown separately so cumulative cached context is not mistaken for newly consumed context.", "Completed main-model responses and finalized delegated-model usage are included. Runner time and all attempts are in the repository usage table.", "");
-const main = calls.get("main") ?? { responses: 0, responseMs: 0 };
-const warning = usageWarning(main.responses, main.responseMs / 1000);
+lines.push(`| **Total${ledger.complete ? "" : " (known lower bound)"}** | **${totals.responses}** | **${totals.providerResponses}** | **${n(totals.input)}** | **${n(totals.output)}** | **${cacheReadDisplay(totals)}** | **${n(totals.cacheWrite)}** | **${n(totals.total)}** | **${(totals.providerResponseMs / 1000).toFixed(1)} s** | **${(totals.delegatedLifecycleMs / 1000).toFixed(1)} s** |`);
+lines.push("", "Logical usage records preserve token accounting, including synthetic settlement records. Provider trace metrics strengthen aggregate request-count/time lower bounds when available; synthetic settlements never increment provider-response counts.", "Usage guard warnings remain scoped to the main model call stream because their thresholds were calibrated for main-agent convergence, not planner/coding/delegate traffic.", "Delegated lifecycle time comes from delegate durationMs and is shown separately because it may include queueing, tool execution and other runtime work; it is not added to provider response time.", "Cache read is provider-authoritative: missing cache telemetry is rendered as unknown, while an explicit provider zero remains 0. Total-token semantics remain provider/SDK-defined.", "");
+lines.push(`> ${completenessNote(ledger)}`, "");
+const mainUsage = calls.get('main');
+const warning = usageWarning(
+  mainUsage?.providerResponses ?? 0,
+  (mainUsage?.providerResponseMs ?? 0) / 1000,
+);
 if (warning) lines.push(`> [!WARNING]`, `> ${warning}`, "");
 if (summary) appendFileSync(summary, lines.join("\n") + "\n");
-console.log(`Pi usage: ${unique.size} responses · fresh ${n(totals.input)} in / ${n(totals.output)} out · cache read ${n(totals.cacheRead)} · total ${n(totals.total)} · ${(totals.responseMs / 1000).toFixed(1)} s model time`);
+console.log(`Pi usage${ledger.complete ? "" : " (INCOMPLETE, known lower bound)"}: ${totals.responses} logical usage records · ${totals.providerResponses} provider responses · fresh ${n(totals.input)} in / ${n(totals.output)} out · cache read ${cacheReadDisplay(totals)} · total ${n(totals.total)} · ${(totals.providerResponseMs / 1000).toFixed(1)} s known provider response time · ${(totals.delegatedLifecycleMs / 1000).toFixed(1)} s delegated lifecycle time`);
+if (!ledger.complete) console.log(`::warning::${completenessNote(ledger)}`);
 if (warning) console.log(`::warning::${warning}`);

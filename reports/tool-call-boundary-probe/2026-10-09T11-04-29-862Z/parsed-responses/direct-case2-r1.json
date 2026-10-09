@@ -1,0 +1,41 @@
+{
+  "raw": "{\"id\":\"chatcmpl-83601440483db828\",\"object\":\"chat.completion\",\"created\":1791544014,\"model\":\"Qwen3.8-Flash-Next-NVFP4\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"refusal\":null,\"annotations\":null,\"audio\":null,\"function_call\":null,\"tool_calls\":[{\"id\":\"chatcmpl-tool-bd3153afacb9bb40\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{\\\"path\\\": \\\"probe/synthetic_large.py\\\"}\"}}],\"reasoning\":\"The user wants me to call write exactly once with the full content of 180 functions. I must generate the complete content, not omit any. Let me carefully construct it.\\n\\nStructure:\\n- `# BEGIN TOOL_CALL_BOUNDARY_PROBE`\\n- docstring\\n- 180 functions\\n- `# END TOOL_CALL_BOUNDARY_PROBE`\\n\\nI need to write all 180 functions. Let me be careful with numbering: transform_001..transform_180, with docstrings \\\"case N\\\" and f-strings \\\"case-N:\\\".\\n\\nNote the reference uses `f\\\"case-1:\\\" + str(value)` — an f-string with no placeholder. That's fine, it's deterministic and prefixed with \\\"case-N:\\\".\\n\\nLet me generate all 180 blocks carefully. Each block:\\n\\n```\\ndef transform_001(value):\\n    \\\"\\\"\\\"Return a stable transformed value for case 1.\\\"\\\"\\\"\\n    return f\\\"case-1:\\\" + str(value)\\n```\\n\\nSeparated by blank lines.\\n\\nI need to be meticulous about the 3-digit padding: 001-099, then 100-180.\\n\\nLet me write it out.\\n\"},\"logprobs\":null,\"finish_reason\":\"length\",\"stop_reason\":null,\"token_ids\":null,\"routed_experts\":null}],\"service_tier\":null,\"system_fingerprint\":\"vllm-0.1.dev20073+g8e685d198-7b3c9d11\",\"usage\":{\"prompt_tokens\":7306,\"total_tokens\":9354,\"completion_tokens\":2048,\"prompt_tokens_details\":null,\"completion_tokens_details\":{\"reasoning_tokens\":259}},\"prompt_logprobs\":null,\"prompt_token_ids\":null,\"prompt_text\":null,\"kv_transfer_params\":null,\"ec_transfer_params\":null,\"metrics\":null}",
+  "choices": [
+    {
+      "index": 0,
+      "content": "",
+      "reasoning": "The user wants me to call write exactly once with the full content of 180 functions. I must generate the complete content, not omit any. Let me carefully construct it.\n\nStructure:\n- `# BEGIN TOOL_CALL_BOUNDARY_PROBE`\n- docstring\n- 180 functions\n- `# END TOOL_CALL_BOUNDARY_PROBE`\n\nI need to write all 180 functions. Let me be careful with numbering: transform_001..transform_180, with docstrings \"case N\" and f-strings \"case-N:\".\n\nNote the reference uses `f\"case-1:\" + str(value)` — an f-string with no placeholder. That's fine, it's deterministic and prefixed with \"case-N:\".\n\nLet me generate all 180 blocks carefully. Each block:\n\n```\ndef transform_001(value):\n    \"\"\"Return a stable transformed value for case 1.\"\"\"\n    return f\"case-1:\" + str(value)\n```\n\nSeparated by blank lines.\n\nI need to be meticulous about the 3-digit padding: 001-099, then 100-180.\n\nLet me write it out.\n",
+      "finishReasons": [
+        "length"
+      ],
+      "toolCalls": [
+        {
+          "index": 0,
+          "id": "chatcmpl-tool-bd3153afacb9bb40",
+          "type": "function",
+          "name": "write",
+          "arguments": "{\"path\": \"probe/synthetic_large.py\"}"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 7306,
+    "total_tokens": 9354,
+    "completion_tokens": 2048,
+    "prompt_tokens_details": null,
+    "completion_tokens_details": {
+      "reasoning_tokens": 259
+    }
+  },
+  "model": "Qwen3.8-Flash-Next-NVFP4",
+  "missingDone": false,
+  "firstTokenMs": null,
+  "status": 200,
+  "headers": {
+    "content-length": "1820",
+    "content-type": "application/json",
+    "date": "Fri, 09 Oct 2026 11:06:53 GMT",
+    "server": "uvicorn"
+  }
+}

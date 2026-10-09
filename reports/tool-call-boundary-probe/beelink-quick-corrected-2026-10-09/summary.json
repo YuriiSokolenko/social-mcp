@@ -1,0 +1,467 @@
+{
+  "requestCount": 8,
+  "categories": {
+    "MODEL_OR_BACKEND": 0,
+    "PROXY": 3,
+    "PI_PARSING": 0,
+    "OUTPUT_TRUNCATION": 0,
+    "SCHEMA_ERROR": 0,
+    "SERVER_ERROR": 0,
+    "UNKNOWN": 5
+  },
+  "validToolCalls": 1,
+  "validToolCallPercent": 12.5,
+  "missing_path": 0,
+  "missing_content": 0,
+  "missing_resultText": 0,
+  "malformedJson": 0,
+  "incompleteArgumentsOnTransport": 1,
+  "reasoningOnly": 1,
+  "ordinaryTextOnly": 0,
+  "requiredViolations": 0,
+  "strictErrors": 0,
+  "tool_calls_finish_with_invalid_args": 0,
+  "stop_finish_with_tool_call": 0,
+  "missingDone": 2,
+  "transportErrors": 7,
+  "latencyMs": {
+    "mean": 6131.375,
+    "p95": 15011
+  },
+  "environment": [
+    {
+      "name": "direct",
+      "base": "http://127.0.0.1:3009/v1",
+      "models": {
+        "url": "http://127.0.0.1:3009/v1/models",
+        "error": "fetch failed"
+      },
+      "version": {
+        "url": "http://127.0.0.1:3009/version",
+        "error": "fetch failed"
+      },
+      "openapi": {
+        "url": "http://127.0.0.1:3009/openapi.json",
+        "error": "fetch failed"
+      },
+      "modelIds": [],
+      "configEvidence": "Read-only endpoints only; parser/template/guided-decoding configuration is unverified unless exposed by server."
+    },
+    {
+      "name": "proxy",
+      "base": "http://127.0.0.1:4001/v1",
+      "models": {
+        "url": "http://127.0.0.1:4001/v1/models",
+        "status": 200,
+        "headers": {
+          "content-length": "466",
+          "content-type": "application/json",
+          "date": "Fri, 09 Oct 2026 10:27:14 GMT, Fri, 09 Oct 2026 10:27:14 GMT",
+          "server": "uvicorn, uvicorn"
+        },
+        "data": {
+          "object": "list",
+          "data": [
+            {
+              "id": "Qwen3.8-Flash-Next-NVFP4",
+              "object": "model",
+              "created": 1791541635,
+              "owned_by": "vllm",
+              "root": "/model",
+              "parent": null,
+              "max_model_len": 262144,
+              "permission": [
+                {
+                  "id": "modelperm-96bd8f5946ea0bb8",
+                  "object": "model_permission",
+                  "created": 1791541635,
+                  "allow_create_engine": false,
+                  "allow_sampling": true,
+                  "allow_logprobs": true,
+                  "allow_search_indices": false,
+                  "allow_view": true,
+                  "allow_fine_tuning": false,
+                  "organization": "*",
+                  "group": null,
+                  "is_blocking": false
+                }
+              ]
+            }
+          ]
+        },
+        "raw": "{\"object\":\"list\",\"data\":[{\"id\":\"Qwen3.8-Flash-Next-NVFP4\",\"object\":\"model\",\"created\":1791541635,\"owned_by\":\"vllm\",\"root\":\"/model\",\"parent\":null,\"max_model_len\":262144,\"permission\":[{\"id\":\"modelperm-96bd8f5946ea0bb8\",\"object\":\"model_permission\",\"created\":1791541635,\"allow_create_engine\":false,\"allow_sampling\":true,\"allow_logprobs\":true,\"allow_search_indices\":false,\"allow_view\":true,\"allow_fine_tuning\":false,\"organization\":\"*\",\"group\":null,\"is_blocking\":false}]}]}"
+      },
+      "version": {
+        "url": "http://127.0.0.1:4001/version",
+        "status": 200,
+        "headers": {
+          "content-length": "37",
+          "content-type": "application/json",
+          "date": "Fri, 09 Oct 2026 10:27:14 GMT, Fri, 09 Oct 2026 10:27:14 GMT",
+          "server": "uvicorn, uvicorn"
+        },
+        "data": {
+          "version": "0.1.dev20073+g8e685d198"
+        },
+        "raw": "{\"version\":\"0.1.dev20073+g8e685d198\"}"
+      },
+      "openapi": {
+        "url": "http://127.0.0.1:4001/openapi.json",
+        "status": 200,
+        "headers": {
+          "content-length": "3059",
+          "content-type": "application/json",
+          "date": "Fri, 09 Oct 2026 10:27:14 GMT",
+          "server": "uvicorn"
+        },
+        "data": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "FastAPI",
+            "version": "0.1.0"
+          },
+          "paths": {
+            "/{path}": {
+              "get": {
+                "summary": "Proxy",
+                "operationId": "proxy__path__get",
+                "parameters": [
+                  {
+                    "name": "path",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                      "type": "string",
+                      "title": "Path"
+                    }
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Successful Response",
+                    "content": {
+                      "application/json": {
+                        "schema": {}
+                      }
+                    }
+                  },
+                  "422": {
+                    "description": "Validation Error",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "$ref": "#/components/schemas/HTTPValidationError"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "patch": {
+                "summary": "Proxy",
+                "operationId": "proxy__path__get",
+                "parameters": [
+                  {
+                    "name": "path",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                      "type": "string",
+                      "title": "Path"
+                    }
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Successful Response",
+                    "content": {
+                      "application/json": {
+                        "schema": {}
+                      }
+                    }
+                  },
+                  "422": {
+                    "description": "Validation Error",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "$ref": "#/components/schemas/HTTPValidationError"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "delete": {
+                "summary": "Proxy",
+                "operationId": "proxy__path__get",
+                "parameters": [
+                  {
+                    "name": "path",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                      "type": "string",
+                      "title": "Path"
+                    }
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Successful Response",
+                    "content": {
+                      "application/json": {
+                        "schema": {}
+                      }
+                    }
+                  },
+                  "422": {
+                    "description": "Validation Error",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "$ref": "#/components/schemas/HTTPValidationError"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "options": {
+                "summary": "Proxy",
+                "operationId": "proxy__path__get",
+                "parameters": [
+                  {
+                    "name": "path",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                      "type": "string",
+                      "title": "Path"
+                    }
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Successful Response",
+                    "content": {
+                      "application/json": {
+                        "schema": {}
+                      }
+                    }
+                  },
+                  "422": {
+                    "description": "Validation Error",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "$ref": "#/components/schemas/HTTPValidationError"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "post": {
+                "summary": "Proxy",
+                "operationId": "proxy__path__get",
+                "parameters": [
+                  {
+                    "name": "path",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                      "type": "string",
+                      "title": "Path"
+                    }
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Successful Response",
+                    "content": {
+                      "application/json": {
+                        "schema": {}
+                      }
+                    }
+                  },
+                  "422": {
+                    "description": "Validation Error",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "$ref": "#/components/schemas/HTTPValidationError"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "put": {
+                "summary": "Proxy",
+                "operationId": "proxy__path__get",
+                "parameters": [
+                  {
+                    "name": "path",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                      "type": "string",
+                      "title": "Path"
+                    }
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Successful Response",
+                    "content": {
+                      "application/json": {
+                        "schema": {}
+                      }
+                    }
+                  },
+                  "422": {
+                    "description": "Validation Error",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "$ref": "#/components/schemas/HTTPValidationError"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "components": {
+            "schemas": {
+              "HTTPValidationError": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "$ref": "#/components/schemas/ValidationError"
+                    },
+                    "type": "array",
+                    "title": "Detail"
+                  }
+                },
+                "type": "object",
+                "title": "HTTPValidationError"
+              },
+              "ValidationError": {
+                "properties": {
+                  "loc": {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    },
+                    "type": "array",
+                    "title": "Location"
+                  },
+                  "msg": {
+                    "type": "string",
+                    "title": "Message"
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Error Type"
+                  },
+                  "input": {
+                    "title": "Input"
+                  },
+                  "ctx": {
+                    "type": "object",
+                    "title": "Context"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "loc",
+                  "msg",
+                  "type"
+                ],
+                "title": "ValidationError"
+              }
+            }
+          }
+        },
+        "raw": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"FastAPI\",\"version\":\"0.1.0\"},\"paths\":{\"/{path}\":{\"get\":{\"summary\":\"Proxy\",\"operationId\":\"proxy__path__get\",\"parameters\":[{\"name\":\"path\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\",\"title\":\"Path\"}}],\"responses\":{\"200\":{\"description\":\"Successful Response\",\"content\":{\"application/json\":{\"schema\":{}}}},\"422\":{\"description\":\"Validation Error\",\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"#/components/schemas/HTTPValidationError\"}}}}}},\"patch\":{\"summary\":\"Proxy\",\"operationId\":\"proxy__path__get\",\"parameters\":[{\"name\":\"path\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\",\"title\":\"Path\"}}],\"responses\":{\"200\":{\"description\":\"Successful Response\",\"content\":{\"application/json\":{\"schema\":{}}}},\"422\":{\"description\":\"Validation Error\",\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"#/components/schemas/HTTPValidationError\"}}}}}},\"delete\":{\"summary\":\"Proxy\",\"operationId\":\"proxy__path__get\",\"parameters\":[{\"name\":\"path\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\",\"title\":\"Path\"}}],\"responses\":{\"200\":{\"description\":\"Successful Response\",\"content\":{\"application/json\":{\"schema\":{}}}},\"422\":{\"description\":\"Validation Error\",\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"#/components/schemas/HTTPValidationError\"}}}}}},\"options\":{\"summary\":\"Proxy\",\"operationId\":\"proxy__path__get\",\"parameters\":[{\"name\":\"path\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\",\"title\":\"Path\"}}],\"responses\":{\"200\":{\"description\":\"Successful Response\",\"content\":{\"application/json\":{\"schema\":{}}}},\"422\":{\"description\":\"Validation Error\",\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"#/components/schemas/HTTPValidationError\"}}}}}},\"post\":{\"summary\":\"Proxy\",\"operationId\":\"proxy__path__get\",\"parameters\":[{\"name\":\"path\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\",\"title\":\"Path\"}}],\"responses\":{\"200\":{\"description\":\"Successful Response\",\"content\":{\"application/json\":{\"schema\":{}}}},\"422\":{\"description\":\"Validation Error\",\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"#/components/schemas/HTTPValidationError\"}}}}}},\"put\":{\"summary\":\"Proxy\",\"operationId\":\"proxy__path__get\",\"parameters\":[{\"name\":\"path\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\",\"title\":\"Path\"}}],\"responses\":{\"200\":{\"description\":\"Successful Response\",\"content\":{\"application/json\":{\"schema\":{}}}},\"422\":{\"description\":\"Validation Error\",\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"#/components/schemas/HTTPValidationError\"}}}}}}}},\"components\":{\"schemas\":{\"HTTPValidationError\":{\"properties\":{\"detail\":{\"items\":{\"$ref\":\"#/components/schemas/ValidationError\"},\"type\":\"array\",\"title\":\"Detail\"}},\"type\":\"object\",\"title\":\"HTTPValidationError\"},\"ValidationError\":{\"properties\":{\"loc\":{\"items\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"integer\"}]},\"type\":\"array\",\"title\":\"Location\"},\"msg\":{\"type\":\"string\",\"title\":\"Message\"},\"type\":{\"type\":\"string\",\"title\":\"Error Type\"},\"input\":{\"title\":\"Input\"},\"ctx\":{\"type\":\"object\",\"title\":\"Context\"}},\"type\":\"object\",\"required\":[\"loc\",\"msg\",\"type\"],\"title\":\"ValidationError\"}}}}"
+      },
+      "modelIds": [
+        "Qwen3.8-Flash-Next-NVFP4"
+      ],
+      "configEvidence": "Read-only endpoints only; parser/template/guided-decoding configuration is unverified unless exposed by server."
+    }
+  ],
+  "failures": [
+    {
+      "id": "direct-case1-r1",
+      "category": "UNKNOWN",
+      "endpoint": "direct",
+      "raw": "raw-responses/direct-case1-r1.bin",
+      "validation": [],
+      "requiredViolation": false
+    },
+    {
+      "id": "direct-case2-r1",
+      "category": "UNKNOWN",
+      "endpoint": "direct",
+      "raw": "raw-responses/direct-case2-r1.bin",
+      "validation": [],
+      "requiredViolation": false
+    },
+    {
+      "id": "direct-case3-r1",
+      "category": "UNKNOWN",
+      "endpoint": "direct",
+      "raw": "raw-responses/direct-case3-r1.bin",
+      "validation": [],
+      "requiredViolation": false
+    },
+    {
+      "id": "direct-case4-r1",
+      "category": "UNKNOWN",
+      "endpoint": "direct",
+      "raw": "raw-responses/direct-case4-r1.bin",
+      "validation": [],
+      "requiredViolation": false
+    },
+    {
+      "id": "proxy-case1-r1",
+      "category": "PROXY",
+      "endpoint": "proxy",
+      "raw": "raw-responses/proxy-case1-r1.bin",
+      "validation": [],
+      "requiredViolation": false
+    },
+    {
+      "id": "proxy-case2-r1",
+      "category": "PROXY",
+      "endpoint": "proxy",
+      "raw": "raw-responses/proxy-case2-r1.bin",
+      "validation": [],
+      "requiredViolation": false
+    },
+    {
+      "id": "proxy-case3-r1",
+      "category": "PROXY",
+      "endpoint": "proxy",
+      "raw": "raw-responses/proxy-case3-r1.bin",
+      "validation": [
+        {
+          "status": "malformed_json",
+          "error": "Unterminated string in JSON at position 645 (line 1 column 646)",
+          "missing": []
+        }
+      ],
+      "requiredViolation": false
+    }
+  ]
+}

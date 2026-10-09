@@ -53,9 +53,16 @@ jobs:
           command -v orbit >/dev/null
           orbit version
           cd "$RUNNER_TEMP"
-          orbit setup pi --mcp --yes --no-index >/dev/null
-          orbit index "$GITHUB_WORKSPACE" >/dev/null
-          echo "Orbit Local MCP configured and trusted dev checkout indexed."
+          if ! orbit setup pi --mcp --yes --no-index >/dev/null; then
+            echo "::warning::Orbit setup failed; Architect will continue and can use its read-only fallback."
+          fi
+          if ! orbit index "$GITHUB_WORKSPACE" >/dev/null; then
+            echo "::warning::Orbit index failed; Architect will continue and can use its read-only fallback."
+          fi
+          if ! bash "$GITHUB_WORKSPACE/scripts/orbit-context-preflight.sh" "$GITHUB_WORKSPACE"; then
+            echo "::warning::Orbit context preflight failed; Architect will continue and can use its read-only fallback."
+          fi
+          echo "Orbit Local MCP setup attempted for the trusted dev checkout."
 
       - name: Ask Pi Architect
         run: node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" architect --raw "$RUNNER_TEMP/pi-architect-result.jsonl"
@@ -85,3 +92,12 @@ jobs:
       - name: Summarize Pi usage
         if: always()
         run: node "$GITHUB_WORKSPACE/scripts/pi-usage-summary.mjs"
+
+      - name: Upload sanitized runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-diagnostics-architect-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-diagnostics-architect-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,43 @@
+{
+  "model": "Qwen3.8-Flash-Next-NVFP4",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a diagnostic model. All tool calls are synthetic data; never execute them. Return the requested tool call."
+    },
+    {
+      "role": "user",
+      "content": "Call write exactly once. Use path \"probe/synthetic_small.py\" and content for a valid Python file of 10-20 lines. Include marker lines # BEGIN TOOL_CALL_BOUNDARY_PROBE and # END TOOL_CALL_BOUNDARY_PROBE. Do not explain in text."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "write",
+        "description": "Write synthetic source code into a file",
+        "strict": true,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "tool_choice": "required",
+  "max_completion_tokens": 2048,
+  "temperature": 0,
+  "stream": false
+}

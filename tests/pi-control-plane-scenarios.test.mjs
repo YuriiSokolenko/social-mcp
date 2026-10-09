@@ -40,14 +40,14 @@ test('agent concurrency never cancels active work', () => {
   }
 });
 
-test('review invalidation on synchronize is serialized per PR, never in a shared group', () => {
-  const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
-  const group = workflow.match(/^concurrency:\n(?:\s+#.*\n)*\s+group: (.+)$/m)?.[1] ?? '';
-  // A group built only from inputs.pr_number collapses every synchronize event into one
-  // shared group, where GitHub cancels older pending runs and drops their invalidation.
-  assert.match(group, /github\.event\.pull_request\.number/);
-  assert.match(group, /inputs\.pr_number/);
-  assert.notEqual(group, 'pi-pr-review-${{ inputs.pr_number }}');
+test('Pi issue review invalidation is isolated per branch and outside the N150 queue', () => {
+  const workflow = fs.readFileSync('.github/workflows/pi-review-invalidate.yml', 'utf8');
+  const group = workflow.match(/^concurrency:\n\s+group: (.+)$/m)?.[1] ?? '';
+  assert.match(workflow, /push:[\s\S]*'pi\/issue-\*'/);
+  assert.match(group, /github\.ref_name/);
+  assert.match(workflow, /cancel-in-progress: true/);
+  assert.match(workflow, /runs-on: ubuntu-latest/);
+  assert.doesNotMatch(workflow, /n150|general/);
 });
 
 test('implementer checkpoint uses compare-and-swap lease and exact deletion', () => {
@@ -221,7 +221,15 @@ test('stale implementation refs do not create restored work when latest dev alre
   assert.match(worktree, /if \(!resumed\)[\s\S]*writeFileSync\(patch, ''\)/);
   assert.match(workflow, /PI_RESUME_ACTIVE=.*\.resumed/);
   assert.match(runtime, /PI_RESUME_ACTIVE/);
-  assert.match(resultTool, /PI_RESUME_ACTIVE/);
+  const resumeHelper = readScript('scripts/pi-common/restored-work.mjs', 'utf8');
+  const resumeAdapter = readScript('infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs', 'utf8');
+  assert.match(resultTool, /from '\.\/pi-common\/restored-work\.mjs'/);
+  assert.doesNotMatch(resultTool, /from ['"][^'"]*infra\//);
+  assert.match(resumeAdapter, /from '\.\.\/\.\.\/scripts\/pi-common\/restored-work\.mjs'/);
+  assert.match(resumeAdapter, /restoredWork\.toString\(\)/);
+  assert.equal((resumeHelper.match(/export function restoredWork\(/g) || []).length, 1);
+  assert.doesNotMatch(resumeAdapter, /function restoredWork\(/);
+  assert.doesNotMatch(resultTool, /function restoredWork\(/);
   assert.match(resultTool, /Latest dev already contains the replayed saved implementation/);
   assert.match(resultTool, /already_satisfied: true/);
 });

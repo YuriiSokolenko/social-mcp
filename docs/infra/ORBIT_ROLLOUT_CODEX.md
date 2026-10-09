@@ -1,10 +1,12 @@
-# Codex rollout: GitLab Orbit Local on N150 Pi runners
+# Historical rollout procedure: GitLab Orbit Local on N150 Pi runners
+
+> **One-time rollout note, not current N150 operations guidance.** The instructions below record the original host setup and may not match the installed image/configuration. For the deployed runner pools and supported operations, use [the runner/autoscaler README](../../infra/github-runner-autoscaler/README.md).
 
 This document covers only host-side deployment that cannot be performed through the GitHub repository connector.
 
 ## Goal
 
-Deploy the repository's updated `pi-agent` image so Architect and Implementer can use GitLab Orbit Local through Pi MCP. Keep Zoekt enabled; Orbit complements it.
+Deploy the repository's updated `pi-agent` image so Architect and Implementer can use GitLab Orbit Local through Pi MCP. Keep Zoekt enabled; Orbit complements it. Pi and general image deployments are separate pool operations; never restart a manager while its pool has an active job.
 
 ## Non-negotiable secret-safety rules
 
@@ -19,12 +21,12 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
 
 ## Steps
 
-1. Work in the existing N150 checkout for `YuriiSokolenko/social-mcp`. Fetch and fast-forward to the current `dev`. Do not discard unrelated local host configuration.
+1. Inspect the N150 checkout and active jobs first. If the checkout has unrelated dirty changes, preserve them and use a separate clean checkout of the merged `dev` commit for image builds. Do not force-stop busy workers or proceed while a safe drain cannot be established.
 
-2. Confirm the tracked worker image now installs the pinned Orbit package:
+2. Confirm the tracked worker image now installs the pinned GNU Orbit artifact and preloads DuckDB JSON:
 
    ```bash
-   grep -n '@gitlab/orbit@0.130.0' infra/github-runner-autoscaler/worker.Dockerfile
+   grep -nE 'ORBIT_VERSION=0.138.0|ORBIT_SHA256=|DUCKDB_JSON_SHA256=' infra/github-runner-autoscaler/worker.Dockerfile
    ```
 
 3. Rebuild the Pi ephemeral worker image:
@@ -32,7 +34,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker build \
      -f infra/github-runner-autoscaler/worker.Dockerfile \
-     -t n150/github-pi-runner-ephemeral:0.87.1 \
+     -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3 \
      .
    ```
 
@@ -41,17 +43,19 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
    ```bash
    docker run --rm \
      --entrypoint orbit \
-     n150/github-pi-runner-ephemeral:0.87.1 \
+     n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3 \
      version
    ```
 
-   Expected: a version matching the pinned package. Do not print container environment variables.
+   Expected: `0.138.0`. Do not print container environment variables.
 
-5. Restart only the Pi runner manager so newly spawned ephemeral runners use the rebuilt image:
+   The workflow preflight validates both issue source/test file contexts and a directory context immediately after indexing. Run a fresh Implementer or Architect workflow on the rebuilt image and confirm it prints three `Orbit context preflight passed` lines. This is the clean-container check; do not reuse an old runner container or HOME cache.
+
+5. After confirming the Pi pool is drained and the general pool remains untouched, update only the Pi image reference in the host `.env`, then recreate only the Pi manager so newly spawned ephemeral runners use the rebuilt image:
 
    ```bash
    cd infra/github-runner-autoscaler
-   docker compose --env-file .env up -d --build pi-runner-manager
+   docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
    ```
 
 6. Verify manager health without printing its environment:
@@ -63,7 +67,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
 
    Confirm normal polling resumes. Do not use `docker inspect` to dump env.
 
-7. Run one controlled Architect or Implementer workflow. In the job steps verify:
+7. Confirm the new runner registration and its image ID, then run one controlled Architect or Implementer workflow. In the job steps verify:
 
    - `Prepare Orbit Local code graph` succeeds.
    - the log shows `orbit version`;
@@ -75,7 +79,7 @@ Deploy the repository's updated `pi-agent` image so Architect and Implementer ca
 
 9. Confirm Zoekt remains available and unchanged. Orbit is for structural code-graph questions; Zoekt remains the fast shared literal/path/symbol index.
 
-10. Run the repository control-plane tests from the current `dev` checkout:
+10. Run the repository control-plane tests from the merged `dev` checkout:
 
     ```bash
     node --test tests/*.test.mjs

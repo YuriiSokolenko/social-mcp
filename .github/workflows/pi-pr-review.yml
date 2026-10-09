@@ -17,10 +17,6 @@ on:
           - default
           - laguna
           - qwen
-  pull_request:
-    types: [synchronize]
-    branches: [dev]
-
 permissions:
   actions: write
   contents: read
@@ -28,28 +24,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # synchronize has no inputs: key its invalidation per PR so pushes to different PRs never
-  # share a group (GitHub cancels older pending runs in a group, which would drop an invalidation).
-  group: ${{ github.event_name == 'pull_request' && format('pi-pr-review-invalidate-{0}', github.event.pull_request.number) || format('pi-pr-review-{0}', inputs.pr_number) }}
+  group: ${{ format('pi-pr-review-{0}', inputs.pr_number) }}
   cancel-in-progress: false
 
 jobs:
-  invalidate:
-    if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'pi/issue-')
-    runs-on: [self-hosted, linux, x64, n150, general]
-    steps:
-      - name: Checkout trusted dev
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          ref: dev
-
-      - name: Invalidate stale review verdict
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" invalidate "$PR"
-
   review:
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["RUNNING","DRAINING"]'), vars.PI_AUTOMATION_MODE)
     runs-on: [self-hosted, linux, x64, n150, pi-agent]
@@ -57,9 +35,11 @@ jobs:
     outputs:
       independent_outcome: ${{ steps.independent.outcome }}
       head_sha: ${{ steps.load.outputs.head_sha }}
-      model: ${{ inputs.model || 'default' }}
+      model: ${{ steps.record.outputs.model }}
     env:
       PR: ${{ inputs.pr_number }}
+      # Reviewer model selection is dispatch-input driven. "default" is resolved
+      # from trusted .pi/default-model by the shared stage runner; repo vars are not selectors here.
       PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
     steps:
       - name: Checkout trusted control repository
@@ -83,8 +63,33 @@ jobs:
           echo "head_sha=$(jq -r '.head' "$CONTEXT")" >> "$GITHUB_OUTPUT"
           echo "REVIEW_CONTEXT=$CONTEXT" >> "$GITHUB_ENV"
 
-      - name: Create review worktree
+      - name: Record review run identity
+        id: record
         if: steps.load.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_MODEL: ${{ inputs.model || 'default' }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          MODEL="$REVIEW_MODEL"
+          if [ "$MODEL" = "default" ]; then
+            MODEL="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/.pi/default-model")"
+          fi
+          case "$MODEL" in
+            laguna|qwen) ;;
+            *) echo "Unsupported resolved reviewer model: $MODEL" >&2; exit 1 ;;
+          esac
+          RECORDED="$(REVIEW_MODEL="$MODEL" node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID")"
+          STATUS="$(jq -r '.status' <<<"$RECORDED")"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "model=$(jq -r '.model // empty' <<<"$RECORDED")" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "stale" ]; then
+            echo "PR #$PR changed before review setup; skipping this stale run"
+          fi
+
+      - name: Create review worktree
+        if: steps.load.outputs.skip != 'true' && contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         run: |
           JOB_DIR="$RUNNER_TEMP/agent-reviewer-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "JOB_DIR=$JOB_DIR" >> "$GITHUB_ENV"
@@ -92,12 +97,12 @@ jobs:
           git worktree add --detach "$JOB_DIR" "$HEAD_SHA"
 
       - name: Prepare environment
-        if: steps.load.outputs.skip != 'true'
+        if: steps.load.outputs.skip != 'true' && contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/prepare-environment.mjs" reviewer "$JOB_DIR"
 
       - name: Run deterministic review checks
         id: checks
-        if: steps.load.outputs.skip != 'true'
+        if: steps.load.outputs.skip != 'true' && contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         continue-on-error: true
         run: |
           cd "$JOB_DIR"
@@ -107,16 +112,41 @@ jobs:
         if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.load.outputs.head_sha }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
       - name: Run independent review
         id: independent
-        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success'
+        if: >-
+          steps.load.outputs.skip != 'true' &&
+          steps.checks.outcome == 'success' &&
+          contains(fromJSON('["recorded","already-recorded"]'), steps.record.outputs.status)
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          STARTED="$(node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" start-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID")"
+          START_STATUS="$(jq -r '.status' <<<"$STARTED")"
+          if [[ "$START_STATUS" != "started" && "$START_STATUS" != "already-started" ]]; then
+            echo "Independent review start rejected with status: $START_STATUS" >&2
+            exit 1
+          fi
           cd "$JOB_DIR"
           RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
+          # The stage runner alone owns the terminal receipt path.
           node "$GITHUB_WORKSPACE/scripts/pi-run-stage.mjs" reviewer --raw "$RAW"
+
+      - name: Parse independent review result
+        id: parse
+        if: steps.independent.outcome == 'success'
+        continue-on-error: true
+        run: |
+          # The separate shell step receives the stage-owned receipt path via GITHUB_ENV.
+          # The parser must verify that receipt before any verdict is publishable.
+          RAW="$RUNNER_TEMP/pi-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.jsonl"
           node "$GITHUB_WORKSPACE/scripts/pi-review-result.mjs" "$RAW" > "$RUNNER_TEMP/review-result.json"
           jq -r '.text' "$RUNNER_TEMP/review-result.json"
 
@@ -130,9 +160,11 @@ jobs:
           retention-days: 14
 
       - name: Apply review result
-        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success' && steps.independent.outcome == 'success'
+        if: steps.load.outputs.skip != 'true' && steps.checks.outcome == 'success' && steps.independent.outcome == 'success' && steps.parse.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           RESULT="$RUNNER_TEMP/review-result.json"
           VERDICT="$(jq -r '.verdict' "$RESULT")"
@@ -153,36 +185,34 @@ jobs:
         if: steps.load.outputs.skip != 'true' && (env.VERDICT == 'CHANGES_REQUESTED')
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REVIEW_REQUIRE_CURRENT_VERDICT: "true"
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" CHANGES_REQUESTED
 
       - name: Wake merge gate after PASS
         if: steps.load.outputs.skip != 'true' && (env.VERDICT == 'PASS')
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REVIEW_REQUIRE_CURRENT_VERDICT: "true"
         run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" dispatch "$PR" PASS
 
-  recover_failed_review:
-    needs: review
-    if: always() && contains(fromJSON('["failure","cancelled"]'), needs.review.outputs.independent_outcome)
-    runs-on: [self-hosted, linux, x64, n150, general]
-    permissions:
-      actions: write
-      contents: read
-      issues: write
-      pull-requests: write
-    steps:
-      - name: Checkout trusted dev
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          ref: dev
+      - name: Fail job after independent review infrastructure failure
+        if: >-
+          always() &&
+          (contains(fromJSON('["failure","cancelled"]'), steps.independent.outcome) ||
+           contains(fromJSON('["failure","cancelled"]'), steps.parse.outcome))
+        run: |
+          echo "Independent review: ${{ steps.independent.outcome }}, receipt parsing: ${{ steps.parse.outcome }}; workflow_run recovery owns the bounded retry."
+          exit 1
 
-      - name: Persist failure and request bounded recovery
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ inputs.pr_number }}
-          HEAD_SHA: ${{ needs.review.outputs.head_sha }}
-          REVIEW_OUTCOME: ${{ needs.review.outputs.independent_outcome }}
-          REVIEW_MODEL: ${{ needs.review.outputs.model }}
-          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" recover-failure "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID"
+      - name: Upload sanitized runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-diagnostics-reviewer-${{ inputs.pr_number || github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-diagnostics-reviewer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7

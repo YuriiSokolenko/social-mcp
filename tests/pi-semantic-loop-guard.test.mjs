@@ -701,6 +701,115 @@ test('terminal submission is never flagged as a loop', () => {
   assert.equal(terminal.tripped, false);
 });
 
+function failedSubmit(guard, text) {
+  return observation(guard, {
+    tool: 'submit_result',
+    input: { summary: 'done' },
+    result: { content: [{ type: 'text', text }] },
+    isError: true,
+  });
+}
+
+function scratchWrite(guard, file, before, after) {
+  return observation(guard, {
+    tool: 'write',
+    input: { path: file },
+    result: { ok: true },
+    repositoryStateBefore: before,
+    repositoryStateAfter: after,
+    mutationChanged: true,
+  });
+}
+
+test('#426 failed submit_result is a failed strategy, not terminal success', () => {
+  const guard = new SemanticLoopGuard();
+  const first = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
+  assert.equal(first.classification, 'error');
+  assert.equal(first.tripped, false);
+});
+
+test('#426 reworded equivalent file-set failures trip as one strategy', () => {
+  const guard = new SemanticLoopGuard();
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js. Reworded retry guidance.');
+  const third = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js. Targeted cleanup available: undo_mutation({mutation_id:"m9",expected_files:["src/a.js"]})');
+  assert.equal(third.tripped, true);
+  assert.equal(third.reason, 'repeated_failed_strategy');
+  assert.equal(third.repeatedFailure, true);
+});
+
+test('#426 scratch-only mutation does not clear the submission obligation', () => {
+  const guard = new SemanticLoopGuard();
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
+  scratchWrite(guard, 'scratch/other.js', 'h0', 'h1');
+  failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
+  scratchWrite(guard, 'scratch/more.js', 'h1', 'h2');
+  const third = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: scratch/a.js');
+  assert.equal(third.tripped, true);
+});
+
+test('#426 fail, repair, fail, repair, exact pass completes without a trip', () => {
+  const guard = new SemanticLoopGuard();
+  for (const [index, file] of ['scratch/a.js', 'scratch/b.js'].entries()) {
+    const failed = failedSubmit(guard, 'Implementer file-set mismatch: unexpected files: ' + file);
+    assert.equal(failed.tripped, false);
+    const repair = scratchWrite(guard, file, 'r' + index, 'r' + (index + 1));
+    assert.equal(repair.tripped, false);
+  }
+  const pass = observation(guard, { tool: 'submit_result', input: { summary: 'done' }, result: { ok: true } });
+  assert.equal(pass.classification, 'terminal');
+  assert.equal(pass.tripped, false);
+});
+
+test('#426 editing an expected file echoed in the cleanup hint does not clear the obligation', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/a.js. Targeted cleanup available: undo_mutation({mutation_id:"m1",expected_files:["src/a.js"],reason:"x"})';
+  failedSubmit(guard, hint);
+  scratchWrite(guard, 'src/a.js', 'h0', 'h1');
+  failedSubmit(guard, hint);
+  scratchWrite(guard, 'src/a.js', 'h1', 'h2');
+  assert.equal(failedSubmit(guard, hint).tripped, true);
+});
+
+test('#426 undo_mutation clears the obligation via its result path', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/a.js';
+  failedSubmit(guard, hint);
+  failedSubmit(guard, hint);
+  const undo = observation(guard, {
+    tool: 'undo_mutation',
+    input: { mutation_id: 'm1', expected_files: ['src/a.js'] },
+    result: { content: [{ type: 'text', text: JSON.stringify({ status: 'undone', path: 'scratch/a.js' }) }], details: { path: 'scratch/a.js' } },
+    repositoryStateBefore: 'h0',
+    repositoryStateAfter: 'h1',
+    mutationChanged: true,
+  });
+  assert.equal(undo.tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, false);
+});
+
+test('#426 undo returning to an already-seen state restarts the failure count', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/b.js';
+  scratchWrite(guard, 'src/a.js', 'A', 'A2');
+  scratchWrite(guard, 'scratch/b.js', 'A2', 'B');
+  failedSubmit(guard, hint);
+  failedSubmit(guard, hint);
+  const undo = observation(guard, {
+    tool: 'undo_mutation',
+    input: { mutation_id: 'm1', expected_files: ['src/a.js'] },
+    result: { content: [{ type: 'text', text: JSON.stringify({ status: 'undone', path: 'scratch/b.js' }) }], details: { path: 'scratch/b.js' } },
+    repositoryStateBefore: 'B',
+    repositoryStateAfter: 'A2',
+    mutationChanged: true,
+  });
+  assert.equal(undo.classification, 'returned_to_seen_state');
+  assert.equal(undo.tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, false);
+  assert.equal(failedSubmit(guard, hint).tripped, true);
+});
+
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
 // Runs the real runtime extension against a mock `pi` in a child process.
@@ -722,20 +831,25 @@ function runRuntimeScenario(body, env = {}) {
     `);
     const runtimeUrl = new URL('../scripts/pi-agent-runtime.mjs', import.meta.url).href;
     const controllerUrl = new URL('../scripts/pi-common/progress-controller.mjs', import.meta.url).href;
+    const journalUrl = new URL('../scripts/pi-common/mutation-journal.mjs', import.meta.url).href;
+    const snapshotUrl = new URL('../scripts/pi-common/mutation-snapshot.mjs', import.meta.url).href;
     const script = `
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
       import path from 'node:path';
       const RUNTIME_URL = ${JSON.stringify(runtimeUrl)};
       const CONTROLLER_URL = ${JSON.stringify(controllerUrl)};
+      const JOURNAL_URL = ${JSON.stringify(journalUrl)};
+      const SNAPSHOT_URL = ${JSON.stringify(snapshotUrl)};
       const handlers = new Map();
       const messages = [];
+      const registeredTools = new Map();
       // This mock exercises loop-guard behavior, not tool-surface policy. Mirror Pi's mutable
       // active surface so runtime setActiveTools() calls remain observable on later tool calls.
       let activeTools = ['read', 'write', 'safe_edit', 'rollback_last_mutation'];
       const pi = {
         on: (name, handler) => handlers.set(name, handler),
-        registerTool: () => {},
+        registerTool: tool => registeredTools.set(tool.name, tool),
         getActiveTools: () => [...activeTools],
         setActiveTools: names => { activeTools = [...names]; },
         sendUserMessage: async (...args) => messages.push(args),
@@ -799,6 +913,7 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
     execFileSync('git', ['add', '.'], { cwd: repo });
     execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
 
     const result = runRuntimeScenario(`
       // Isolate handler wiring from the productive-progress gating rules.
@@ -833,12 +948,368 @@ test('runtime mock attributes interleaved mutations by toolCallId and aborts aft
     `, {
       PI_LOOP_GUARD_WINDOW: '4',
       PI_LOOP_GUARD_THRESHOLD: '1',
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: "{\"schema_version\":1,\"accepted\":[{\"path\":\"a.txt\",\"rationale\":\"Loop-guard test mutates the known a.txt fixture.\"},{\"path\":\"b.txt\",\"rationale\":\"Loop-guard test mutates the known b.txt fixture.\"}],\"temporary\":[],\"baseline\":[]}",
     });
     assert.match(result.stdout, /INTERLEAVED_LOOP_INTEGRATION_OK/);
     assert.match(result.stdout, /PI_LOOP_GUARD .*"tool":"safe_edit".*"noOp":true/);
     assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('#424 undo and persistent rollback invalidate terminal receipt before ledger append can fail', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-undo-ledger-failure-'));
+  const journalFile = path.join(os.tmpdir(), `pi-undo-ledger-journal-${process.pid}-${Date.now()}.json`);
+  const receiptFile = path.join(os.tmpdir(), `pi-undo-ledger-receipt-${process.pid}-${Date.now()}.json`);
+  const ledgerFile = path.join(os.tmpdir(), `pi-undo-ledger-ledger-${process.pid}-${Date.now()}.jsonl`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'target.txt'), 'base\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+    fs.writeFileSync(ledgerFile, '');
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      const journal = await import(JOURNAL_URL);
+      const snapshots = await import(SNAPSHOT_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      const target = path.join(repo, 'target.txt');
+
+      const directMutation = content => {
+        const before = snapshots.captureMutationSnapshot(repo, 'target.txt');
+        fs.writeFileSync(target, content);
+        const after = snapshots.captureMutationSnapshot(repo, 'target.txt');
+        return journal.recordSuccessfulMutation({
+          cwd: repo,
+          before,
+          after,
+          tool: 'write',
+          disposition: 'publishable',
+          env: process.env,
+        });
+      };
+
+      const forceLedgerFailure = async action => {
+        const originalAppend = fs.appendFileSync;
+        fs.appendFileSync = () => { throw new Error('forced ledger append failure'); };
+        try {
+          await assert.rejects(action(), /forced ledger append failure/);
+        } finally {
+          fs.appendFileSync = originalAppend;
+        }
+        assert.equal(fs.existsSync(process.env.PI_TERMINAL_RESULT_FILE), false);
+      };
+
+      const entry = directMutation('undo-target\\n');
+      fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'pre-undo receipt');
+      await forceLedgerFailure(() => registeredTools.get('undo_mutation').execute(
+        'undo-ledger-failure',
+        {
+          mutation_id: entry.id,
+          expected_files: [],
+          reason: 'verify receipt invalidation before failed ledger append',
+        },
+        null,
+        null,
+        ctx,
+      ));
+      assert.equal(fs.readFileSync(target, 'utf8'), 'base\\n');
+
+      // Record the next mutation through runtime events so this is the normal persistent
+      // rollback_last_mutation path rather than a direct journal-only fixture.
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'runtime-write',
+        toolName: 'write',
+        input: { path: 'target.txt' },
+      }, ctx), undefined);
+      fs.writeFileSync(target, 'rollback-target\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'runtime-write',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+
+      fs.writeFileSync(process.env.PI_TERMINAL_RESULT_FILE, 'pre-rollback receipt');
+      await forceLedgerFailure(() => registeredTools.get('rollback_last_mutation').execute(
+        'rollback-ledger-failure',
+        { reason: 'verify rollback invalidates before failed ledger append' },
+        null,
+        null,
+        ctx,
+      ));
+      assert.equal(fs.readFileSync(target, 'utf8'), 'base\\n');
+      assert.equal(journal.mutationJournalState(repo, process.env).entries.length, 0);
+      console.log('UNDO_LEDGER_FAILURE_RECEIPT_INVALIDATED_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_TERMINAL_RESULT_FILE: receiptFile,
+      PI_VALIDATION_LEDGER_FILE: ledgerFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [{ path: 'target.txt', rationale: 'Ledger failure receipt invalidation regression target.' }],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+
+    assert.match(result.stdout, /UNDO_LEDGER_FAILURE_RECEIPT_INVALIDATED_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+    fs.rmSync(receiptFile, { force: true });
+    fs.rmSync(ledgerFile, { force: true });
+  }
+});
+
+test('#424 parent rollback follows shared fork journal order instead of stale process-local identity', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-process-rollback-'));
+  const journalFile = path.join(os.tmpdir(), `pi-cross-process-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    for (const name of ['parent.txt', 'fork-one.txt', 'fork-two.txt']) {
+      fs.writeFileSync(path.join(repo, name), name + ':base\n');
+    }
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+      const call = (id, toolName, input) =>
+        handlers.get('tool_call')({ toolCallId: id, toolName, input }, ctx);
+      const end = (id, toolName) =>
+        handlers.get('tool_execution_end')({ toolCallId: id, toolName, isError: false, result: { content: [] } }, ctx);
+
+      // Parent records P1 in its own process state.
+      assert.equal(await call('parent-p1', 'write', { path: 'parent.txt' }), undefined);
+      fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:P1\\n');
+      await end('parent-p1', 'write');
+
+      // Separate process models the coding-session fork and appends F1 then F2 to the same sidecar.
+      const { spawnSync } = await import('node:child_process');
+      const childProgram = [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "const journal = await import(" + JSON.stringify(JOURNAL_URL) + ");",
+        "const snapshots = await import(" + JSON.stringify(SNAPSHOT_URL) + ");",
+        "const root = process.argv[1];",
+        "const mutate = (relative, content) => {",
+        "  const before = snapshots.captureMutationSnapshot(root, relative);",
+        "  fs.writeFileSync(path.join(root, relative), content);",
+        "  const after = snapshots.captureMutationSnapshot(root, relative);",
+        "  journal.recordSuccessfulMutation({ cwd: root, before, after, tool: 'write', disposition: 'publishable', env: process.env });",
+        "};",
+        "mutate('fork-one.txt', 'fork-one:F1\\\\n');",
+        "mutate('fork-two.txt', 'fork-two:F2\\\\n');",
+      ].join('\\n');
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', childProgram, repo], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      assert.equal(child.status, 0, child.stderr);
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      const rolled = await rollback.execute('parent-rollback', { reason: 'undo shared latest mutation' }, null, null, ctx);
+      assert.match(rolled.content[0].text, /shared latest recorded mutation/);
+      assert.equal(fs.readFileSync(path.join(repo, 'parent.txt'), 'utf8'), 'parent:P1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork-one.txt'), 'utf8'), 'fork-one:F1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork-two.txt'), 'utf8'), 'fork-two.txt:base\\n');
+      console.log('CROSS_PROCESS_ROLLBACK_ORDER_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [
+          { path: 'parent.txt', rationale: 'Cross-process rollback regression parent path.' },
+          { path: 'fork-one.txt', rationale: 'Cross-process rollback regression fork path one.' },
+          { path: 'fork-two.txt', rationale: 'Cross-process rollback regression fork path two.' },
+        ],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /CROSS_PROCESS_ROLLBACK_ORDER_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+test('#424 parent rollback refuses an older journal entry when fork latest is local-only', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-process-local-only-'));
+  const journalFile = path.join(os.tmpdir(), `pi-cross-process-local-only-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:base\n');
+    fs.writeFileSync(path.join(repo, 'fork.txt'), 'fork:base\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'parent-p1',
+        toolName: 'write',
+        input: { path: 'parent.txt' },
+      }, ctx), undefined);
+      fs.writeFileSync(path.join(repo, 'parent.txt'), 'parent:P1\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'parent-p1',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+
+      const { spawnSync } = await import('node:child_process');
+      const childProgram = [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "const journal = await import(" + JSON.stringify(JOURNAL_URL) + ");",
+        "const snapshots = await import(" + JSON.stringify(SNAPSHOT_URL) + ");",
+        "const root = process.argv[1];",
+        "const relative = 'fork.txt';",
+        "const before = snapshots.captureMutationSnapshot(root, relative);",
+        "fs.writeFileSync(path.join(root, relative), 'fork:LOCAL\\\\n');",
+        "const after = snapshots.captureMutationSnapshot(root, relative);",
+        "journal.markMutationJournalLocalOnly({ cwd: root, after, tool: 'write', env: process.env });",
+      ].join('\\n');
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', childProgram, repo], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      assert.equal(child.status, 0, child.stderr);
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      await assert.rejects(
+        rollback.execute('parent-rollback', { reason: 'must not hit stale P1' }, null, null, ctx),
+        error => error.code === 'mutation_rollback_latest_local_only_unavailable',
+      );
+      assert.equal(fs.readFileSync(path.join(repo, 'parent.txt'), 'utf8'), 'parent:P1\\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'fork.txt'), 'utf8'), 'fork:LOCAL\\n');
+      console.log('CROSS_PROCESS_LOCAL_ONLY_REFUSAL_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [
+          { path: 'parent.txt', rationale: 'Cross-process local-only regression parent path.' },
+          { path: 'fork.txt', rationale: 'Cross-process local-only regression fork path.' },
+        ],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /CROSS_PROCESS_LOCAL_ONLY_REFUSAL_OK/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+test('#424 full persistent journal degrades to local rollback instead of blocking the next edit', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-journal-degrade-runtime-'));
+  const journalFile = path.join(os.tmpdir(), `pi-full-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'target.txt'), 'before\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const entries = Array.from({ length: 256 }, (_, index) => ({
+      id: `mutation-00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
+      path: `historical-${index}.tmp`,
+      tool: 'write',
+      disposition: 'temporary',
+      prior: { existed: false },
+      post: { exists: false },
+    }));
+    fs.writeFileSync(journalFile, JSON.stringify({ schema_version: 1, entries }));
+
+    const result = runRuntimeScenario(`
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const repo = ${JSON.stringify(repo)};
+      const ctx = { cwd: repo, abort: () => {} };
+
+      const callResult = await handlers.get('tool_call')({
+        toolCallId: 'overflow-write',
+        toolName: 'write',
+        input: { path: 'target.txt', content: 'after\\n' },
+      }, ctx);
+      assert.equal(callResult, undefined, 'capacity exhaustion must not block the mutation');
+
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'after\\n');
+      await handlers.get('tool_execution_end')({
+        toolCallId: 'overflow-write',
+        toolName: 'write',
+        isError: false,
+        result: { content: [] },
+      }, ctx);
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'after\\n');
+
+      const rollback = registeredTools.get('rollback_last_mutation');
+      assert.ok(rollback);
+
+      // A later bash-like write is unjournaled. Local-only rollback must not overwrite it.
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'intervening bash bytes\\n');
+      await assert.rejects(
+        rollback.execute('rollback-conflict', { reason: 'must not overwrite later bytes' }, null, null, ctx),
+        error => error.code === 'mutation_rollback_conflict',
+      );
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'intervening bash bytes\\n');
+
+      // Once the exact local-only post-state is restored, the owning process can safely roll back.
+      fs.writeFileSync(path.join(repo, 'target.txt'), 'after\\n');
+      await rollback.execute('rollback-local', { reason: 'exercise local fallback' }, null, null, ctx);
+      assert.equal(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8'), 'before\\n');
+      console.log('JOURNAL_CAPACITY_DEGRADES_OK');
+    `, {
+      PI_MUTATION_JOURNAL_FILE: journalFile,
+      PI_ACCEPTED_MUTATION_SCOPE_STATE: JSON.stringify({
+        schema_version: 1,
+        accepted: [{ path: 'target.txt', rationale: 'Runtime overflow regression target.' }],
+        temporary: [],
+        baseline: [],
+      }),
+    });
+    assert.match(result.stdout, /JOURNAL_CAPACITY_DEGRADES_OK/);
+    assert.match(result.stderr, /PI_MUTATION_JOURNAL_DEGRADED/);
+    assert.match(result.stderr, /PI_MUTATION_JOURNAL_LOCAL_FALLBACK/);
+    assert.doesNotMatch(result.stderr, /PI_MUTATION_JOURNAL_REVERTED/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
   }
 });
 
@@ -872,11 +1343,18 @@ test('runtime mock does not treat unknown repository state as a no-op', () => {
 });
 
 test('runtime mock classifies blocked tool calls without tool_execution_end', () => {
+  // Born prepared with zero evidence budget: fresh direct reads are allowed, so use a delegated tool
+  // that remains blocked to exercise the no-tool_execution_end loop classification path.
+  const prepared = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-loop-prepared-')), 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1, status: 'prepared', plan: ['Write the file'], complexity: 'nontrivial', evidenceBudget: 0, largeMutation: false,
+    reason: 'complete spec', workspaceRoot: '/work', freshBaseCommit: '', baseRef: 'origin/dev', layoutHint: null, plannerUsage: null, plannerDurationMs: 1,
+  }));
   const result = runRuntimeScenario(`
     const { default: install } = await import(RUNTIME_URL);
     install(pi);
     const result = await handlers.get('tool_call')(
-      { toolName: 'read', toolCallId: 'blocked-1', input: { path: 'other.md' } },
+      { toolName: 'grep', toolCallId: 'blocked-1', input: { pattern: 'other' } },
       { abort: () => {} },
     );
     assert.equal(result.block, true);
@@ -885,7 +1363,9 @@ test('runtime mock classifies blocked tool calls without tool_execution_end', ()
   `, {
     PI_LOOP_GUARD_WINDOW: '2',
     PI_LOOP_GUARD_THRESHOLD: '1',
+    PI_PREPARED_IMPLEMENTATION_FILE: prepared,
   });
+  fs.rmSync(path.dirname(prepared), { recursive: true, force: true });
   assert.match(result.stdout, /BLOCKED_LOOP_INTEGRATION_OK/);
 });
 
@@ -982,4 +1462,802 @@ test('control scenario read semantic lookup source edit verify submit completes 
     observation(guard, { tool: 'submit_result', result: { ok: true } }),
   ];
   assert.equal(results.some(result => result.tripped), false);
+});
+
+
+test('#632 runtime refuses obsolete model-owned metadata retry and checkpoints immediately', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'missing_publication_fields',
+        missing_fields: ['limitations', 'security_notes'],
+      }) }],
+    };
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'submit-' + index, toolName: 'submit_result',
+        input: { resultText: 'Done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+    assert.equal(aborts, 1, 'obsolete metadata cannot be recovered by another model request');
+    assert.equal(messages.length, 0, 'no terminal metadata replay steer is emitted');
+    console.log('TERMINAL_RECOVERY_METADATA_FAIL_CLOSED_OK');
+  `);
+  assert.match(result.stdout, /TERMINAL_RECOVERY_METADATA_FAIL_CLOSED_OK/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+});
+
+test('#426 runtime checkpoints a recognized but unavailable deterministic recovery instead of generic loop abort', () => {
+  const failureFile = path.join(os.tmpdir(), `pi-terminal-recovery-blocked-${process.pid}-${Date.now()}.json`);
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: {},
+        }) }],
+      };
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'submit-blocked-' + index,
+          toolName: 'submit_result',
+          input: { summary: 'done' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+      assert.equal(aborts, 1);
+      console.log('TERMINAL_RECOVERY_BLOCKED_RUNTIME_OK');
+    `, { PI_RUNTIME_FAILURE_FILE: failureFile });
+    assert.match(result.stdout, /TERMINAL_RECOVERY_BLOCKED_RUNTIME_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+
+    const checkpoint = JSON.parse(fs.readFileSync(failureFile, 'utf8'));
+    assert.equal(checkpoint.failure_code, 'PI_TERMINAL_RECOVERY_BLOCKED');
+    assert.equal(checkpoint.unresolved_obligation.code, 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED');
+    assert.equal(checkpoint.unresolved_obligation.kind, 'validation');
+    assert.equal(checkpoint.checkpoint.worktree_preserved, true);
+    assert.match(checkpoint.reason, /did not provide an authoritative check action/);
+  } finally {
+    fs.rmSync(failureFile, { force: true });
+  }
+});
+
+
+test('#426 runtime maps repeated journaled file-set failure to targeted undo', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-terminal-cleanup-runtime-'));
+  const journalFile = path.join(os.tmpdir(), `pi-terminal-cleanup-journal-${process.pid}-${Date.now()}.json`);
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src/a.js'), 'export const a = 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repo });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/dev', 'HEAD'], { cwd: repo });
+
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'undo_mutation', 'recover_worktree'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const journal = await import(JOURNAL_URL);
+      const snapshots = await import(SNAPSHOT_URL);
+      const { default: install } = await import(RUNTIME_URL);
+
+      const repo = ${JSON.stringify(repo)};
+      const before = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
+      fs.mkdirSync(path.join(repo, 'scratch'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'scratch/a.js'), 'temporary\\n');
+      const after = snapshots.captureMutationSnapshot(repo, 'scratch/a.js');
+      const entry = journal.recordSuccessfulMutation({
+        cwd: repo,
+        before,
+        after,
+        tool: 'write',
+        disposition: 'temporary',
+        env: process.env,
+      });
+
+      install(pi);
+      let aborts = 0;
+      const ctx = { cwd: repo, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: 'Implementer file-set mismatch: unexpected files: scratch/a.js' }],
+      };
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'submit-cleanup-' + index,
+          toolName: 'submit_result',
+          input: { summary: 'done', files: ['src/a.js'] },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 0);
+      assert.equal(messages.length, 1);
+      assert.match(messages[0][0], /deterministic targeted_cleanup repair selected/);
+      assert.match(messages[0][0], new RegExp(entry.id));
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'undo_mutation', parameters: {} } },
+            { type: 'function', function: { name: 'recover_worktree', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(patched.tools.map(tool => tool.function.name), ['undo_mutation']);
+      assert.equal(patched.tool_choice, 'required');
+      console.log('TERMINAL_RECOVERY_TARGETED_UNDO_RUNTIME_OK');
+    `, { PI_MUTATION_JOURNAL_FILE: journalFile });
+
+    assert.match(result.stdout, /TERMINAL_RECOVERY_TARGETED_UNDO_RUNTIME_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+
+test('#426 generic repeated terminal failures keep legacy steer-then-abort behavior', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: 'generic remote submit failed without structured recovery metadata' }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'generic-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0, 'first repeated generic failure trip must steer, not abort');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /current strategy is cycling/);
+
+    const fourth = {
+      toolCallId: 'generic-submit-3',
+      toolName: 'submit_result',
+      input: { summary: 'done' },
+    };
+    assert.equal(await handlers.get('tool_call')(fourth, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...fourth, isError: true, result: failure }, ctx);
+
+    assert.equal(aborts, 1, 'next repeated generic trip keeps the pre-#478 abort behavior');
+    console.log('GENERIC_TERMINAL_STEER_THEN_ABORT_OK');
+  `);
+
+  assert.match(result.stdout, /GENERIC_TERMINAL_STEER_THEN_ABORT_OK/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_STEER/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+});
+
+test('#426 structured coded terminal failures keep legacy steer-then-abort behavior', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'REMOTE_CANDIDATE_REJECTED',
+        message: 'transient or model-fixable structured submission error',
+      }) }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'coded-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    assert.equal(aborts, 0, 'catch-all coded errors must not become deterministic blocked recovery');
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /current strategy is cycling/);
+
+    const fourth = {
+      toolCallId: 'coded-submit-3',
+      toolName: 'submit_result',
+      input: { summary: 'done' },
+    };
+    assert.equal(await handlers.get('tool_call')(fourth, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...fourth, isError: true, result: failure }, ctx);
+
+    assert.equal(aborts, 1, 'coded fallback retains the generic steer-then-abort lifecycle');
+    console.log('CODED_TERMINAL_STEER_THEN_ABORT_OK');
+  `);
+
+  assert.match(result.stdout, /CODED_TERMINAL_STEER_THEN_ABORT_OK/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_STEER/);
+  assert.match(result.stderr, /PI_LOOP_GUARD_ABORT/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+});
+
+test('#632 obsolete metadata failure does not arm a forced submit_result retry', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = { content: [{ type: 'text', text: JSON.stringify({
+      code: 'missing_publication_fields', missing_fields: ['limitations'],
+    }) }] };
+    for (let index = 0; index < 3; index += 1) {
+      const event = { toolCallId: 'metadata-submit-' + index,
+        toolName: 'submit_result', input: { resultText: 'Done' } };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+    assert.equal(aborts, 1);
+    const providerRequest = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'write', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(
+      providerRequest.tools.map(tool => tool.function.name).sort(),
+      ['submit_result', 'write'],
+      'no stale metadata-retry-only tool surface is armed',
+    );
+    console.log('TERMINAL_RECOVERY_NO_REPLAY_OK');
+  `);
+  assert.match(result.stdout, /TERMINAL_RECOVERY_NO_REPLAY_OK/);
+  assert.doesNotMatch(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+});
+
+test('#426 aggregate changed_files from unrelated mutation does not clear terminal obligation', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: scratch/a.js';
+
+  failedSubmit(guard, hint);
+  const key = guard.terminalObligation.key;
+
+  const mutation = observation(guard, {
+    tool: 'safe_edit',
+    input: { path: 'src/real.js', operation: 'replace' },
+    result: {
+      details: {
+        path: 'src/real.js',
+        changed_files: ['src/real.js', 'scratch/a.js'],
+      },
+    },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+    repositoryRoot: '/checkout',
+  });
+
+  assert.equal(mutation.classification, 'success_changed');
+  assert.equal(guard.terminalObligation.key, key, 'aggregate changed set cannot resolve the named blocker');
+
+  failedSubmit(guard, hint);
+  assert.equal(failedSubmit(guard, hint).action, 'steer', 'failure history remains tied to the unresolved obligation');
+});
+
+test('#426 absolute obligation path is resolved by exact relative target under repository root', () => {
+  const guard = new SemanticLoopGuard();
+  const hint = 'Implementer file-set mismatch: unexpected files: /checkout/scratch/a.js';
+
+  failedSubmit(guard, hint);
+  failedSubmit(guard, hint);
+
+  const mutation = observation(guard, {
+    tool: 'safe_edit',
+    input: { path: 'scratch/a.js', operation: 'replace' },
+    result: { details: { path: 'scratch/a.js' } },
+    repositoryStateBefore: 'A',
+    repositoryStateAfter: 'B',
+    mutationChanged: true,
+    repositoryRoot: '/checkout',
+  });
+
+  assert.equal(mutation.tripped, false);
+  assert.equal(guard.terminalObligation, null);
+  assert.equal(failedSubmit(guard, hint).tripped, false, 'relevant repair resets the failure count');
+});
+
+
+test('#632 locally blocked terminal retries cannot resurrect obsolete publication metadata', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'write'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = function(toolName, input) {
+      if (toolName === 'submit_result' && input?.resultText === 'Blocked') {
+        return { block: true, reason: 'synthetic terminal policy block' };
+      }
+      return undefined;
+    };
+    ProgressController.prototype.productiveProgressState = () => 'action_required';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+    let aborts = 0;
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+    const failure = {
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'missing_publication_fields', missing_fields: ['limitations'],
+      }) }],
+    };
+    const first = { toolCallId: 'initial-submit', toolName: 'submit_result',
+      input: { resultText: 'Initial' } };
+    assert.equal(await handlers.get('tool_call')(first, ctx), undefined);
+    await handlers.get('tool_execution_end')({ ...first, isError: true, result: failure }, ctx);
+    for (let index = 0; index < 3; index += 1) {
+      const blocked = { toolCallId: 'blocked-submit-' + index,
+        toolName: 'submit_result', input: { resultText: 'Blocked' } };
+      assert.equal((await handlers.get('tool_call')(blocked, ctx)).block, true);
+    }
+    assert.equal(aborts, 1);
+    assert.equal(messages.length, 0, 'blocked calls must not cause argument-replay guidance');
+    console.log('BLOCKED_TERMINAL_FAIL_CLOSED_OK');
+  `);
+  assert.match(result.stdout, /BLOCKED_TERMINAL_FAIL_CLOSED_OK/);
+  assert.match(result.stderr, /PI_TERMINAL_RECOVERY_BLOCKED/);
+  assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+});
+
+test('#632 terminal recovery checkpoint omits large prior submission payloads', () => {
+  const failureFile = path.join(os.tmpdir(), `pi-terminal-bounded-abort-${process.pid}-${Date.now()}.json`);
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+      const hugeMarker = 'BIG_INPUT_MARKER_' + 'x'.repeat(20000);
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'missing_publication_fields', missing_fields: ['limitations'],
+        }) }],
+      };
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'large-submit-' + index,
+          toolName: 'submit_result',
+          input: { resultText: hugeMarker },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+      assert.equal(aborts, 1);
+      console.log('BOUNDED_TERMINAL_ABORT_OK');
+    `, { PI_RUNTIME_FAILURE_FILE: failureFile });
+
+    assert.match(result.stdout, /BOUNDED_TERMINAL_ABORT_OK/);
+    const checkpointText = fs.readFileSync(failureFile, 'utf8');
+    const checkpoint = JSON.parse(checkpointText);
+    assert.equal(checkpoint.failure_code, 'PI_TERMINAL_RECOVERY_BLOCKED');
+    assert.equal(checkpoint.selected_repair.status, 'blocked');
+    assert.equal(checkpoint.selected_repair.requiredTool, 'runtime_publication_metadata');
+    assert.equal('previousInput' in checkpoint.selected_repair, false);
+    assert.doesNotMatch(checkpointText, /BIG_INPUT_MARKER_/);
+    assert.ok(checkpointText.length < 5000, 'checkpoint stays bounded');
+    assert.doesNotMatch(result.stderr, /BIG_INPUT_MARKER_/);
+  } finally {
+    fs.rmSync(failureFile, { force: true });
+  }
+});
+
+test('#426 runtime validation recovery passes the real ProgressController gate without a mutation permit', () => {
+  const preparedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-recovery-prepared-'));
+  const prepared = path.join(preparedDir, 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Submit and perform the exact recovery validation if requested'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'complete spec',
+    workspaceRoot: REPO_ROOT,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: null,
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      let aborts = 0;
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => { aborts += 1; } };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'validation-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(
+          await handlers.get('tool_call')(event, ctx),
+          undefined,
+          'submit_result remains executable in action_required',
+        );
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      assert.equal(aborts, 0);
+      assert.equal(messages.length, 1);
+      assert.match(messages[0][0], /deterministic exact_validation repair selected/);
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+            { type: 'function', function: { name: 'write', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        patched.tools.map(tool => tool.function.name),
+        ['run_check'],
+        'runtime-owned verification hiding is reversed only for the exact recovery turn',
+      );
+      assert.equal(patched.tool_choice, 'required');
+
+      const unrelated = await handlers.get('tool_call')({
+        toolCallId: 'wrong-validation-recovery',
+        toolName: 'run_check',
+        input: { kind: 'pytest', targets: ['tests/test_other.py'] },
+      }, ctx);
+      assert.equal(unrelated.block, true);
+      assert.match(
+        unrelated.reason,
+        /selected deterministic repair arguments|exact authoritative verification action/,
+      );
+
+      const exact = await handlers.get('tool_call')({
+        toolCallId: 'exact-validation-recovery',
+        toolName: 'run_check',
+        input: exactAction,
+      }, ctx);
+      assert.equal(exact, undefined, 'real ProgressController accepts the exact recovery validation');
+      assert.equal(aborts, 0);
+      console.log('EXACT_VALIDATION_RECOVERY_REAL_GATE_OK');
+    `, {
+      PI_PREPARED_IMPLEMENTATION_FILE: prepared,
+    });
+
+    assert.match(result.stdout, /EXACT_VALIDATION_RECOVERY_REAL_GATE_OK/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_SELECTED/);
+    assert.match(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_SURFACE/);
+  } finally {
+    fs.rmSync(preparedDir, { recursive: true, force: true });
+  }
+});
+
+
+test('#426 runtime keeps selected conflict recovery armed after wrong read target', () => {
+  const result = runRuntimeScenario(`
+    activeTools = ['submit_result', 'read'];
+    const { ProgressController } = await import(CONTROLLER_URL);
+    ProgressController.prototype.checkToolCall = () => undefined;
+    ProgressController.prototype.productiveProgressState = () => 'inactive';
+    const { default: install } = await import(RUNTIME_URL);
+    install(pi);
+
+    const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+    const failure = {
+      content: [{ type: 'text', text:
+        'Latest dev conflicts with the implementation. Resolve these files and retry submit_result: src/conflict.py'
+      }],
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      const event = {
+        toolCallId: 'conflict-submit-' + index,
+        toolName: 'submit_result',
+        input: { summary: 'done' },
+      };
+      assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+      await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+    }
+
+    const firstRequest = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'read', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(firstRequest.tools.map(tool => tool.function.name), ['read']);
+
+    const wrong = await handlers.get('tool_call')({
+      toolCallId: 'wrong-conflict-read',
+      toolName: 'read',
+      input: { path: 'src/other.py' },
+    }, ctx);
+    assert.equal(wrong.block, true);
+    assert.match(wrong.reason, /does not match the pending recovery plan/);
+
+    const secondRequest = handlers.get('before_provider_request')({
+      payload: {
+        messages: [],
+        tools: [
+          { type: 'function', function: { name: 'submit_result', parameters: {} } },
+          { type: 'function', function: { name: 'read', parameters: {} } },
+        ],
+      },
+    });
+    assert.deepEqual(
+      secondRequest.tools.map(tool => tool.function.name),
+      ['read'],
+      'wrong selected-tool arguments must not consume forced recovery state',
+    );
+    assert.equal(
+      secondRequest.tool_choice,
+      'required',
+      'the exact selected recovery tool remains provider-required even in the synthetic inactive state',
+    );
+
+    assert.equal(await handlers.get('tool_call')({
+      toolCallId: 'correct-conflict-read',
+      toolName: 'read',
+      input: { path: 'src/conflict.py' },
+    }, ctx), undefined);
+    console.log('CONFLICT_RECOVERY_ARGUMENT_GATE_OK');
+  `);
+
+  assert.match(result.stdout, /CONFLICT_RECOVERY_ARGUMENT_GATE_OK/);
+  assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+});
+
+test('#426 terminal exact validation accepts the visible retry_last_failed_check alias', () => {
+  const ledgerFile = path.join(os.tmpdir(), `pi-terminal-alias-ledger-${process.pid}-${Date.now()}.jsonl`);
+  fs.writeFileSync(ledgerFile, JSON.stringify({
+    run_id: 'terminal-alias-run',
+    attempt_id: 'primary',
+    stage: 'implementer',
+    backend: 'pi',
+    source: 'run_check',
+    kind: 'pytest',
+    scope: { targets: ['tests/test_required.py'] },
+    status: 'fail',
+  }) + '\n');
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { ProgressController } = await import(CONTROLLER_URL);
+      ProgressController.prototype.checkToolCall = () => undefined;
+      ProgressController.prototype.productiveProgressState = () => 'action_required';
+      ProgressController.prototype.verificationPermitted = () => true;
+      const originalCommit = ProgressController.prototype.commitRecoveryVerification;
+      let recoveryCommits = 0;
+      ProgressController.prototype.commitRecoveryVerification = function(input) {
+        const committed = originalCommit.call(this, input);
+        if (committed) recoveryCommits += 1;
+        return committed;
+      };
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'alias-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      const patched = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+            { type: 'function', function: { name: 'retry_last_failed_check', parameters: {} } },
+            { type: 'function', function: { name: 'write', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        patched.tools.map(tool => tool.function.name),
+        ['retry_last_failed_check'],
+        'provider-facing retry alias satisfies the canonical run_check recovery requirement',
+      );
+      assert.equal(patched.tool_choice, 'required');
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'alias-terminal-recovery',
+        toolName: 'retry_last_failed_check',
+        input: {},
+      }, ctx), undefined);
+      assert.equal(recoveryCommits, 1, 'retry alias commits the canonical exact-validation permit');
+      console.log('TERMINAL_RECOVERY_RETRY_ALIAS_OK');
+    `, {
+      PI_VALIDATION_LEDGER_FILE: ledgerFile,
+      PI_VALIDATION_RUN_ID: 'terminal-alias-run',
+    });
+
+    assert.match(result.stdout, /TERMINAL_RECOVERY_RETRY_ALIAS_OK/);
+    assert.match(result.stdout, /PI_TERMINAL_RECOVERY_TOOL_ATTEMPT/);
+    assert.doesNotMatch(result.stderr, /PI_TERMINAL_RECOVERY_TOOL_DEFERRED/);
+  } finally {
+    fs.rmSync(ledgerFile, { force: true });
+  }
+});
+
+test('#426 exact recovery permit survives runtime setup failure after controller authorization', () => {
+  const preparedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-validation-recovery-commit-'));
+  const prepared = path.join(preparedDir, 'prepared-implementation.json');
+  fs.writeFileSync(prepared, JSON.stringify({
+    version: 1,
+    status: 'prepared',
+    plan: ['Submit and perform exact recovery validation'],
+    complexity: 'nontrivial',
+    evidenceBudget: 0,
+    largeMutation: false,
+    reason: 'complete spec',
+    workspaceRoot: REPO_ROOT,
+    freshBaseCommit: '',
+    baseRef: 'origin/dev',
+    layoutHint: null,
+    plannerUsage: null,
+    plannerDurationMs: 1,
+  }));
+
+  try {
+    const result = runRuntimeScenario(`
+      activeTools = ['submit_result', 'run_check', 'write'];
+      const { default: install } = await import(RUNTIME_URL);
+      install(pi);
+
+      const ctx = { cwd: process.env.GITHUB_WORKSPACE, abort: () => {} };
+      const exactAction = { kind: 'pytest', targets: ['tests/test_required.py'] };
+      const failure = {
+        content: [{ type: 'text', text: JSON.stringify({
+          code: 'TARGETED_BEHAVIORAL_VALIDATION_REQUIRED',
+          required_targets: ['tests/test_required.py'],
+          action: exactAction,
+        }) }],
+      };
+
+      for (let index = 0; index < 3; index += 1) {
+        const event = {
+          toolCallId: 'commit-submit-' + index,
+          toolName: 'submit_result',
+          input: { title: 'Fix', summary: 'Summary' },
+        };
+        assert.equal(await handlers.get('tool_call')(event, ctx), undefined);
+        await handlers.get('tool_execution_end')({ ...event, isError: true, result: failure }, ctx);
+      }
+
+      handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+          ],
+        },
+      });
+
+      await assert.rejects(
+        handlers.get('tool_call')({
+          toolCallId: 'runtime-setup-failure',
+          toolName: 'run_check',
+          input: { ...exactAction, synthetic_uncloneable: () => true },
+        }, ctx),
+        /could not be cloned|DataCloneError/,
+      );
+
+      const retryRequest = handlers.get('before_provider_request')({
+        payload: {
+          messages: [],
+          tools: [
+            { type: 'function', function: { name: 'submit_result', parameters: {} } },
+            { type: 'function', function: { name: 'run_check', parameters: {} } },
+          ],
+        },
+      });
+      assert.deepEqual(
+        retryRequest.tools.map(tool => tool.function.name),
+        ['run_check'],
+        'runtime setup failure after controller authorization keeps exact recovery forced',
+      );
+      assert.equal(retryRequest.tool_choice, 'required');
+
+      assert.equal(await handlers.get('tool_call')({
+        toolCallId: 'runtime-setup-retry',
+        toolName: 'run_check',
+        input: exactAction,
+      }, ctx), undefined);
+      console.log('EXACT_RECOVERY_COMMIT_BOUNDARY_OK');
+    `, {
+      PI_PREPARED_IMPLEMENTATION_FILE: prepared,
+    });
+
+    assert.match(result.stdout, /EXACT_RECOVERY_COMMIT_BOUNDARY_OK/);
+  } finally {
+    fs.rmSync(preparedDir, { recursive: true, force: true });
+  }
 });

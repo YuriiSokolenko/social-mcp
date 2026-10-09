@@ -74,6 +74,53 @@ export function groupKey(kind, scope) {
   return `${kind}:${stableStringify(scope)}`;
 }
 
+function pytestTargetCovers(coveringTarget, coveredTarget) {
+  const covering = String(coveringTarget);
+  const covered = String(coveredTarget);
+  if (covering === covered) return true;
+  const [coveringFile, ...coveringNode] = covering.split('::');
+  const [coveredFile, ...coveredNode] = covered.split('::');
+  return coveringFile === coveredFile && coveringNode.length === 0 && coveredNode.length > 0;
+}
+
+/**
+ * Conservative proof that one authoritative scope covers another for the same check kind.
+ * A broader pass may resolve a narrower obligation only when coverage follows directly from
+ * the normalized scope: whole-repo, an exact/superset path list, or a pytest file target that
+ * contains a narrower node-id target. Ambiguous directory/package semantics are intentionally
+ * not inferred here.
+ */
+export function validationScopeCovers(kind, coveringScope, coveredScope) {
+  if (
+    !coveringScope || typeof coveringScope !== 'object' || Array.isArray(coveringScope) ||
+    !coveredScope || typeof coveredScope !== 'object' || Array.isArray(coveredScope)
+  ) return false;
+  if (stableStringify(coveringScope) === stableStringify(coveredScope)) return true;
+  if (coveringScope.whole_repo === true) return true;
+  if (coveredScope.whole_repo === true) return false;
+
+  if (kind === 'pytest') {
+    const covering = Array.isArray(coveringScope.targets) ? coveringScope.targets : [];
+    const covered = Array.isArray(coveredScope.targets) ? coveredScope.targets : [];
+    return covering.length > 0 && covered.length > 0 &&
+      covered.every(target => covering.some(candidate => pytestTargetCovers(candidate, target)));
+  }
+
+  if (kind === 'node_test') {
+    const covering = new Set(Array.isArray(coveringScope.targets) ? coveringScope.targets : []);
+    const covered = Array.isArray(coveredScope.targets) ? coveredScope.targets : [];
+    return covering.size > 0 && covered.length > 0 && covered.every(target => covering.has(target));
+  }
+
+  if (kind === 'python_compile' || kind === 'ruff') {
+    const covering = new Set(Array.isArray(coveringScope.paths) ? coveringScope.paths : []);
+    const covered = Array.isArray(coveredScope.paths) ? coveredScope.paths : [];
+    return covering.size > 0 && covered.length > 0 && covered.every(target => covering.has(target));
+  }
+
+  return false;
+}
+
 /**
  * The checks.final pipeline is a fixed sequence of steps (e.g. Ruff, then
  * `git diff --check`, then pytest). A per-step `checks_final` record for one
@@ -84,7 +131,7 @@ export function groupKey(kind, scope) {
  */
 export const FINAL_PIPELINE_COMPLETE_SOURCE = 'checks_final_complete';
 
-const RECORD_SOURCES = Object.freeze(['run_check', 'checks_final', FINAL_PIPELINE_COMPLETE_SOURCE]);
+const RECORD_SOURCES = Object.freeze(['run_check', 'checks_final', 'worktree_recovery', 'mutation_undo', FINAL_PIPELINE_COMPLETE_SOURCE]);
 
 /**
  * Fail-closed ingestion: a record missing the fields that identify what was
@@ -164,30 +211,42 @@ export function readValidationLedger(ledgerPath) {
  */
 export function reconcile(records) {
   const groups = new Map();
-  // Last-write-wins per (kind, scope) group, by array/file order — not by the
-  // `seq`/`timestamp` field, since two records appended in the same
-  // millisecond must still resolve deterministically to "the later one."
-  // A Map key's insertion position never moves on re-`set`, so this also
-  // naturally yields the groups in first-seen order for rendering.
+  // Last-write-wins per exact (kind, scope), with one conservative extension:
+  // an authoritative pass may retire earlier same-kind groups that it provably covers.
   for (const record of records) {
     // The pipeline-completion marker is not an individual check: it never
     // appears as its own "Validation" bullet.
-    if (record.source === FINAL_PIPELINE_COMPLETE_SOURCE) continue;
-    groups.set(groupKey(record.kind, record.scope), record);
+    if (
+      record.source === FINAL_PIPELINE_COMPLETE_SOURCE ||
+      record.source === 'worktree_recovery' ||
+      record.source === 'mutation_undo'
+    ) continue;
+    const key = groupKey(record.kind, record.scope);
+    if (record.status === 'pass') {
+      for (const [existingKey, existing] of groups.entries()) {
+        if (
+          existingKey !== key &&
+          existing.kind === record.kind &&
+          validationScopeCovers(record.kind, record.scope, existing.scope)
+        ) {
+          groups.delete(existingKey);
+        }
+      }
+    }
+    groups.set(key, record);
   }
   return [...groups.values()];
 }
 
 /**
- * Returns the most recent unresolved exact-scope run_check failure for the
- * selected workflow run.
+ * Returns the most recent unresolved run_check failure for the selected workflow run.
  *
- * Recovery state is tracked independently per exact kind+scope:
- * - fail: that scope requires exact recovery;
- * - pass: resolves that exact scope;
- * - timeout/invalid/infra_error: stop forcing retry for that exact scope while
+ * Recovery state is tracked independently per kind+scope:
+ * - fail: that scope requires recovery;
+ * - pass: resolves that scope and any narrower same-kind scope it provably covers;
+ * - timeout/invalid/infra_error: stop forcing retry only for that exact scope while
  *   normal ledger reconciliation remains fail-closed;
- * - broader/different scopes never resolve each other.
+ * - unrelated or ambiguously broader scopes never resolve each other.
  *
  * Multiple failed scopes may therefore remain outstanding within one workflow
  * run. The most recently failed unresolved scope is offered first; after it is
@@ -206,7 +265,16 @@ export function latestUnresolvedRunCheckFailure(records, { runId = null, stage =
     const key = groupKey(record.kind, record.scope);
     if (record.status === 'fail') {
       stateByGroup.set(key, { record, index });
-    } else if (record.status === 'pass' || BLOCKING_STATUSES.has(record.status)) {
+    } else if (record.status === 'pass') {
+      for (const [candidateKey, candidate] of stateByGroup.entries()) {
+        if (
+          candidate.record.kind === record.kind &&
+          validationScopeCovers(record.kind, record.scope, candidate.record.scope)
+        ) {
+          stateByGroup.delete(candidateKey);
+        }
+      }
+    } else if (BLOCKING_STATUSES.has(record.status)) {
       stateByGroup.delete(key);
     }
   }
@@ -248,8 +316,19 @@ export function runCheckRequestForRecord(record) {
   if ((record.kind === 'python_compile' || record.kind === 'ruff') && hasPaths) {
     return { kind: record.kind, paths: [...record.scope.paths] };
   }
-  if (record.kind === 'pytest' && hasTargets) {
-    return { kind: record.kind, targets: [...record.scope.targets] };
+  if ((record.kind === 'pytest' || record.kind === 'node_test') && hasTargets) {
+    const targets = record.scope.targets;
+    if (targets.length > 20 || targets.some(target => {
+      if (typeof target !== 'string' || !target || target.includes('\0')) return true;
+      const [file, ...selectors] = target.split('::');
+      if (!file || path.isAbsolute(file) || file.startsWith('-') || file.split(/[\\/]/).includes('..')) return true;
+      if (record.kind === 'node_test') return selectors.length > 0 || !/\.test\.(?:mjs|js)$/.test(file);
+      // Existing pytest directory targets are valid, but JS file targets are not.
+      return /\.(?:mjs|js|cjs|jsx|ts|tsx)$/.test(file) || (selectors.length > 0 && !file.endsWith('.py'));
+    })) {
+      throw new Error(`cannot reconstruct run_check request for ${record.kind}: invalid framework-specific targets`);
+    }
+    return { kind: record.kind, targets: [...targets] };
   }
   if (record.kind === 'profile' && hasProfile) {
     return { kind: record.kind, profile: record.scope.profile };
@@ -267,13 +346,29 @@ export function runCheckRequestForRecord(record) {
  * record. A single early step (e.g. Ruff) passing and then the process dying
  * before the rest of the pipeline runs must not look like "final checks ran."
  */
-export function computeVerificationState(records, { corrupted = false } = {}) {
+function finalCompletionMatchesCandidate(record, candidateRevision) {
+  if (!candidateRevision) return true;
+  const recorded = record?.candidate_revision;
+  return Boolean(
+    recorded &&
+    recorded.schema_version === 1 &&
+    candidateRevision.schema_version === 1 &&
+    recorded.base_commit === candidateRevision.base_commit &&
+    recorded.digest === candidateRevision.digest
+  );
+}
+
+export function computeVerificationState(records, { corrupted = false, candidateRevision = null } = {}) {
   if (corrupted) return VERIFICATION_STATES.BLOCKED_INFRA;
   const groups = reconcile(records);
   if (!groups.length) return VERIFICATION_STATES.NOT_APPLICABLE;
   if (groups.some(group => group.status === 'fail')) return VERIFICATION_STATES.FAILED;
   if (groups.some(group => BLOCKING_STATUSES.has(group.status))) return VERIFICATION_STATES.BLOCKED_INFRA;
-  const finalChecksRan = records.some(record => record.source === FINAL_PIPELINE_COMPLETE_SOURCE);
+  const finalChecksRan = records.some(
+    record =>
+      record.source === FINAL_PIPELINE_COMPLETE_SOURCE &&
+      finalCompletionMatchesCandidate(record, candidateRevision),
+  );
   if (!finalChecksRan) return VERIFICATION_STATES.PENDING;
   return VERIFICATION_STATES.VERIFIED;
 }
@@ -305,8 +400,8 @@ function describeGroup(group) {
  * only. Never accepts model metadata/prose: there is nothing here for a
  * model-authored claim to override.
  */
-export function renderValidationSection(records, { corrupted = false } = {}) {
-  const state = computeVerificationState(records, { corrupted });
+export function renderValidationSection(records, { corrupted = false, candidateRevision = null } = {}) {
+  const state = computeVerificationState(records, { corrupted, candidateRevision });
   if (corrupted) {
     return [
       '- The validation ledger could not be fully read (a record failed to parse).',
@@ -317,5 +412,11 @@ export function renderValidationSection(records, { corrupted = false } = {}) {
   if (!groups.length) {
     return ['- No authoritative checks were recorded for this change.', `- Overall verification state: ${state}`].join('\n');
   }
-  return [...groups.map(describeGroup), `- Overall verification state: ${state}`].join('\n');
+  const candidateMismatch =
+    candidateRevision &&
+    state === VERIFICATION_STATES.PENDING &&
+    records.some(record => record.source === FINAL_PIPELINE_COMPLETE_SOURCE)
+      ? ['- Final validation does not attest the current candidate revision.']
+      : [];
+  return [...groups.map(describeGroup), ...candidateMismatch, `- Overall verification state: ${state}`].join('\n');
 }

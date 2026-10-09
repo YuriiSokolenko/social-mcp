@@ -8,7 +8,8 @@
       },
       "implementation-planner": {
         "subagentOnlyExtensions": [
-          "./scripts/pi-subagent-response-budget.mjs"
+          "./scripts/pi-subagent-response-budget.mjs",
+          "./scripts/pi-planner-evidence.mjs"
         ]
       }
     }

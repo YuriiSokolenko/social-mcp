@@ -1,218 +1,102 @@
-# CI and Agent Workflow Rules
+# Workflow and CI: maintainer guide
 
-GitHub repository state is the source of truth. Workflow inputs and SHAs are not pipeline state.
+This is the **canonical operational overview** for issue-to-PR automation, CI, review, and merge on `dev`. It replaces the former parallel pipeline overview, architecture rules, and hand-drawn Pi lifecycle diagrams. Read the implementation, not this document, when a detail changes.
 
-## Core flow
+## Authority and navigation
 
-```text
-Issue -> Dispatcher -> Implementer -> checks -> PR -> Reviewer -> Merge Gate -> dev -> CI -> next PR
-```
+- **Project policy:** [`.agent-harness.json`](../.agent-harness.json) (branch, labels, workflow names, protected paths, fixed-argv checks). The strict loader is [`scripts/pi-common/project-config.mjs`](../scripts/pi-common/project-config.mjs).
+- **Orchestration:** [`.github/workflows/`](../.github/workflows/) and role entry points under [`scripts/`](../scripts/). YAML owns triggers, permissions, runner selection, and handoff; trusted scripts own validation, GitHub API writes, and state changes.
+- **Pipeline state:** [`state-machine.mjs`](../scripts/pi-common/state-machine.mjs), [`review-state.mjs`](../scripts/pi-common/review-state.mjs), and [`pi-auto-merge.mjs`](../scripts/pi-auto-merge.mjs).
+- **Model contracts:** [`agents/AGENTS.md`](../agents/AGENTS.md) plus the corresponding role's `agents/<role>/AGENTS.md`. These are executable prompt overlays, **not** additional workflow manuals. `agents/merger/AGENTS.md` is reference-only; Merge Gate has no model.
+- **Runner deployment and recovery:** [N150 runner/autoscaler README](../infra/github-runner-autoscaler/README.md). **Diagnosis:** [Actions logs](github-actions-logs.md) and [model traces](pi-model-traces.md).
+- **Historical investigations:** [LLM reliability research](llm-research/README.md), [agent experiments](agent-harness/experiments/), [smoke reports](releases/) and dated incident notes. Historical observations are not operational authority. [Harness extraction design](agent-harness/README.md) is a proposal, not a deployed separate repository.
 
-Every green CI run on a `dev` push wakes Merge Gate, which reloads current PR state and either merges one eligible PR or exits. Terminal PR CI uses a separate completion boundary: `ci-terminal-wake.yml` listens only for `workflow_run: completed` from `CI` and then issues a state-free Merge Gate wake, so the gate never depends on a wake emitted while that same PR CI run can still be `in_progress`. The wake transports no PR number, SHA, or CI verdict; Merge Gate reloads the current PR and exact-head CI state from GitHub. Merge Gate also verifies that push-CI for the current `dev` HEAD is green immediately before each merge attempt, so duplicate/stale wake delivery cannot merge a second PR before the newly merged `dev` commit is validated while failure/repair classification remains non-blocking. Red `dev` CI does not wake Merge Gate and therefore stops that merge sequence. Do not build a second pre-merge integration pipeline.
-
-## Agent control-plane boundary
-
-No Pi agent may create, edit, delete, rename, review, repair, or auto-merge CI/control-plane files. Protected paths are `.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, and the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`). `agents/**` is protected as control-plane, not product content, because it holds the runtime prompt every model stage reads before doing anything else; an agent editing its own instructions is a control-plane change, not a product change.
-
-Implementer and PR Fix enforce this in trusted validation/publication tooling (the central policy in `.agent-harness.json` → `control-plane-policy.mjs`). Reviewer and PR Fix also inspect the complete PR file list before model execution; a control-plane PR is marked `pi:needs-human` and skipped. Merge Gate uses the same centralized path policy and cannot auto-merge such a PR. Dispatcher, Architect, and Triage do not edit repository files at all. Control-plane changes, including changes to `agents/**` prompts, use the trusted human/direct-`dev` path only.
-
-## Branches and trust
-
-- `dev` is the default development/integration branch. Routine development, Pi workflows, and control-plane scripts live there. Task metadata lives in GitHub issues.
-- Pi PRs target `dev`; `main` is reserved for releases.
-- Control-plane workflows explicitly check out trusted `dev` before running `scripts/pi-*`.
-- Normal CI tests the triggering commit.
-- Trusted Pi agents run on N150 self-hosted runners. Never execute arbitrary external PR code there.
-- Models do not own GitHub mutations. Workflows/scripts own commits, pushes, labels, comments, dispatches, and merges.
-
-## Automation mode
-
-`PI_AUTOMATION_MODE` supports:
-- `RUNNING`: start new work and continue in-flight work.
-- `DRAINING`: do not start new issues; existing PR work may finish.
-- `PAUSED`: do not start new automated stages.
-
-Missing or unknown values fail closed.
-
-## Dispatcher and Architect
-
-An open issue with `dispatcher:ready` and a valid top-level `## Task metadata` section is eligible for Dispatcher. The issue body is the source of truth: `Priority: P0|P1|P2` and `Depends on: [#12, #18]` (or `[]`). On every run Dispatcher reloads current issues directly from GitHub. Dispatcher decides only whether eligible work goes to Implementer or Architect. Eligibility, dependencies, priority, and repository state are deterministic workflow concerns.
-
-When an issue becomes `dispatcher:ready`, Dispatcher may be woken directly. Wake events are signals only; Dispatcher reloads current GitHub state.
-
-Architect is optional and exists only for work needing decomposition or task-plan correction. Validated child/revised issues return to Dispatcher.
-
-## Implementer
-
-Implementer edits code and tests in an isolated worktree. It does not commit, push, create PRs, merge, or mutate GitHub directly.
-
-Before the Implementer session may finish successfully, its trusted `submit_result` tool fetches the latest `dev` and merges `origin/dev` into the issue branch. If that merge conflicts, the same live Implementer session must resolve the conflicted files and retry `submit_result`; a resolvable conflict is not a successful terminal state. Trusted tooling owns staging and the merge commit, while the agent owns the content-level conflict resolution.
-
-Only after latest `dev` is integrated, and after the Implementer backend exits, does the trusted stage harness (`stage-validation-recovery.mjs` → `validateFinalProductTree()`) run the authoritative product deterministic checks. They must pass before publication. If they fail, the harness starts exactly one focused validation-repair attempt in the same worktree with the concrete diagnostics and then reruns them. The checks include at least:
-
-```bash
-pytest
-ruff check .
-```
-
-Product agents (Implementer, Reviewer, PR Fix) do not run CI/control-plane contract suites such as `node --test tests/*.test.mjs`, runner-autoscaler checks, or workflow self-tests. Those belong exclusively to `ci.yml`. Product-agent validation covers application behavior; `ci.yml` validates both product code and the CI/control plane.
-
-Both these final checks and any focused `run_check` calls the Implementer makes during the session are recorded in one validation ledger (`scripts/pi-common/validation-ledger.mjs`). PR bodies and job summaries render their "Validation" text from that ledger, never from model prose or a static template, and a focused check that ends in `infra_error`/`timeout`/`not_run` leaves verification incomplete even when the broad checks above pass.
-
-A checkpoint branch may exist for recovery; it is never a merge candidate. Checkpoints are replayed onto the latest `dev`. If replay leaves unresolved conflicts, cancellation must preserve the previous good checkpoint rather than commit conflict markers. The published branch is `pi/issue-<number>`, its PR targets `dev`, and links the issue with `Closes #<number>`.
-
-## Reviewer and PR Fix
-
-Reviewer is independent from Implementer and does not edit files. Before model review, trusted workflow code validates the exact PR HEAD with centralized deterministic product checks. The model then reviews issue compliance and semantic correctness at the depth warranted by the diff; it does not rerun those full checks. A failing deterministic check never reaches a model PASS.
-
-Reviewer returns `PASS` or `CHANGES_REQUESTED`; the workflow owns labels/comments. A review verdict is valid only for the PR HEAD that was reviewed. If the HEAD changes for any reason, the `pull_request:synchronize` handler removes every stale `review:*` label. That handler is an invalidator only: it does not dispatch Reviewer or become another scheduler. Normal Implementer/PR Fix handoff starts the fresh Reviewer after latest-`dev` integration and deterministic checks pass; if that handoff is lost, Reconciler may recover it after the PR recovery grace period. Merge Gate requires a fresh `review:passed`, and only PASS wakes it.
-
-If Merge Gate later discovers that an already-approved PR now conflicts with current `dev`, that approval is stale for the changed integration result. Merge Gate replaces the old review verdict with `review:changes-requested`, dispatches PR Fix, and stops the queue. `review:changes-requested` is also the durable ownership marker for this recovery path: if the direct PR Fix dispatch is lost, Reconciler recovers PR Fix rather than incorrectly starting Reviewer. PR Fix resolves content conflicts against current `dev` in its live session; trusted `submit_repair` integrates and validates the result, publishes the new PR HEAD, and sends it through a fresh Reviewer before Merge Gate may try again.
-
-`pi:needs-human` on a PR is a hard automation gate: Reviewer, PR Fix, and Merge Gate must skip that PR before model work or mutation. Removing the label is an explicit human decision to return the PR to automation.
-
-PR Fix is not a hidden pre-merge integration engine.
-
-## Merge Gate
-
-Merge Gate is deliberately small. It validates stable ownership/safety requirements and attempts the GitHub squash merge.
-
-It does not:
-- run synthetic dev+PR integration;
-- transport or compare captured dev SHAs;
-- require a custom exact-pair status;
-- update a PR branch merely because `dev` moved;
-- recreate review/base synchronization state.
-
-The current PR head SHA may be read immediately before merge and supplied to GitHub as optimistic concurrency protection. That SHA is local operation data, not pipeline state.
-
-If GitHub reports a merge conflict, Merge Gate invalidates the stale review verdict, dispatches PR Fix, and stops the queue without crashing. Conflict resolution remains outside Merge Gate. PRs modifying any protected control-plane path (`.github/workflows/**`, `.pi/**`, `agents/**`, `scripts/pi-*`, `tests/*.test.mjs`, `tests/test_runner_autoscaler.sh`, `infra/github-runner-autoscaler/**`, or the harness config itself (`.agent-harness.json`, `.agent-harness.yml`, `.agent-harness.yaml`)) are not auto-merged.
-
-## Post-merge CI
-
-The authoritative integration check is CI on the actual merged `dev` commit. That CI runs Ruff, pytest, Node control-plane contract tests, runner-autoscaler tests, and an isolated Docker Compose integration test before the merge queue may continue.
+## Current pipeline
 
 ```text
-merge PR -> push dev -> CI
-                     -> green: wake Merge Gate for next PR
-                     -> red: stop merge sequence
+Issue (+ priority/depends_on in issue body)
+  └─ optional Triage → Dispatcher ─┬─ Implementer → PR → Reviewer ─ PASS ─┐
+                                   └─ Architect → child issues → Dispatcher│
+                                                  Reviewer CHANGES_REQUESTED│
+                                                          ↓                │
+                                                        PR Fix → Reviewer  │
+                                                                           ↓
+                                                              Merge Gate + PR CI
+                                                                           ↓
+                                                                         dev
+                                                                           ↓
+                                                                   CI on merged SHA
+                                                               green → next merge;
+                                                               red   → queue stops
 ```
 
-Normal queue progress does not rely on Reconciler. The one recovery exception is a PR that already has durable `review:passed` but lost its direct PASS -> Merge Gate dispatch: after the PR recovery grace period Reconciler may wake the shared Merge Gate scan. This is recovery of an existing handoff, not a second happy-path scheduler. Merge Gate must never infer a merge event from commit-message text.
+Every handoff reloads GitHub state. Workflow-dispatch events are **wakes**, not authenticated transport of labels, previous verdicts, dev SHA, or commit identity. Work is integrated against current `dev` by Implementer/PR Fix; **Merge Gate never creates synthetic integration commits**. The actual merged `dev` CI result is the integration truth.
 
-## Inputs and SHA rule
+| Stage / owner | Workflow | Trusted implementation |
+| --- | --- | --- |
+| Readiness and optional triage | `pi-triage.yml` | `pi-triage.mjs`, `pi-common/task-metadata.mjs` |
+| Queue/scope classification | `pi-dispatcher.yml` | `pi-dispatcher.mjs`, `pi-common/queue-context.mjs` |
+| Issue decomposition (when needed) | `pi-architect.yml` | `pi-architect.mjs`, `pi-architect-plan-validator.mjs` |
+| Worktree, planning, code, PR publication | `pi-issue-agent.yml` | `pi-run-stage.mjs`, `pi-common/pi-stage-backend.mjs`, `pi-common/issue-publication.mjs` |
+| Deterministic checks, independent verdict | `pi-pr-review.yml` | `pi-common/product-checks.mjs`, `pi-common/review-state.mjs` |
+| Feedback and late conflict repair | `pi-pr-fix.yml` | `pi-common/repair-publication.mjs`, `pi-repair-result-tool.mjs` |
+| Gate and squash merge | `pi-auto-merge.yml` | `pi-auto-merge.mjs` |
+| Product and control-plane CI | `ci.yml` | `tests/`, `tests/test_runner_autoscaler.sh` |
+| PR-CI completion wake | `ci-terminal-wake.yml` | `pi-common/workflow-dispatch.mjs` |
+| Stale verdict invalidation | `pi-review-invalidate.yml` | `pi-common/review-state.mjs` |
+| Orphan recovery, not scheduling | `pi-reconcile.yml` | `pi-reconcile.mjs`, `pi-common/review-state.mjs` |
+| Automation control | `pi-automation-control.yml` | `pi-common/automation-control.mjs` |
+| Usage/artifacts | `pi-usage.yml` | `pi-usage-collect.mjs` |
 
-Keep workflow inputs minimal: object identifiers such as `issue_number`, `pr_number`, or `run_id`, plus genuine user commands such as automation `mode`.
+`control-runner-watch.yml` monitors delayed control-lane wakes; `verify-run-check-beelink.yml` provides a manual sandbox verification path. Neither is an issue pipeline owner.
 
-Do not pass titles, labels, URLs, reasons, state snapshots, branches, or base/head SHAs when the receiver can load current GitHub state.
+## Issue state, labels, and mode
 
-```text
-object ID / command -> load current GitHub state -> act
-```
+Names come from `.agent-harness.json`; transition validation is in `state-machine.mjs`. These are **ownership states**, not a free-form checklist:
 
-A SHA is not cross-workflow pipeline state.
+- `dispatcher:ready` → `pi:ready` (Implementer) or `architect:ready` (Architect). `triage:ready` is optional preparation.
+- `pi:ready` → `pi:running` → `pi:mr-created` after a PR is published. `architect:epic` parents are not executable issues.
+- `pi:blocked` and `pi:needs-human` require explicit human intervention before new executable work. A published PR retains PR ownership; do not replace it with issue failure state.
+- PR review labels are `review:passed` and `review:changes-requested`. `pi:needs-human` on a PR stops Reviewer, PR Fix, and Merge Gate. Do not equate a label alone with a current-HEAD verdict.
 
-Forbidden: `workflow A -> SHA -> workflow B`.
+`PI_AUTOMATION_MODE` is a repository variable with three values: `RUNNING` permits new and in-flight work; `DRAINING` stops new issue work while existing PR review/fix/merge can finish; `PAUSED` stops automated model/merge stages. [Automation Control](../.github/workflows/pi-automation-control.yml) uses a scoped control token to set and read back the mode; switching to `RUNNING` wakes **Dispatcher only**. Reconciler is not another dispatcher.
 
-Allowed: `workflow -> read current SHA -> use locally for one atomic merge/lease operation`.
+Each normal stage owns its next handoff. Dispatcher/Architect never bypass blockers or dependencies. Manual Implementer dispatch is distinct from `pi:ready` dispatcher ownership (see `running-manual` transition). Reconciler removes or recovers stranded ownership after checks; for PR handoffs it waits for the ten-minute latest-update grace period, so it does not race a normal owner. In `DRAINING` it does not requeue new issue work.
 
-Do not add `integration_base_sha`, `repair_base_sha`, captured dev SHA, exact-pair state, or equivalent orchestration.
+## Implementer, Planner, and terminal contract
 
-## Reconciler and Triage
+The workflow checks out trusted control code from `dev`, creates an isolated issue worktree and prepares its toolchain. A **fresh** attempt uses a short-lived, prompt-less bootstrap process (`pi-implementer-bootstrap.mjs`) to run the read-oriented Planner (`pi-common/implementation-planner.mjs`) *before* the main Implementer process. The Planner can inspect repository evidence through its explicit read/search surface; optional current-HEAD Orbit information is evidence, never instruction authority. The optional Orbit seed is prepared **before provider request #1** under a **30-second pre-request infrastructure safety budget**; it is **not a Planner lifecycle deadline or Orbit-query-count cap**. The `PI_PLANNER_ORBIT_SEED` event records seed availability and freshness without exposing graph content. Useful read/search work has **no Planner evidence-action budget**; semantic no-progress guards still apply.
 
-Reconciler is recovery infrastructure, not a scheduler. In `RUNNING`, it may recover orphaned issue ownership, stranded `pi:ready` work, interrupted Architect child publication, abandoned PR review/fix handoffs, lost PASS -> Merge Gate wakes, and obsolete checkpoints by returning work directly to its normal owner. In `DRAINING`, issue recovery must not create `dispatcher:ready`, `architect:ready`, or `pi:ready`; orphaned issue ownership is cleared instead, while already-published PR review/fix/merge recovery remains enabled so in-flight PR work can finish. PR recovery has a 10-minute grace period measured from the PR's latest `updated_at` (falling back to `created_at`): fresh PR creation, pushes, labels, or other updates belong to the normal owner during that window. The grace period does not delay normal CI; it only prevents Reconciler from racing a normal handoff. Reconciler must not become another happy-path dispatcher.
+The current Planner uses a **`submit_plan({planText})` terminal tool**, not a final prose answer and not an XML/JSON model-generated plan. A normally completed, nonempty submission yields a trusted `PreparedImplementation` artifact; transport/truncation/provider failures resolve to an explicit preparation fallback. The harness passes the accepted plan verbatim as untrusted task data to Main and its coding fork. It does not derive mutation rights, file acceptance, or complexity from the prose. Consult `implementation-planner.mjs`, `pi-planner-evidence.mjs`, and the pinned terminal adapter tests before changing output budgets, semantic evidence guards, or submission retries: these have changed repeatedly. Do not resurrect the historical fixed six-action budget or assume free-form final Planner text is accepted.
 
-Triage is an optional preparation step for issues not yet in the pipeline. It reads the same canonical `## Task metadata` from the GitHub issue body as Dispatcher and Architect; no `tasks/<id>.md` snapshot exists. It may validate readiness and set `dispatcher:ready`; it does not replace Dispatcher.
+The main session can inspect/modify within runtime capabilities and may call `begin_coding_session` to fork a coding invocation with its own guarded tool surface and response budget. The child inherits **forked conversational context**, but has isolated session/binding state and must terminate via a verified `submit_result`; parent and child do not independently publish PRs. `scripts/pi-agent-runtime.mjs`, `pi-common/coding-session-capability.mjs`, the pinned `pi-subagents` patch, and the terminal receipt/session-binding helpers define the exact lease, fork, resume, and terminal rules.
 
-## Terminal-result contract
+Writes are worktree-contained and protected from symlink/`.git` escape. The accepted mutation scope requires trusted per-path intent before Implementer publication; scratch paths must be cleaned up. Mutation snapshots/journal, rollback, safe/structural edits, checkpoint publication, and deterministic worktree recovery preserve real work across interruption without authorizing unreviewed files. PR Fix has a separate repair/publish contract rather than borrowing the Implementer receipt gate.
 
-Model prose is never pipeline state. Architect, Dispatcher, Triage, Reviewer, PR Fix, and Implementer finish through their trusted terminal tool. The shared `pi-run-stage.mjs` runner verifies the terminal marker before returning success; result parsers/publication then consume the trusted result artifact. A zero Pi process exit without the terminal tool is still a stage failure. Legacy free-text `*_RESULT:` markers are not accepted.
+Focused validation uses `run_check` (Python compile, Ruff, pytest, Node test or configured profile) and `retry_last_failed_check` when exposed. `run-check.mjs` defines normalized targets and `pass/fail/timeout/invalid/infra_error`; the runtime/validation ledger controls when checks may run and what counts as passing evidence. Product-stage trusted final checks come from `.agent-harness.json` (package roots, Ruff, `git diff --check`, pytest). Failed final product validation permits one bounded targeted repair path in `stage-validation-recovery.mjs`; do not confuse it with model-driven endless retry. If sandbox infrastructure is unavailable, do not silently replace it with unrestricted bash.
 
-## Concurrency and failures
+`submit_result` is a tool contract, **not** a phrase in assistant prose. It is bound to the current run/issue/attempt/session and validated against terminal receipt metadata, changed-file scope, prepared outputs, and checks before the trusted workflow publishes a PR. Wrong/stale/duplicate receipts or provider/abort/timeout failures cannot be rescued by plausible text. Recognized terminal obligations may trigger a bounded deterministic recovery action (metadata, scoped cleanup, conflict, required output, exact verification); `terminal-recovery-controller.mjs` blocks if no safe repair remains and leaves checkpoint/human diagnosis. Restored work and checkpoint replay take their own guarded path, not a fresh Planner run. The workflow owns commits, pushes, PR creation and fresh-review dispatch, not the model.
 
-Different issues may execute in parallel. Work for the same issue/PR follows its workflow concurrency rule. Stateful workflows use only standard GitHub Actions concurrency keys: `group` plus `cancel-in-progress: false`. Do not add `concurrency.queue` or `queue: max`; GitHub Actions does not support that key. Dispatcher and Merge Gate are serialized by their concurrency groups. N150 autoscaling/model capacity limits actual trusted-agent concurrency.
+## Review, PR CI, Merge Gate, and recovery
 
-Cancellation is operational control, not failure. If Implementer or Architect is cancelled before publication, remove its active pipeline ownership and leave the issue unowned. Do not add `dispatcher:ready` or dispatch another workflow automatically. If a PR was already published, preserve PR-pipeline ownership. A genuine execution failure without a published PR may require `pi:needs-human`.
+Reviewer checks the exact current PR HEAD after trusted deterministic product validation. It publishes `PASS` or `CHANGES_REQUESTED` using `review-state.mjs`; a verdict is HEAD-bound. A push to `pi/issue-*` triggers `pi-review-invalidate.yml` to clear stale review labels; the invalidator does **not** schedule another review. Implementer and PR Fix own fresh-review handoff. An abandoned handoff can be recovered by Reconciler after its grace period. Review infrastructure failures receive one bounded retry, then a durable `pi:needs-human` rather than synthetic PASS.
 
-Use explicit states:
-- genuine implementation/architect execution failure before publication -> `pi:needs-human`
-- unclear/no actionable change -> `pi:needs-human`
-- reviewer requests changes -> `review:changes-requested`
-- reviewer passes -> `review:passed`
-- merge conflict -> stale review is removed, PR Fix is dispatched, and Merge Gate itself succeeds/stops the queue
+On a changes-requested verdict, PR Fix owns the repair against latest `dev`, verifies and publishes a new PR HEAD, and dispatches another Reviewer. If Merge Gate discovers a late conflict, it invalidates PASS and transfers ownership to PR Fix; it does **not** solve conflicts, update the branch, or run an integration engine.
 
-Do not silently substitute another task when selected work fails.
+Merge Gate requires a live, permitted PR with a current-HEAD `review:passed` verdict and **green ordinary pull-request CI on that same PR HEAD**. Pending CI allows other ready PRs to be considered. Known product-CI failure transfers to PR Fix; CI infrastructure failure has one bounded rerun, then needs human intervention. Immediately before merging, the current `dev` HEAD must also have green push CI. GitHub squash merge receives the observed PR SHA for optimistic concurrency, not as cross-workflow state.
 
-## Complexity guard
+`ci.yml` runs on same-repository PRs to `dev`, pushes to `dev`, and manual dispatch. It uses N150 **self-hosted general** runners for Ruff, pytest, Node/harness tests, runner-autoscaler tests, and Docker/Compose integration; untrusted fork PRs are excluded. The separate `ci-terminal-wake.yml` observes *completed* PR CI via `workflow_run` and wakes Merge Gate on the dedicated control runner. After green push CI for the actual merged `dev`, `ci.yml` finalizes the issue and wakes the next merge. Red `dev` CI stops the sequence. No pipeline stage uses captured cross-run dev SHA or synthetic dev+PR CI.
 
-Routing to Architect is a Dispatcher decision made before Implementer starts. Implementer therefore needs only a binary startup class from its planner: **trivial** or **nontrivial**. The planner separately returns its own per-task `evidence_budget` estimate (0–6), and that estimate is the initial productive-progress evidence allowance; the class only supplies the fallback allowance (**2** for trivial, **6** for nontrivial) when no estimate is recorded. Neither value changes response budgets, turn quotas, workflow routing, or whether delegation is required. Reviewer and PR Fix keep their separate `trivial | normal | complex` review-depth classification.
+## Runner capacity, providers, and diagnostics
 
+N150 has **two independent ephemeral autoscaled pools**: `pi-agent` (model-capacity gated) for Dispatcher, Architect, Implementer, Reviewer, PR Fix, Triage; and `general` (not model gated) for CI, Merge Gate, Reconciler and Usage. A **third, dedicated persistent `control` runner** executes short CI terminal, post-merge and automation-control wakes even when general workers are saturated. Pool size, model concurrency and workflow-file watchers are set by `infra/github-runner-autoscaler/compose.yaml` and its host environment; do not document a fixed live number from a past deployment. `control-runner-watch.yml` separately checks stalled control jobs. For host setup, recovery/quarantine and evidence volumes use the [runner reference](../infra/github-runner-autoscaler/README.md).
 
-## Productive-progress guard
+Stage backend/model selection is centralized in `scripts/pi-run-stage.mjs` (default alias in `.pi/default-model`, optional override). The current Pi default provider route uses the Open Responses-compatible `4001/v1` endpoint through `DEFAULT_MODEL_BASE_URL` or `PI_MODEL_BASE_URL`; do not describe an obsolete LiteLLM/3009 direct path as the normal agent API. `pi-common/pi-stage-backend.mjs` and `mini-swe-stage-backend.mjs` implement backend-specific invocation. The model requested must actually be loaded at the selected endpoint; runner/model availability is an operational dependency, not a code quality verdict.
 
-Implementer exploration is constrained by trusted runtime state rather than by a fixed count of "no-progress" turns.
+Usage records and reconciliation live in `pi-common/usage-ledger.mjs`, `pi-usage-summary.mjs` and `pi-usage-collect.mjs`. Implementer request/response traces are retained as restricted Actions artifacts for **seven days**. Logs, validation ledgers and failure artifacts aid diagnosis. `PI_RUNTIME_FAILURE_FILE` is diagnostic provenance, not an authorization boundary: the file lives under `$RUNNER_TEMP`, which an Implementer shell/tool process may be able to write. Its contents must never authorize publication, review, or merge, override GitHub state, or bypass trusted validation; only the trusted classifier may render recognized failure metadata. Unknown or malformed metadata fails closed. Use the linked [logs guide](github-actions-logs.md) and [trace guide](pi-model-traces.md); never put credentials, raw tokens, or user data into issue comments.
 
-For fresh work, successful `prepare_implementation` opens a bounded initial evidence budget equal to the planner's `evidence_budget` estimate (**0–6** actions; the by-complexity fallback of 2 trivial / 6 nontrivial applies only when no estimate is recorded). A budget of 0 enters `ACTION_REQUIRED` immediately. This permits one narrow discovery-and-inspection chain such as `locate -> contract -> target implementation -> registration/caller -> exact edit anchor` without forcing a guessed mutation. Once that budget is exhausted, the runtime enters `ACTION_REQUIRED`: the next substantive action must be `structural_edit`, `safe_edit`, `edit`, `write`, `begin_coding_session`, `rollback_last_mutation`, or `submit_result`. If one concrete fact outside that bounded initial chain still prevents a safe action, `need_more_evidence({missing, reason})` unlocks exactly one additional evidence action and then returns to `ACTION_REQUIRED`. That escape hatch may be used only once per productive epoch; another `need_more_evidence` is blocked until a successful productive action (`structural_edit`, `safe_edit`, `edit`, `write`, `rollback_last_mutation`, or `submit_result`) resets the epoch. Failed productive actions do not reset it.
+## Security and maintenance
 
-`prepare_implementation` is runtime single-shot. If planner infrastructure fails after its configured internal retry (one retry for missing `structured_output`), the runtime records `PREPARATION_FALLBACK` and satisfies preparation without inventing planner output or complexity. The fallback closes startup orientation and enters `ACTION_REQUIRED`: normal mutation/submission tools and `begin_coding_session` (plus the legacy `request_large_mutation_budget`) are available; `run_check` still requires a successful mutation, and a concrete missing fact can unlock one read/search via `need_more_evidence`. A second preparation call remains blocked. Fallback itself grants no elevated response budget. `PI_SUBAGENT_FAILURE`, `PI_SUBAGENT_RETRY`, and `PI_PREPARATION_FALLBACK` distinguish failed attempts, retry exhaustion, and recovery. Cancellation still propagates rather than enabling execution. Restored Implementer work starts directly in `ACTION_REQUIRED` and should call `submit_result({})` first.
+The model may propose product changes but cannot change `.github/workflows/**`, `.pi/**`, `agents/**`, protected `scripts/pi-*` or `infra/github-runner-autoscaler/**`, root harness policy, or protected control-plane tests. The trusted policy is in `.agent-harness.json` and `pi-common/control-plane-policy.mjs`. Protected changes require a separate human-reviewed control-plane path; workflows do not grant model authority by rephrasing the task.
 
-### Coding session (16K coding phase)
-
-The Implementer's normal responses are capped at 2,048 tokens, and tool-call arguments are part of that output. That ceiling suits exploration and decisions, but not writing a complete file plus its tests. The Implementer therefore runs in two phases of **one logical session**:
-
-- **2K exploration phase.** Read, search, plan and decide, under the normal evidence rules.
-- **16K coding phase.** Once evidence is complete (`action_required`; the controller rejects the call earlier), the Implementer calls `begin_coding_session({reason?})`. The runtime forks the Implementer's own persisted session (pi-subagents `context: "fork"`, which branches the parent transcript with `createBranchedSession`) into the `implementer-coding-session` agent. The fork sees the same conversation: issue prompt, contract, evidence and tool results, the plan or `PREPARATION_FALLBACK`, and decisions. It continues normally there: write code, write tests, `run_check`, fix, `run_check`, `submit_result`.
-
-Details:
-
-- **Same trusted runtime inside the fork.** The fork loads exactly three extensions, by absolute path from the trusted control checkout: `pi-agent-runtime.mjs`, `pi-bash-timeout.mjs` and `pi-implementer-result-tool.mjs`. The runtime runs in coding-session mode (`PI_CODING_SESSION`): fixed 16,384-token responses, already prepared, starting in `action_required`, with no nested coding session and no legacy grant. Everything else is the normal Implementer runtime. That includes worktree/`.git`/symlink containment for every `write`/`edit`/`safe_edit`/`structural_edit` (also enforced in the 2K phase), snapshots and `rollback_last_mutation`, no-op detection, the `run_check` sandbox and its one-check-per-mutation permit, `need_more_evidence`, productive-progress and semantic-loop guards, the ceiling-without-tool bound, and `submit_result`. The fork may change as many files as the issue needs. The parent session stays at 2,048 throughout and has no 16K state.
-- **Thinking off.** The coding session exists to fit large code in tool arguments, not to give the model a bigger planning phase (smoke #284: the first 16K response was 38,755 chars of pure reasoning with no tool call). Thinking is disabled in three trusted layers:
-  1. The registered definition has `thinking: "off"`. It must be the string: pi-subagents appends it as a `:off` model suffix, and `false` would leave the default on.
-  2. The delegation request carries `thinking: "off"`, which pi-subagents applies as `thinkingOverride ?? agent.thinking`, so it beats worktree `agentOverrides.thinking`, `defaultThinking` and model suffixes.
-  3. Because pi sends no reasoning field for this provider's compat at level `off`, the runtime in coding-session mode sets `chat_template_kwargs.enable_thinking = false` on every provider request (`before_provider_request`). A live probe of Laguna with the same request shape gave 3,049 reasoning chars and no tool call by default, against 0 reasoning chars and an immediate `write` with `enable_thinking: false`.
-
-  The 16,384 ceiling is unchanged, and the 2K parent's requests are not altered. `PI_CODING_SESSION` logs `thinking_disabled`, `first_tool_call` (ms since `session_ready`) and `first_response` (output tokens).
-- **Tools.** The fork's tool allowlist is the normal coding/verification set: `read`, bounded `bash`, `write`, `edit`, `structural_edit`, `safe_edit`, `rollback_last_mutation`, `run_check`, `repo_search`/`indexed_repo_search`, `need_more_evidence`, `submit_result`. Exploration orchestration (subagents, MCP/LSP via ambient extensions) and the transition/legacy budget tools stay in the 2K phase.
-- **Trusted definition source.** The fork's definition, tool allowlist and extensions are not read from the issue worktree, which the Implementer can rewrite. The parent runtime registers the agent in code (`pi-subagents:runtime-agent-register:v1`). An explicit `extensions` list disables ambient worktree/global extensions in the fork. Worktree `agentOverrides` can only narrow model/thinking for a runtime agent. A same-name agent planted in the worktree `.pi/agents` collides, and the launch fails closed. Forking needs a persisted parent session, so the implementer stage runs pi with `--session-dir` (next to the stage artifacts, outside the worktree); all other stages keep `--no-session`. When no session exists, the call is rejected (`fork_unavailable`); there is no fresh-prompt fallback.
-- **Ending.** When the fork calls `submit_result`, it writes the stage's terminal result (`PI_TERMINAL_RESULT_FILE`), and the parent's `begin_coding_session` returns `terminate: true`, so the run finishes normally. If the fork ends without submitting, its worktree changes stay (checkpoint semantics are unchanged), and the parent continues at 2K. It may start one more session (`codingSessionMaxSessions`, default 2), finish directly, or submit. Cancellation propagates. Nothing about a coding session is persisted besides the worktree and checkpoint, which stay authoritative.
-- **Recovery and steering.** A direct `write`/`edit`/`safe_edit`/`structural_edit` truncated at 2K is steered to `begin_coding_session`. pi reports that rejection through `tool_execution_end`, so the steer is sent from there as well as from `tool_result`, once per call. An action-required response that uses the whole ceiling without any tool call (for example code drafted in reasoning) gets a targeted steer, and three such responses in a row abort the stage (`PI_ACTION_REQUIRED_ABORT`). The prose-only guard deliberately ignores ceiling-hit turns.
-- **Observability.** `PI_CODING_SESSION` (`agent_registered`, `requested`, `started`, `session_ready` in the fork with active tools / ceiling / inherited-entry counts, `completed`, `ended_without_submit`, `rejected`, `cancelled`); `PI_MUTATION` with `mode: "direct" | "coding_session"`; `PI_MUTATION_BLOCKED` for refused containment.
-
-`request_large_mutation_budget` (a one-shot 16K grant to the parent's own next response) is legacy, kept only for stage-1 compatibility; recovery and the contract never select it.
-
-History (#273): the first implementation delegated large payloads to a separate tool-less 16K `mutation-writer` given a compressed `intent/requirements` prompt (lossy context, JSON transport escaping bug #278, writer tool-call markup applied to disk). The second implementation was a one-shot same-session **mutation turn** restricted to one declared `write`/`edit`. Live smoke 4 showed that restriction stopping the informed fork from continuing to check and validate its work after writing the 14,634-char file (`Tool budget hard limit reached … The 'write' tool is blocked`). Both were replaced by this coding session.
-
-Dispatcher is narrower: after reading its prepared candidate context, exploration is closed and only classification submission (plus non-evidence response-budget control) remains valid. The prepared candidate issue scope is authoritative; Dispatcher must not read repository code, project documentation, Git history, queue state, or unrelated issues to manufacture more certainty.
-
-The productive-progress state is independent from response-token budgeting and is logged as `productiveState` in `PI_BUDGET` / `PI_BUDGET_NEXT`. Prompt prose does not override this state machine.
-
-## Semantic loop guard
-
-Implementer also tracks repeated failed strategies, repeated observations, no-op mutations, and revisits to earlier repository states. A first trip emits `PI_LOOP_GUARD` and `PI_LOOP_GUARD_STEER`; a repeated trip after steering emits `PI_LOOP_GUARD_ABORT` and aborts the stage. These checks are advisory around tool execution: Git or filesystem fingerprint failures skip repository-state classification and must not block a tool call or progress accounting. Blocked tool calls are counted as failed strategies even though they do not produce `tool_execution_end`.
-
-`PI_LOOP_GUARD_WINDOW` sets the bounded history size (default **8**, maximum **64**); `PI_LOOP_GUARD_THRESHOLD` sets the revisit count (default **3**). Invalid or non-positive values use their defaults, and threshold is capped at the window size. Repository fingerprints include tracked diffs and untracked paths; untracked files up to 1 MiB are content-hashed, while larger files use size and modification time to bound synchronous work.
-
-Before adding a workflow, input, status, SHA field, synchronization step, or recovery path, ask whether fresh GitHub state plus the existing owner can solve the problem.
-
-Prefer current GitHub state over transported state, IDs over metadata payloads, direct ownership over relay workflows, ordinary `dev` CI over synthetic integration, one wake owner over duplicate wake sources, and explicit failure/blocking over hidden repair.
-
-Do not add complexity solely for a hypothetical race that GitHub's atomic API operation or a later fresh-state check already handles.
-
-
-## Shared trusted CI helpers
-
-Reusable control-plane primitives live in `scripts/pi-common/`. Workflow YAML is orchestration only: checkout trusted `dev`, prepare context, invoke `pi-run-stage.mjs` when a model is required, publish, and clean up. Model provider/options, extensions, terminal-marker enforcement, and per-stage runtime limits must not be duplicated in YAML. Do not duplicate GitHub REST pagination, pipeline-state mutation, control-plane path policy, PR pre-model gates, product validation, or reusable safety policy in multiple workflows. Repeated GitHub REST routes belong in `github-api.mjs`; YAML must not implement them with inline `curl`. No-input workflow wakes use `workflow-dispatch.mjs`, which always dispatches the trusted `dev` workflow definition.
-
-`scripts/pi-common/README.md` documents every shared helper and the boundary for adding new ones. Stage-specific decisions remain in their existing `scripts/pi-*.mjs` files; the common directory must not become a generic framework.
-
-Reviewer and PR Fix share `pr-guard.mjs` for complete PR loading, human gating, and control-plane gating. Authoritative product validation is centralized in `product-checks.mjs` and invoked by trusted workflow/submit tooling; agent prompts must not maintain or require duplicate full pytest/Ruff rituals.
-
-## Security
-
-Never commit credentials, PATs, OAuth tokens, client secrets, encryption keys, authorization headers, cookies, local `.env` files, or production credentials. Never print secret values to agent logs or Job Summaries. Agents must not bulk-dump environment variables or enable shell tracing; the trusted Pi log filter redacts secret-bearing keys as a defense-in-depth boundary, but redaction is not permission to inspect secrets. Repository rulesets/branch protection remain an independent security boundary; agent prompts are not one.
-
-## Orbit Local code graph
-
-The Pi runner image includes a pinned GitLab Orbit Local CLI. Architect and Implementer workflows configure Orbit's local stdio MCP integration for Pi before model execution and index the checkout that is authoritative for that stage. Architect indexes the trusted `dev` checkout; Implementer indexes its isolated issue worktree, so delegated scout work can use the same current code graph.
-
-Orbit is complementary to Zoekt, not a replacement. Implementer does not load RepoMap. When the issue or plan already names a source-code symbol, use semantic LSP as the first discovery hop and read the resolved source before mutation; do not precede that with Zoekt, Git Context, or scout merely to rediscover the symbol. Otherwise use Zoekt/indexed search for fast literal/path discovery against indexed `dev`, Orbit for bounded structural questions such as imports, references, dependency direction, and blast radius, and direct `read` for exact source before mutation. Orbit Local is code-only and must not be configured with GitLab Remote credentials for this pipeline.
+Keep this file **short and descriptive**, not a second executable contract. Update it when a workflow/ownership boundary changes. Put per-tool invariants in the relevant trusted code/tests, exact model prompts in `agents/**`, and host commands in the runner README. Do not add a second pipeline diagram or historical experiment to live operations.

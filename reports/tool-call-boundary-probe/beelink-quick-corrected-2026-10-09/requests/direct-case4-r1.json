@@ -1,0 +1,63 @@
+{
+  "model": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a diagnostic model. All tool calls are synthetic data; never execute them. Return the requested tool call."
+    },
+    {
+      "role": "user",
+      "content": "Call submit_result exactly once with resultText exactly: \"Synthetic probe completed; no files were written and no generated code was executed.\""
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "write",
+        "description": "Write synthetic source code into a file",
+        "strict": true,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "submit_result",
+        "description": "Submit a synthetic implementation summary",
+        "strict": true,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "resultText": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "resultText"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "tool_choice": "required",
+  "max_completion_tokens": 2048,
+  "temperature": 0,
+  "stream": false
+}

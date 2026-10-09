@@ -6,6 +6,8 @@ external state. All behaviour is a function of its arguments.
 
 from __future__ import annotations
 
+import math
+
 __all__ = ["token_bucket_transition"]
 
 
@@ -43,6 +45,8 @@ def token_bucket_transition(
     ):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{name} must be a number")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
         if value < 0:
             raise ValueError(f"{name} must not be negative")
 
