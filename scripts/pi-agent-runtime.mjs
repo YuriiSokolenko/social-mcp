@@ -2684,18 +2684,39 @@ export default function (pi) {
       }),
       async execute(_toolCallId, params) {
         mainCapabilityRequests += 1;
-        const grant = mainCapabilityGrant(mainCapabilityGroups, params.group);
-        if (!grant.ok) {
-          const why = grant.reason ?? 'request_limit';
-          console.warn('PI_MAIN_CAPABILITY_ESCALATION_DENIED ' + JSON.stringify({
-            stage, group: params.group, reason: why, attempts: mainCapabilityRequests,
+        // The registered executor can outlive the snapshot that advertised it.
+        // Do not permit a direct stale call to bypass the no-op exhaustion gate.
+        if (mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS) {
+          console.warn('PI_MAIN_CAPABILITY_NOOP_LIMIT ' + JSON.stringify({
+            stage, group: params.group, attempts: mainCapabilityRequests,
+            noops: mainCapabilityNoops, limit: MAX_MAIN_CAPABILITY_NOOPS,
+            checkpoint: { worktree_preserved: true },
           }));
-          return { content: [{ type: 'text', text: 'Optional capability request denied: ' + why + '. Do not invent or bypass missing tools.' }], isError: true };
+          return { content: [{ type: 'text', text: 'Capability request no-op limit reached. Do not request capabilities again. Use an exposed safe tool or preserve worktree and report a blocker.' }], isError: true };
+        }
+        const grant = mainCapabilityGrant(mainCapabilityGroups, params.group);
+        if (!grant.ok || !grant.changed) {
+          mainCapabilityNoops += 1;
+          const why = grant.ok ? 'already_granted' : (grant.reason ?? 'request_limit');
+          console.warn('PI_MAIN_CAPABILITY_NOOP ' + JSON.stringify({
+            stage, group: params.group, reason: why,
+            attempts: mainCapabilityRequests, noops: mainCapabilityNoops,
+            limit: MAX_MAIN_CAPABILITY_NOOPS,
+            exhausted: mainCapabilityNoops >= MAX_MAIN_CAPABILITY_NOOPS,
+          }));
+          return {
+            content: [{ type: 'text', text: grant.ok
+              ? 'Capability group was already approved. Do not repeat this transition.'
+              : 'Optional capability request denied: ' + why + '. Do not invent or bypass missing tools.' }],
+            isError: !grant.ok,
+            details: { ...grant, noops: mainCapabilityNoops },
+          };
         }
         mainCapabilityGroups = grant.granted;
         console.log('PI_MAIN_CAPABILITY_ESCALATION ' + JSON.stringify({
           stage, group: params.group, reason: params.reason, attempts: mainCapabilityRequests,
-          changed: grant.changed, effectiveFrom: 'next_provider_request_only',
+          changed: true, successfulGrants: mainCapabilityGroups.length,
+          noops: mainCapabilityNoops, effectiveFrom: 'next_provider_request_only',
         }));
         return {
           content: [{ type: 'text', text: grant.changed
