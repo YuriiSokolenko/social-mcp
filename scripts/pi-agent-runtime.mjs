@@ -1846,9 +1846,7 @@ export default function (pi) {
   function verificationLifecycleGuidance(executableTools = null) {
     const verificationTool = config.productiveProgress?.verificationTool;
     if (!verificationTool) return finalValidationGuidance();
-    if (Array.isArray(executableTools) && !executableTools.includes(verificationTool)) {
-      return `${verificationTool} is NOT EXECUTABLE in this provider request even if a permit becomes available. Wait for a subsequent request that actually exposes it; never call a missing tool. ${finalValidationGuidance()}`;
-    }
+    const notExposed = Array.isArray(executableTools) && !executableTools.includes(verificationTool);
     if (deterministicVerificationInfrastructure) {
       return `run_check is disabled for the rest of this process after deterministic infrastructure failure ${deterministicVerificationInfrastructure.code}. Do not mutate merely to re-arm verification and do not retry or seek a shell workaround. Preserve the current worktree for trusted recovery. ${finalValidationGuidance()}`;
     }
@@ -1858,7 +1856,7 @@ export default function (pi) {
       : state === 'exhausted'
         ? `${verificationTool} is exhausted for the current mutation state and is unavailable now. Do not call it again unless a new successful mutation grants a new focused check.`
         : `${verificationTool} is not yet available; it becomes available after a successful mutation.`;
-    return `${lifecycle} ${finalValidationGuidance()}`;
+    return `${lifecycle}${notExposed ? ` ${verificationTool} is NOT EXECUTABLE in this provider request; a runtime transition requires a new request listing it.` : ''} ${finalValidationGuidance()}`;
   }
 
   function taskSpecificToolGuidance(activeToolNames, {
@@ -2025,19 +2023,13 @@ export default function (pi) {
       if (Array.isArray(patched?.tools)) {
         // The host's registered executors and the already-built provider definitions
         // are separate constraints. A phase change never injects a definition in-flight.
-        const inventory = pi.getAllTools?.();
-        const registeredTools = Array.isArray(inventory)
-          ? inventory.map(tool => typeof tool === 'string' ? tool : tool?.name).filter(Boolean)
-          : null;
+        // Pi's outgoing tool definitions were already built from the executable
+        // registry. getAllTools() is a separate, possibly narrower host inventory
+        // (particularly in runtime-agent forks); it cannot veto an actual provider
+        // definition. The serialized request, narrowed by phase visibility, wins.
         const reconciled = reconcileProviderToolSurface(patched, {
           activeTools: pi.getActiveTools(),
-          registeredTools,
         });
-        if (reconciled.unregistered.length) {
-          console.error(`PI_PROVIDER_EXECUTOR_MISMATCH ${JSON.stringify({
-            stage, unregistered: reconciled.unregistered, request: providerRequestSequence + 1,
-          })}`);
-        }
         let tools = reconciled.payload.tools;
         const codingSessionToolName = config.productiveProgress?.codingSessionTool;
         const codingSessionArgumentCorrectionRequest = Boolean(
@@ -2110,10 +2102,7 @@ export default function (pi) {
         // instead of advertising it.
         const executableTools = providerToolNames(patched);
         const liveActiveTools = pi.getActiveTools();
-        const registeredSet = registeredTools == null ? null : new Set(registeredTools);
-        const deferredTools = liveActiveTools.filter(name =>
-          !executableTools.includes(name) && (!registeredSet || registeredSet.has(name))
-        );
+        const deferredTools = liveActiveTools.filter(name => !executableTools.includes(name));
         providerCapabilitySnapshot = {
           request: ++providerRequestSequence,
           productiveState,
