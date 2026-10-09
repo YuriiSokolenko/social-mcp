@@ -13,6 +13,10 @@ import {
   actionRequiredToolNames,
   elevatedMutationTurnToolNames,
   classifyTruncatedToolCall,
+  incompleteCodingToolError,
+  verifiedCodingToolTruncation,
+  serializedProviderOutputBudget,
+  codingTruncationCorrectionTool,
   MAX_CEILING_WITHOUT_TOOL_TURNS,
   nextActionRequiredProseOnlyTurns,
   nextCeilingWithoutToolTurns,
@@ -504,6 +508,10 @@ export default function (pi) {
   let consecutiveUnavailableCapabilityTurns = 0;
   let providerRequestSequence = 0;
   let providerCapabilitySnapshot = null;
+  let providerWireOutputBudget = null;
+  let codingToolTransportErrors = [];
+  let codingToolTransportRecovery = null;
+  let codingToolTransportRecoveryUsed = false;
   // Successful trusted recovery transitions in this process; releases the incapable-fork guard.
   let trustedRecoveryEpoch = 0;
   let lastProviderProductiveState = null;
@@ -1775,6 +1783,39 @@ export default function (pi) {
     if (!changed) throw new Error(`Failed to apply action-required response cap of ${maxTokens} tokens`);
   }
 
+  function recordCodingTransportError(toolName, isError, result, toolCallId, source) {
+    if (stage !== 'implementer') return;
+    const candidate = incompleteCodingToolError({ toolName, isError, text: result });
+    if (!candidate || codingToolTransportErrors.some(record =>
+      record.toolCallId === toolCallId && record.toolName === toolName)) return;
+    codingToolTransportErrors.push({ ...candidate, toolCallId, source });
+    console.warn('PI_CODING_TOOL_TRANSPORT_CANDIDATE ' + JSON.stringify({
+      stage, request: providerCapabilitySnapshot?.request ?? null,
+      tool: toolName, evidence: candidate.evidence, source,
+      // This is only a schema rejection. Truncation is not established until
+      // turn_end correlates it with a verified provider output ceiling.
+      incomplete_transport_verified: false,
+    }));
+  }
+
+  function abortCodingTransportRecovery(ctx, code, reason, extra = {}) {
+    const details = {
+      requested_budget: codingToolTransportRecovery?.requestedBudget ?? null,
+      effective_budget: providerWireOutputBudget?.ceiling ?? null,
+      output_ceiling: providerWireOutputBudget?.ceiling ?? null,
+      provider_turns: providerRequestSequence,
+      successful_mutation: false,
+      terminal_failure_class: code,
+      ...extra,
+      checkpoint: { worktree_preserved: true },
+    };
+    recordRuntimeAbort(code, reason, details);
+    console.error(code + ' ' + JSON.stringify({ stage, reason, ...details }));
+    codingToolTransportRecovery = null;
+    controller.resetLargeMutationBudget();
+    ctx?.abort?.();
+  }
+
   function truncationGuidance(toolName) {
     return truncatedToolCallGuidance(toolName, {
       largeMutationBudgetTool: controller.largeMutationBudgetTool,
@@ -2018,6 +2059,13 @@ export default function (pi) {
             }));
           }
         }
+        if (codingToolTransportRecovery && codingToolTransportRecovery.request == null) {
+          const permitted = new Set([codingToolTransportRecovery.tool]);
+          if (codingToolTransportRecovery.mode === 'elevated') {
+            permitted.add(ACCEPT_MUTATION_SCOPE_TOOL);
+          }
+          tools = tools.filter(tool => permitted.has(tool.function?.name ?? tool.name));
+        }
         if (
           tools.length !== patched.tools.length ||
           tools.some((tool, index) => tool !== patched.tools[index])
@@ -2195,6 +2243,51 @@ export default function (pi) {
         })}`);
       }
       patched = steerCompaction.payload;
+
+      // Inspect the outgoing, fully serialized request after all policies and
+      // tool filtering. Neither ctx.model.maxTokens nor a successful setModel()
+      // proves the provider received the requested correction budget.
+      providerWireOutputBudget = serializedProviderOutputBudget(patched);
+      if (codingToolTransportRecovery && codingToolTransportRecovery.request == null) {
+        const correction = codingToolTransportRecovery;
+        const executable = providerToolNames(patched);
+        const needed = correction.mode === 'elevated'
+          ? correction.requestedBudget
+          : correction.originalCeiling;
+        const allowedBudget = providerWireOutputBudget.verified &&
+          providerWireOutputBudget.ceiling >= needed;
+        if (!executable.includes(correction.tool) || !allowedBudget) {
+          abortCodingTransportRecovery(
+            arguments[1],
+            !executable.includes(correction.tool)
+              ? 'PI_CODING_TOOL_RECOVERY_CAPABILITY_UNAVAILABLE'
+              : 'PI_CODING_TOOL_RECOVERY_WIRE_BUDGET_UNVERIFIED',
+            !executable.includes(correction.tool)
+              ? `correction tool ${correction.tool} is not exposed in the current provider request`
+              : `correction output budget is not verified at serialized boundary: requested ${needed}, effective ${providerWireOutputBudget.ceiling ?? 'unknown'} (${providerWireOutputBudget.reason ?? 'mismatch'})`,
+            { selected_correction: correction.mode, tool: correction.tool,
+              executable_tools: executable, incomplete_tool_transport: true },
+          );
+          return { ...patched, tools: [], tool_choice: 'none' };
+        }
+        correction.request = providerCapabilitySnapshot?.request ?? null;
+        console.warn('PI_CODING_TOOL_TRANSPORT_CORRECTION_REQUEST ' + JSON.stringify({
+          stage, request: correction.request, tool: correction.tool,
+          selected_correction: correction.mode,
+          requested_budget: correction.requestedBudget,
+          effective_budget: providerWireOutputBudget.ceiling,
+          output_ceiling: correction.originalCeiling,
+          incomplete_tool_transport: true,
+          provider_turns: providerRequestSequence,
+        }));
+      }
+      console.log('PI_PROVIDER_OUTPUT_BUDGET ' + JSON.stringify({
+        stage, request: providerCapabilitySnapshot?.request ?? null,
+        requested_budget: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+        effective_budget: providerWireOutputBudget.ceiling,
+        verified: providerWireOutputBudget.verified,
+        reason: providerWireOutputBudget.reason ?? null,
+      }));
 
       if (!codingSession) {
         const metadata = mainPromptRequestMetadata(patched, previousMainPromptMetadata);
@@ -3232,6 +3325,7 @@ export default function (pi) {
     elevatedTurnAttemptedScopePrelude = false;
     elevatedTurnSuccessfulScopePrelude = false;
     loopGuardSteeredThisTurn = false;
+    codingToolTransportErrors = [];
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
@@ -3755,6 +3849,7 @@ export default function (pi) {
     // may not route that rejection through tool_result; steer from here so the truncation
     // guidance (begin the coding session instead of regenerating) still reaches the model once.
     const truncatedText = resultText(event.result);
+    recordCodingTransportError(event.toolName, event.isError, truncatedText, event.toolCallId, 'tool_execution_end');
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text: truncatedText });
     if (truncated && !truncationGuidedCalls.has(event.toolCallId)) {
       truncationGuidedCalls.add(event.toolCallId);
@@ -4174,6 +4269,7 @@ export default function (pi) {
       return guidance ? { content: [{ type: 'text', text: guidance }], isError: true } : undefined;
     }
     const text = resultText(event);
+    recordCodingTransportError(event.toolName, event.isError, text, event.toolCallId, 'tool_result');
     const truncated = classifyTruncatedToolCall({ toolName: event.toolName, isError: event.isError, text });
     if (!truncated) return undefined;
     if (event.toolCallId) {
@@ -4417,6 +4513,123 @@ export default function (pi) {
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
+
+    // #633: Pi validates a truncated write/edit before the tool_call hook and
+    // reports a synthetic schema error (often content present, path absent).
+    // Only the correlated *actual provider wire ceiling* makes it transport
+    // truncation. A normal missing path, unrelated JSON error, provider error or
+    // prose-only length turn still uses the ordinary guards.
+    const incompleteTransport = verifiedCodingToolTruncation({
+      candidates: codingToolTransportErrors,
+      requestBudget: providerWireOutputBudget,
+      outputTokens,
+      stopReason: event.message?.stopReason,
+    });
+    if (incompleteTransport && productiveState === 'action_required' && !repairRequest) {
+      const existing = codingToolTransportRecovery;
+      console.warn('PI_CODING_TOOL_TRANSPORT_INCOMPLETE ' + JSON.stringify({
+        stage, request: providerCapabilitySnapshot?.request ?? null,
+        tool: incompleteTransport.toolName,
+        requested_budget: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+        effective_budget: providerWireOutputBudget.ceiling,
+        output_ceiling: incompleteTransport.ceiling,
+        output_tokens: outputTokens,
+        incomplete_tool_transport: true,
+        evidence: incompleteTransport.evidence,
+        provider_turns: providerRequestSequence,
+        successful_mutation: false,
+      }));
+      if (codingToolTransportRecoveryUsed || existing || controller.largeMutationBudgetActive()) {
+        abortCodingTransportRecovery(
+          ctx, 'PI_CODING_TOOL_TRUNCATION_REPEATED',
+          'coding tool transport was truncated again; bounded recovery is exhausted',
+          { tool: incompleteTransport.toolName, incomplete_tool_transport: true,
+            requested_budget: existing?.requestedBudget ?? appliedActionCap,
+            effective_budget: providerWireOutputBudget.ceiling,
+            output_tokens: outputTokens },
+        );
+        return undefined;
+      }
+      // Selection comes from the last provider request, not the complete live
+      // registry. A deferred tool is never advertised as executable.
+      const surface = providerCapabilitySnapshot?.executableTools ?? [];
+      const chosen = codingTruncationCorrectionTool(incompleteTransport.toolName, surface);
+      if (!chosen) {
+        abortCodingTransportRecovery(
+          ctx, 'PI_CODING_TOOL_RECOVERY_CAPABILITY_UNAVAILABLE',
+          'no executable coding mutation tool or safe coding-session handoff exists',
+          { tool: incompleteTransport.toolName, incomplete_tool_transport: true,
+            executable_tools: surface },
+        );
+        return undefined;
+      }
+      const availableLargeBudget = controller.largeMutationBudgetState === 'idle' &&
+        Number.isSafeInteger(controller.largeMutationBudgetMaxTokens) &&
+        controller.largeMutationBudgetMaxTokens > incompleteTransport.ceiling;
+      let mode = chosen.mode === 'handoff' ? 'handoff' : 'split';
+      if (chosen.mode === 'direct' && availableLargeBudget &&
+          controller.grantTruncatedCodingToolBudget()) {
+        mode = 'elevated';
+        controller.activateLargeMutationBudget();
+        await applyTokenCap(controller.largeMutationBudgetMaxTokens, ctx);
+        appliedActionCap = controller.largeMutationBudgetMaxTokens;
+        largeMutationActionRetryCount = 0;
+      }
+      codingToolTransportRecoveryUsed = true;
+      codingToolTransportRecovery = {
+        request: null, tool: chosen.tool, mode,
+        originalCeiling: incompleteTransport.ceiling,
+        requestedBudget: mode === 'elevated'
+          ? controller.largeMutationBudgetMaxTokens
+          : incompleteTransport.ceiling,
+      };
+      actionRequiredProseOnlyTurns = 0;
+      ceilingWithoutToolTurns = 0;
+      requireToolOnNextProviderRequest = true;
+      const instructions = mode === 'handoff'
+        ? `Call ${chosen.tool} with a short, valid handoff (max ${CODING_SESSION_HANDOFF_MAX_LENGTH} chars) to continue safe writes in the isolated coding session.`
+        : mode === 'elevated'
+          ? `Call ${chosen.tool} with complete path and content under the verified ${controller.largeMutationBudgetMaxTokens}-token elevated ceiling; accept_mutation_scope is the only permitted prelude when needed.`
+          : `Call ${chosen.tool} with a SMALL complete edit/write under ${incompleteTransport.ceiling} tokens. For new files create a minimal skeleton, then add sections with separate edit/safe_edit calls. Include the required path.`;
+      console.warn('PI_CODING_TOOL_TRANSPORT_RECOVERY ' + JSON.stringify({
+        stage, tool: chosen.tool, selected_correction: mode,
+        requested_budget: codingToolTransportRecovery.requestedBudget,
+        effective_budget: incompleteTransport.ceiling,
+        output_ceiling: incompleteTransport.ceiling,
+        incomplete_tool_transport: true,
+        provider_turns: providerRequestSequence, successful_mutation: false,
+      }));
+      await pi.sendUserMessage(
+        `RUNTIME VERIFIED CODING TOOL TRANSPORT TRUNCATION: ${incompleteTransport.toolName} was rejected BEFORE execution at the ${incompleteTransport.ceiling}-token provider ceiling; no partial mutation ran. The next request exposes only ${chosen.tool}${mode === 'elevated' ? ' and accept_mutation_scope' : ''}; tool choice is required. ${instructions} Do not explain or regenerate a long draft in prose. One bounded correction request is available.`,
+        { deliverAs: 'steer' },
+      );
+      return undefined;
+    }
+
+    if (codingToolTransportRecovery &&
+        codingToolTransportRecovery.request === providerCapabilitySnapshot?.request) {
+      if (controller.turnMadeProgress || elevatedTurnSuccessfulFinishTool) {
+        console.log('PI_CODING_TOOL_TRANSPORT_RECOVERY_RESULT ' + JSON.stringify({
+          stage, request: codingToolTransportRecovery.request,
+          tool: codingToolTransportRecovery.tool,
+          selected_correction: codingToolTransportRecovery.mode,
+          provider_turns: providerRequestSequence,
+          successful_mutation: true, terminal_failure_class: null,
+        }));
+        codingToolTransportRecovery = null;
+      } else if (!elevatedTurnSuccessfulScopePrelude) {
+        abortCodingTransportRecovery(
+          ctx, 'PI_CODING_TOOL_CORRECTION_FAILED',
+          'bounded coding transport correction did not produce an executable successful mutation',
+          { incomplete_tool_transport: true, output_tokens: outputTokens },
+        );
+        return undefined;
+      } else {
+        // A successful scope-only prelude may preserve the one-shot elevated
+        // grant for exactly one following mutation, as in the existing policy.
+        codingToolTransportRecovery.request = null;
+      }
+    }
 
     if (repairRequest) {
       const actionObserved = repairRequest.actionObserved === true;
