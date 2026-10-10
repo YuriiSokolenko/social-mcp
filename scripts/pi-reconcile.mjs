@@ -11,28 +11,216 @@ const automationMode = process.env.PI_AUTOMATION_MODE ?? 'PAUSED';
 const issueRecoveryAllowed = automationMode === 'RUNNING';
 const prRecoveryAllowed = automationMode === 'RUNNING' || automationMode === 'DRAINING';
 const RECOVERY_GRACE_MS = 10 * 60 * 1000;
-const { api, pages, repo, dispatchWorkflow, workflowRuns, deleteRef } = githubClient();
+
+const startedAt = performance.now();
+const asBoundedInt = (key, fallback, max) => {
+  const value = Number(process.env[key] ?? fallback);
+  if (!Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new Error(key + ' must be a positive integer <= ' + max);
+  }
+  return value;
+};
+const deadlineMs = asBoundedInt('PI_RECONCILE_DEADLINE_MS', 255000, 270000);
+const slowMs = asBoundedInt('PI_RECONCILE_SLOW_MS', 10000, 270000);
+const heartbeatMs = asBoundedInt('PI_RECONCILE_HEARTBEAT_MS', 5000, 270000);
+const controller = new AbortController();
+const pending = new Map();
+const pageCounts = new Map();
+const successfulMutations = [];
+const dispatchFailures = [];
+let currentStage = 'startup';
+let currentMutation = null;
+const safeNumber = key => /^\d+$/.test(process.env[key] ?? '') ? process.env[key] : 'local';
+const elapsed = () => Math.round(performance.now() - startedAt);
+function emit(event, fields = {}, warning = false) {
+  const record = {
+    event, run_id: safeNumber('GITHUB_RUN_ID'),
+    run_attempt: safeNumber('GITHUB_RUN_ATTEMPT'),
+    mode: apply ? 'apply' : 'audit',
+    automation: ['RUNNING', 'DRAINING', 'PAUSED'].includes(automationMode) ? automationMode : 'unknown',
+    stage: currentStage, elapsed_ms: elapsed(), remaining_ms: Math.max(0, deadlineMs - elapsed()), ...fields,
+  };
+  (warning ? console.error : console.log)(
+    (warning ? 'RECONCILE_WARN ' : 'RECONCILE_PROGRESS ') + JSON.stringify(record),
+  );
+}
+function errorCategory(error) {
+  if (controller.signal.aborted || error?.code === 'RECONCILER_DEADLINE') return 'deadline_exceeded';
+  if (error?.code === 'GITHUB_REQUEST_TIMEOUT' || error?.name === 'TimeoutError') return 'request_timeout';
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) {
+    return 'http_' + error.status;
+  }
+  return 'transport_or_state_error';
+}
+// Never print an untrusted error.message or stack: GitHub API errors include
+// response bodies, and transport errors may contain URLs or credentials.
+// Emit known local invariant names, safe numeric identifiers and source frames.
+function safeErrorDetails(error) {
+  const rawName = String(error?.name ?? 'Error');
+  const detail = {
+    error_name: /^[a-zA-Z][a-zA-Z0-9]{0,63}$/.test(rawName) ? rawName : 'Error',
+  };
+  if (Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599) {
+    return {
+      ...detail, http_status: error.status,
+      endpoint: typeof error.category === 'string' ? error.category : 'other',
+      method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(error.method) ? error.method : 'unknown',
+    };
+  }
+  const message = String(error?.message ?? '');
+  const concurrent = /^concurrent reconciliation transition on #(\d+):/.exec(message);
+  if (concurrent) return { ...detail, problem: 'concurrent_ownership_change', number: Number(concurrent[1]) };
+  if (message.startsWith('state repair would remain ambiguous')) {
+    return { ...detail, problem: 'ambiguous_state_repair' };
+  }
+  if (message.startsWith('GitHub repository and token are required')) {
+    return { ...detail, problem: 'missing_github_configuration' };
+  }
+  if (message.startsWith('Invalid .agent-harness.json')) {
+    return { ...detail, problem: 'invalid_project_configuration' };
+  }
+  if (error?.code === 'GITHUB_REQUEST_TIMEOUT') {
+    return { ...detail, problem: 'request_timeout' };
+  }
+  const frame = /(?:^|[/(])((?:scripts\/)[A-Za-z0-9_./-]+\.mjs):(\d+):(\d+)/m.exec(String(error?.stack ?? ''));
+  if (frame && !frame[1].includes('..')) {
+    return { ...detail, problem: 'unexpected_error', source: frame[1],
+      line: Number(frame[2]), column: Number(frame[3]) };
+  }
+  return { ...detail, problem: 'unexpected_error' };
+}
+const requestFields = info => ({
+  endpoint: info.category, method: info.method,
+  ...(info.page ? { page: info.page } : {}),
+  ...(info.status ? { status: info.status } : {}),
+});
+function onRequest(info) {
+  if (info.event === 'start') {
+    pending.set(info.id, { ...info, started: performance.now(), warned: false });
+    return;
+  }
+  pending.delete(info.id);
+  if (info.event === 'error') {
+    emit('request_failed', { ...requestFields(info), duration_ms: info.durationMs, cause: info.cause }, true);
+  } else {
+    if (info.code >= 400) {
+      emit('http_error', { ...requestFields(info), duration_ms: info.durationMs, code: info.code }, true);
+    }
+    if (info.durationMs >= slowMs) {
+      emit('slow_request', { ...requestFields(info), duration_ms: info.durationMs, code: info.code }, true);
+    }
+  }
+}
+function onPage(info) {
+  const name = info.category === 'workflow-runs' ? 'runs:' + info.status : info.category;
+  pageCounts.set(name, (pageCounts.get(name) ?? 0) + 1);
+}
+const deadlineTimer = setTimeout(() => controller.abort(new Error('reconciler deadline exceeded')), deadlineMs);
+const heartbeatTimer = setInterval(() => {
+  const waits = [...pending.values()];
+  for (const wait of waits) {
+    const duration = Math.round(performance.now() - wait.started);
+    if (!wait.warned && duration >= slowMs) {
+      wait.warned = true;
+      emit('slow_request_pending', { ...requestFields(wait), duration_ms: duration }, true);
+    }
+  }
+  emit('heartbeat', {
+    pending_total: waits.length,
+    pending: waits.slice(0, 12).map(wait => ({
+      ...requestFields(wait), duration_ms: Math.round(performance.now() - wait.started),
+    })),
+    ...(currentMutation ? { mutation: currentMutation } : {}),
+  });
+}, heartbeatMs);
+const { api, pages, repo, dispatchWorkflow, workflowRuns, deleteRef } = githubClient({
+  signal: controller.signal, onRequest, onPage,
+});
+emit('start', { deadline_ms: deadlineMs, slow_ms: slowMs, heartbeat_ms: heartbeatMs });
+
+async function phase(name, task, counts = () => ({})) {
+  currentStage = name;
+  const at = performance.now();
+  emit('phase_start');
+  let abort;
+  const deadline = new Promise((_, reject) => {
+    abort = () => reject(new Error('reconciler deadline exceeded'));
+    controller.signal.addEventListener('abort', abort, { once: true });
+    if (controller.signal.aborted) abort();
+  });
+  try {
+    const result = await Promise.race([Promise.resolve().then(task), deadline]);
+    emit('phase_end', { status: 'ok', duration_ms: Math.round(performance.now() - at), ...counts() });
+    return result;
+  } catch (error) {
+    emit('phase_end', {
+      status: 'failed', duration_ms: Math.round(performance.now() - at),
+      cause: errorCategory(error), ...counts(),
+    });
+    throw error;
+  } finally {
+    controller.signal.removeEventListener('abort', abort);
+  }
+}
+async function collection(name, task) {
+  const at = performance.now();
+  emit('collection_start', { collection: name });
+  const result = await task();
+  emit('collection_end', {
+    collection: name, pages: pageCounts.get(name) ?? 0,
+    items: result.length, duration_ms: Math.round(performance.now() - at),
+  });
+  return result;
+}
+async function mutation(kind, number, action, task) {
+  const safeId = { kind, number, action };
+  currentMutation = safeId;
+  try {
+    await task();
+    successfulMutations.push(safeId);
+  } catch (error) {
+    emit('mutation_failed', {
+      ...safeId, cause: errorCategory(error), ...safeErrorDetails(error),
+      completed_count: successfulMutations.length,
+      recently_completed: successfulMutations.slice(-8),
+    }, true);
+    throw error;
+  } finally {
+    currentMutation = null;
+  }
+}
+
 
 async function replaceStateLabels(number, expected, target, kind) {
   if (kind !== 'issue') throw new Error(`unsupported reconciliation state kind: ${kind}`);
   await replaceIssueState({ number, expected, target, context: 'reconciliation', ...issueStateIo(api) });
 }
-async function tryDispatchWorkflow(workflow, inputs, context) {
+async function bestEffortDispatch(number, action, workflow, inputs) {
   try {
-    await dispatchWorkflow(workflow, inputs);
+    await mutation('pr', number, action, () => dispatchWorkflow(workflow, inputs));
     return true;
   } catch (error) {
-    console.error(`Recovery dispatch failed for ${context}: ${error.message}`);
+    // Preserve prior best-effort semantics for ordinary dispatch failures:
+    // carry on to other PRs, shared Merge Gate and checkpoint GC. A deadline
+    // still terminates immediately. Unlike the old implementation, exit nonzero
+    // after a partial apply rather than reporting a successful reconciliation.
+    if (controller.signal.aborted) throw error;
+    const failure = { kind: 'pr', number, action, cause: errorCategory(error),
+      ...safeErrorDetails(error) };
+    dispatchFailures.push(failure);
+    emit('dispatch_failed', failure, true);
     return false;
   }
 }
+async function reconcile() {
 const liveStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
-const [allIssues, prs, runGroups, refs] = await Promise.all([
-  pages('/issues?state=all'),
-  pages('/pulls?state=all'),
-  Promise.all(liveStatuses.map(status => workflowRuns(`/actions/runs?exclude_pull_requests=true&status=${status}`))),
-  pages(`/git/matching-refs/heads/${issueBranchPrefix().split('/')[0]}/`),
-]);
+const [allIssues, prs, runGroups, refs] = await phase('github-snapshot', () => Promise.all([
+  collection('issues', () => pages('/issues?state=all')),
+  collection('pulls', () => pages('/pulls?state=all')),
+  Promise.all(liveStatuses.map(status => collection('runs:' + status,
+    () => workflowRuns(`/actions/runs?exclude_pull_requests=true&status=${status}`)))),
+  collection('issue-refs', () => pages(`/git/matching-refs/heads/${issueBranchPrefix().split('/')[0]}/`)),
+]), () => ({ collections: 8, pages: [...pageCounts.values()].reduce((a, b) => a + b, 0) }));
 const runs = runGroups.flat();
 const issues = allIssues.filter(item => !item.pull_request);
 const openPiPrIssues = new Set(prs.filter(pr => pr.state === 'open' && pr.base.ref === baseBranch() &&
@@ -55,6 +243,9 @@ for (const run of runs) {
 }
 const checkpoints = new Set(refs.map(ref => parseCheckpointRef(ref.ref)).filter(Number.isSafeInteger));
 const report = [];
+const pendingRepairs = [];
+const issuesByNumber = new Map(issues.map(issue => [issue.number, issue]));
+await phase('issue-inspection', async () => {
 for (const issue of issues) {
   const findings = inspectIssueState(issue, {
     hasOpenPiPr: openPiPrIssues.has(issue.number),
@@ -70,32 +261,32 @@ for (const issue of issues) {
 
   if (!findings.length && !strandedReady) continue;
   const removals = safeRemovals(findings);
-  let recovery = null;
-
+  const entry = { type: 'issue', number: issue.number, title: issue.title,
+    findings, removals, recovery: null };
+  report.push(entry);
   if (apply) {
     const lostOwner = findings.some(item =>
       item.code === 'orphaned-implementer-state' || item.code === 'orphaned-architect-state');
     if (lostOwner || strandedReady) {
       const target = issueRecoveryTarget(issue, {
-        hasOpenPiPr: openPiPrIssues.has(issue.number),
-        automationMode,
+        hasOpenPiPr: openPiPrIssues.has(issue.number), automationMode,
       });
-      await replaceStateLabels(issue.number, issue, target, 'issue');
-      recovery = {
-        add: target,
-        dispatch: null,
+      const recovery = {
+        add: target, dispatch: null,
         reason: target === PIPELINE_LABELS.pr
           ? 'published PR is the durable owner'
           : target === PIPELINE_LABELS.queued
             ? 'return lost issue ownership to the normal Dispatcher'
-            : `${automationMode}: clear lost issue ownership without re-queueing`,
+            : automationMode + ': clear lost issue ownership without re-queueing',
       };
+      pendingRepairs.push({ number: issue.number, expected: issue, target, entry, recovery });
     } else if (removals.length) {
-      await replaceStateLabels(issue.number, issue, issueTargetAfterRemovals(issue, removals), 'issue');
+      pendingRepairs.push({
+        number: issue.number, expected: issue, target: issueTargetAfterRemovals(issue, removals),
+        entry, recovery: null,
+      });
     }
   }
-
-  report.push({ type: 'issue', number: issue.number, title: issue.title, findings, removals, recovery });
 }
 
 // A split parent is the durable transaction marker. Repair any child that was
@@ -108,22 +299,37 @@ for (const parent of issues) {
   const labels = new Set((parent.labels ?? []).map(label => typeof label === 'string' ? label : label.name));
   if (parent.state !== 'open' || !labels.has(PIPELINE_LABELS.epic)) continue;
   for (const number of childrenOfEpic(parent.body)) {
-    const child = issues.find(item => item.number === number);
+    const child = issuesByNumber.get(number);
     if (!child || child.state !== 'open' || issueStateLabels(child).length) continue;
     let recovery = null;
     if (apply && issueRecoveryAllowed) {
-      await replaceStateLabels(number, child, PIPELINE_LABELS.queued, 'issue');
       recovery = { add: PIPELINE_LABELS.queued, dispatch: null, reason: 'complete interrupted Architect split publication' };
     }
-    report.push({
+    const entry = {
       type: 'issue', number, title: child.title,
       findings: [{ code: 'partial-architect-split-child', severity: 'repair' }],
-      removals: [], recovery,
+      removals: [], recovery: null,
+    };
+    report.push(entry);
+    if (recovery) pendingRepairs.push({
+      number, expected: child, target: PIPELINE_LABELS.queued, entry, recovery,
     });
   }
 }
+}, () => ({ inspected: issues.length, findings: report.length, planned_repairs: pendingRepairs.length }));
+await phase('issue-repairs', async () => {
+  if (!apply) return;
+  for (const repair of pendingRepairs) {
+    await mutation('issue', repair.number, 'replace-state', () =>
+      replaceStateLabels(repair.number, repair.expected, repair.target, 'issue'));
+    repair.entry.recovery = repair.recovery;
+  }
+}, () => ({ completed_repairs: successfulMutations.filter(x => x.kind === 'issue').length,
+  planned_repairs: pendingRepairs.length,
+  remaining_repairs: Math.max(0, pendingRepairs.length - successfulMutations.filter(x => x.kind === 'issue').length) }));
 
 let mergeGateRecoveryNeeded = false;
+await phase('pr-recovery', async () => {
 if (apply && prRecoveryAllowed) {
   for (const pr of prs) {
     if (pr.state !== 'open' || pr.draft || pr.base.ref !== baseBranch() || pr.head.repo?.full_name !== repo ||
@@ -147,7 +353,8 @@ if (apply && prRecoveryAllowed) {
     const needsFix = labels.has(REVIEW_CHANGES_REQUESTED);
     const workflow = workflowFile(needsFix ? 'repair' : 'reviewer');
     const owner = needsFix ? 'PR Fix' : 'Reviewer';
-    const dispatched = await tryDispatchWorkflow(workflow, { pr_number: String(pr.number) }, `PR #${pr.number}`);
+    const dispatched = await bestEffortDispatch(pr.number, 'dispatch-' + owner,
+      workflow, { pr_number: String(pr.number) });
     report.push({
       type: 'pr',
       number: pr.number,
@@ -162,32 +369,78 @@ if (apply && prRecoveryAllowed) {
     });
   }
   if (mergeGateRecoveryNeeded) {
-    await tryDispatchWorkflow(workflowFile('mergeGate'), undefined, 'passed PR merge gate');
+    const dispatched = await bestEffortDispatch(0, 'dispatch-merge-gate',
+      workflowFile('mergeGate'), undefined);
+    if (!dispatched) {
+      for (const item of report) {
+        if (item.type === 'pr' && item.findings.some(finding => finding.code === 'passed-pr-needs-merge-gate')) {
+          item.recovery = {
+            add: REVIEW_PASSED, dispatch: null, reason: 'Merge Gate recovery dispatch failed',
+          };
+        }
+      }
+    }
   }
 }
-
+}, () => ({
+  prs_checked: prs.length, completed_mutations: successfulMutations.length,
+  failed_dispatches: dispatchFailures.length,
+}));
+await phase('checkpoint-gc', async () => {
 if (apply) {
   for (const number of checkpoints) {
-    const issue = issues.find(item => item.number === number);
+    const issue = issuesByNumber.get(number);
     const decision = checkpointGcDecision(issue, { hasOpenPiPr: openPiPrIssues.has(number) });
     if (decision.remove) {
-      await deleteRef(`heads/${checkpointBranch(number)}`);
+      await mutation('checkpoint', number, 'delete-ref', () => deleteRef(`heads/${checkpointBranch(number)}`));
       report.push({ type: 'checkpoint', number, title: decision.reason, findings: [{ code: 'checkpoint-gc', severity: 'repair' }], removals: [], recovery: null });
     }
   }
 }
-
+}, () => ({ checkpoints_checked: checkpoints.size, completed_mutations: successfulMutations.length }));
+await phase('summary', async () => {
 console.log(`Pipeline reconciler: ${report.length} object(s) need attention; mode=${apply ? 'apply-safe-repairs' : 'audit'}; automation=${automationMode}; issue-recovery=${issueRecoveryAllowed ? 'enabled' : 'deferred'}; pr-recovery=${prRecoveryAllowed ? 'enabled' : 'deferred'}`);
-for (const item of report) {
-  console.log(`${item.type.toUpperCase()} #${item.number} ${item.title}`);
-  for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}${finding.labels ? ` [${finding.labels.join(', ')}]` : ''}`);
+for (const item of report.slice(0, 50)) {
+  console.log(`${item.type.toUpperCase()} #${item.number}`);
+  for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}`);
   if (apply && item.removals.length) console.log(`  repaired: removed ${item.removals.join(', ')}`);
   if (item.recovery) console.log(`  recovery: ${item.recovery.add}${item.recovery.dispatch ? ` + ${item.recovery.dispatch}` : ''} (${item.recovery.reason})`);
 }
+if (report.length > 50) console.log(`... ${report.length - 50} additional finding(s) omitted; totals above are authoritative`);
 if (process.env.GITHUB_STEP_SUMMARY) {
   const fs = await import('node:fs');
   const lines = ['## Pipeline reconciliation', '', `Mode: **${apply ? 'safe repair' : 'audit'}** · Findings: **${report.length}**`, ''];
-  for (const item of report) lines.push(`- **${item.type} #${item.number}** — ${item.findings.map(x => x.code).join(', ')}${item.removals.length ? `; safe removals: ${item.removals.join(', ')}` : ''}`);
+  for (const item of report.slice(0, 50)) lines.push(`- **${item.type} #${item.number}** — ${item.findings.map(x => x.code).join(', ')}${item.removals.length ? `; safe removals: ${item.removals.join(', ')}` : ''}`);
+  if (report.length > 50) lines.push(`... ${report.length - 50} additional finding(s) omitted.`);
   if (!report.length) lines.push('No inconsistent pipeline state found.');
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+}
+}, () => ({ findings: report.length, completed_mutations: successfulMutations.length }));
+}
+try {
+  await reconcile();
+  if (dispatchFailures.length) {
+    emit('failed', {
+      status: 'failed', cause: 'partial_dispatch_failure', failed_dispatches: dispatchFailures.length,
+      failures: dispatchFailures.slice(0, 20),
+      completed_mutations: successfulMutations.length,
+    }, true);
+    process.exitCode = 1;
+  } else {
+    emit('complete', { status: 'ok', completed_mutations: successfulMutations.length });
+  }
+} catch (error) {
+  emit('failed', {
+    status: 'failed', cause: errorCategory(error), ...safeErrorDetails(error),
+    failed_dispatches: dispatchFailures.length, failures: dispatchFailures.slice(0, 20),
+    completed_mutations: successfulMutations.length,
+    recently_completed: successfulMutations.slice(-8),
+    pending_requests: [...pending.values()].slice(0, 12).map(requestFields),
+    ...(currentMutation ? { mutation: currentMutation } : {}),
+  }, true);
+  controller.abort();
+  process.exitCode = 1;
+} finally {
+  clearTimeout(deadlineTimer);
+  clearInterval(heartbeatTimer);
 }

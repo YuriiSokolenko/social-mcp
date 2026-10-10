@@ -1,0 +1,23 @@
+# Reconciler progress and recovery runbook
+
+The trusted **Pi Pipeline Reconciler** runs `node scripts/pi-reconcile.mjs --apply` from `.github/workflows/pi-reconcile.yml`. The Actions job retains its **5-minute** timeout. Reconciler now enforces its own **255-second** default total deadline; the existing GitHub request timeout remains **30 seconds per HTTP request**. The overall deadline is shorter so the script can emit a useful terminal failure before Actions kills the job. Checkout/setup are included in the Actions 5-minute limit but not the script deadline, so monitor the actual checkout/setup duration and keep adequate headroom.
+
+## Finding a stalled phase
+
+1. Open **Actions → Pi Pipeline Reconciler → the relevant run/attempt → Audit and reconcile**.
+2. Filter step output for `RECONCILE_PROGRESS` and `RECONCILE_WARN`. Every JSON record contains a sanitized `run_id`, `run_attempt`, `mode`, `automation`, `stage`, and monotonic `elapsed_ms`. The first `start` line is written **before any GitHub request**. Progress goes to stdout and warnings to stderr; GitHub Actions can interleave streams. Sort by `elapsed_ms` (and compare run/attempt IDs), not raw display order.
+3. Look for `phase_start` without a matching `phase_end`. The `heartbeat` record (every 5 seconds by default) lists up to 12 pending requests and their endpoint category, page, optional active-run status, and age. `slow_request_pending` flags requests over 10 seconds; `slow_request` records completed slow requests. There are no raw URLs, tokens, response bodies, issue titles, or request headers in diagnostic records.
+4. `collection_end` includes total duration, pages, and items for issues, PRs, each active workflow-run status, and issue refs. The snapshot phase must finish before **any** mutation. Later phases are `issue-inspection`, `issue-repairs`, `pr-recovery`, `checkpoint-gc`, and `summary`.
+5. If `mutation_failed` appears, record the safe `kind`, `number`, `action`, `completed_count`, and `recently_completed`. The `failed` terminal line provides the error category: `deadline_exceeded`, `request_timeout`, `http_429`, `http_5xx`, or another transport/state error. Failures include a safe `error_name`, typed HTTP `http_status`/`endpoint`/`method`, or local invariant details such as `concurrent_ownership_change` and an issue number. Error bodies and raw exception messages are **never** copied to logs. Do not treat a nonzero exit or missing `complete` as a clean reconciliation.
+
+## Safe retry
+
+Wait until the preceding Reconciler attempt and any cancelled or in-flight Actions job have **fully stopped**. The `pi-pipeline-reconciler` concurrency group serializes ordinary runs, but avoid manually triggering overlapping recovery attempts. Verify the current `PI_AUTOMATION_MODE` before applying: `RUNNING` allows issue and PR recovery; `DRAINING` allows only PR recovery; `PAUSED` allows neither. Audits do not mutate.
+
+A failure in the preflight snapshot means **no changes were made**; retry once the API/runner is healthy. On partial apply failure, inspect `mutation_failed` and `recently_completed` before retrying: issue label changes re-read and validate current ownership, and checkpoint deletion is idempotent. PR workflow dispatch failures are **best-effort**: they emit `mutation_failed` and `dispatch_failed`, processing continues for other PRs, Merge Gate, and checkpoint cleanup, but the final exit code is nonzero (`partial_dispatch_failure`) and **no** `complete` record is emitted. A dispatch may succeed at GitHub even if its response is lost: dispatches are not transactionally deduplicated across a failure: check the Actions queue for a newly started Reviewer/Fix/Merge Gate before invoking another manual apply. Never use `--apply` from an untrusted PR checkout.
+
+## Configuration and tests
+
+The optional environment variables `PI_RECONCILE_DEADLINE_MS` (default `255000`, max `270000`), `PI_RECONCILE_SLOW_MS` (default `10000`) and `PI_RECONCILE_HEARTBEAT_MS` (default `5000`) control diagnostic timing. `PI_GITHUB_HTTP_TIMEOUT_MS` is unchanged (default `30000`). Values must be positive integers. Reduce limits only for deterministic tests, not as a production performance workaround.
+
+Run `node --test tests/pi-reconcile-observability.test.mjs tests/pi-reconcile-pr-recovery.test.mjs` locally. Harness CI runs both via `node --test tests/*.test.mjs`. No real GitHub API, token, runner or model is required for the fixtures. N150 runner images pin Node 26.11.1, which supports `AbortSignal.any` (requires Node ≥ 20.3). Console details are bounded to the first 50 findings; the step summary also reports totals plus 50 entries and records any truncation, so inspect logged counters rather than assuming a truncated list is complete.

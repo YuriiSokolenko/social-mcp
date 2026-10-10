@@ -94,8 +94,10 @@ const MUTANTS = [
     scenario: 'repairDispatchLost',
   },
   {
-    stage: 'GitHub client', regression: 'no request timeout: a stalled GitHub call hangs the stage',
-    file: 'scripts/pi-common/github-api.mjs', from: 'signal: AbortSignal.timeout(timeoutMs),', to: '',
+    stage: 'GitHub client', regression: 'premature request abort: a GitHub call never reaches its configured timeout',
+    file: 'scripts/pi-common/github-api.mjs',
+    from: 'const requestTimeout = AbortSignal.timeout(timeoutMs);',
+    to: "const requestTimeout = AbortSignal.abort(new Error('request aborted too early'));",
     scenario: 'mergeGateTransportFaults',
   },
   {
