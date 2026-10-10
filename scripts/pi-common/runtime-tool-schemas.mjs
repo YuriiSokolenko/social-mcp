@@ -72,3 +72,28 @@ export function repoSearchParameters() {
     maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
   });
 }
+
+// Recovery schemas are pure and instantiated only at their runtime registration sites.
+// Execution, mutation journal state, authorization and rollback policy stay in runtime.
+export function recoverWorktreeParameters() {
+  return Type.Object({
+    action: Type.Union([Type.Literal('delete_untracked'), Type.Literal('revert_tracked')]),
+    path: Type.String({ minLength: 1, maxLength: 1000 }),
+    expected_files: Type.Array(Type.String(), { maxItems: 200 }),
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+  });
+}
+
+export function undoMutationParameters() {
+  return Type.Object({
+    mutation_id: Type.String({ minLength: 1, maxLength: 80 }),
+    expected_files: Type.Array(Type.String(), { maxItems: 200 }),
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+  });
+}
+
+export function rollbackLastMutationParameters() {
+  return Type.Object({
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+  });
+}
