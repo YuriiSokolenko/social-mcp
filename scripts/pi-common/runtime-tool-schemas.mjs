@@ -46,3 +46,29 @@ export function runCheckParameters(checkKinds) {
     profile: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
   });
 }
+
+// Keep these two kind unions explicit: repo_search has no 'symbol' mode.
+// Both builders preserve property/union ordering in the registered JSON schema.
+export function indexedRepoSearchParameters() {
+  return Type.Object({
+    kind: Type.Optional(Type.Union([
+      Type.Literal('content'),
+      Type.Literal('path'),
+      Type.Literal('symbol'),
+    ])),
+    query: Type.String({ minLength: 1, maxLength: 300 }),
+    pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+    extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+    maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+  });
+}
+
+export function repoSearchParameters() {
+  return Type.Object({
+    kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
+    query: Type.String({ minLength: 1, maxLength: 300 }),
+    pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+    extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+    maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+  });
+}
