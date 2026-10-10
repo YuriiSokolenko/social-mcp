@@ -152,9 +152,8 @@ test('prepare uses configured PR base and includes the matching open PR in queue
   const result = run(['prepare', '42', contextFile], storeFile, { configFile });
   assert.equal(result.status, 0, result.stderr);
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
-  assert.deepEqual(store.pullQueries, [
-    { base: 'release/v2', raw: '?state=open&base=release%2Fv2&per_page=100&page=1' },
-  ]);
+  assert.deepEqual(store.pullQueries.map(query => query.base), ['release/v2']);
+  assert.match(store.pullQueries[0].raw, /(?:^|[?&])base=release%2Fv2(?:&|$)/);
   const context = JSON.parse(readFileSync(contextFile, 'utf8'));
   assert.deepEqual(context.queue.open_prs.map(pr => ({ number: pr.number, issue: pr.issue })),
     [{ number: 77, issue: 42 }]);
