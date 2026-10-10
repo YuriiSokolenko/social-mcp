@@ -103,6 +103,19 @@ Move only pure `begin_coding_session` argument parsing, validation and handoff n
 
 **Characterization:** existing `pi-coding-session.test.mjs` covers prepared/fallback child launch, handoff truncation, invalid-argument correction, repeated-invalid fail-closed abort, and terminal results. New `pi-coding-session-input.test.mjs` checks missing/hidden tools, input envelopes and precedence, exact errors and astral Unicode boundaries. Runtime retains session orchestration, stateful correction policy and trusted fork construction.
 
+## Slice 4 (#741): pure runtime tool guidance
+
+Two string-rendering functions have moved to `pi-common/runtime-tool-guidance.mjs`, with zero IO or mutable state. The runtime keeps thin call-site wrappers that inject the current stage, coding-child status, live profile counter and request-local executable surface.
+
+| Guidance responsibility | Before | After |
+| --- | --- | --- |
+| Hidden/forbidden Main tool messages | `profileHiddenToolAdvice` in runtime | pure text function in `runtime-tool-guidance.mjs`, using existing `main-tool-profile` constants |
+| Stage-specific action hints (Reviewer, Implementer and coding child) | `taskSpecificToolGuidance` in runtime | pure function injected with phase, tool visibility and verified current limit/tool names |
+
+**Counts:** runtime 5576 → 5534 lines; extracted 72-line module with one dependency on `main-tool-profile.mjs` (no cycle), and new `pi-runtime-tool-guidance.test.mjs` characterization tests. Exact strings, hint order, tool admission, state reads, steer timing and callbacks are unchanged.
+
+Existing `pi-main-tool-profile-runtime`, `pi-provider-tool-boundary`, `pi-runtime-steering` and `pi-coding-session` integration tests retain end-to-end coverage. The one raw-source coding guidance assertion now follows the authoritative new source.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,

@@ -1535,7 +1535,11 @@ test('blocked implementer outcome is a deliberate human gate', () => {
   assert.match(shared, /changed.*already_satisfied.*blocked/s);
   assert.match(tool, /blocked_reason/);
   assert.match(tool, /blocked_reason requires a clean worktree/);
-  assert.match(runtime, /submit_result with blocked_reason now/);
+  // #741 moved the action hint to a pure helper. Keep checking the literal
+  // contract and the runtime's live-state delegation to that helper.
+  const guidance = readScript('scripts/pi-common/runtime-tool-guidance.mjs', 'utf8');
+  assert.match(runtime, /buildTaskSpecificToolGuidance/);
+  assert.match(guidance, /submit_result with blocked_reason now/);
   assert.match(agent, /explicit requirements are contradictory[\s\S]*specific contradiction as a blocked outcome/);
   assert.match(recovery, /outcome !== IMPLEMENTER_OUTCOMES\.changed/);
   assert.match(miniSwe, /writeImplementerResult/);

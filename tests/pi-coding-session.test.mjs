@@ -80,8 +80,10 @@ REAL_ENGINEERING_CONSTRAINTS
 
 test('coding-session runtime keeps repair forcing and bounded evidence semantics', () => {
   const runtime = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
-  assert.match(runtime, /action-required: read is not exposed now/);
-  assert.match(runtime, /request the one missing fact through \$\{blockerTool\}/);
+  const guidance = fs.readFileSync('scripts/pi-common/runtime-tool-guidance.mjs', 'utf8');
+  assert.match(runtime, /buildTaskSpecificToolGuidance/);
+  assert.match(guidance, /action-required: read is not exposed now/);
+  assert.match(guidance, /request the one missing fact through \$\{blockerTool\}/);
   assert.match(runtime, /CODING_REPAIR_REASONING_MAX_TOKENS = 4096/);
 });
 
