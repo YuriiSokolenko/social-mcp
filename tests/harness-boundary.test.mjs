@@ -15,9 +15,7 @@ const executableCode = source => source.split('\n')
   .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
 
 function defaultBranchPatterns(branch) {
-  const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\
-
-test('every control-plane script is classified');
+  const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return [
     new RegExp(`\\borigin/${escaped}(?![\\w./-])`),
     new RegExp(`['"]${escaped}['"]`),
