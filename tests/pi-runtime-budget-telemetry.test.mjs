@@ -73,7 +73,7 @@ test('#741 fallback planner preserves unknown token counts, warn levels and null
     stage: 'implementer', preparationState: 'PREPARATION_FALLBACK', evidenceBudget: 0,
     source: 'implementation-planner', failureClass: 'provider_timeout',
     recovery: 'continue_without_planner_output', reason: 'network',
-    plannerDurationMs: undefined, evidenceActions: null, providerTurns: null,
+    evidenceActions: null, providerTurns: null,
   });
   assert.equal(records[2].text, 'PI_BOOTSTRAP {"phase":"prepared_state_applied","status":"fallback","beforeFirstProviderRequest":true}');
 });
