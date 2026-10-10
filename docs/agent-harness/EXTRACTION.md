@@ -11,7 +11,47 @@
 | Every split/stay entry has a reason, and every entry appears in this document. | *split and stay entries carry a reason…* |
 | Harness code (all three code layers) imports only harness code; relative imports never leave `scripts/`. It does not name the product package (`social_mcp`), the repository (`YuriiSokolenko/social-mcp`) or a private-network host. | *harness code imports only harness code…* |
 | Core and adapter code contain no `social-mcp`, configured label, configured workflow file name, `origin/dev` or `'dev'` literal. Before this change the check covered only core and mini-swe; it now covers `adapter-pi` too. | *harness scripts (core and adapters) hardcode no project identity…* |
+| Tracked workflow/harness shell entrypoints in `scripts/` and `infra/` contain no executable hardcoded reference to configured `git.defaultBranch`. | *tracked harness shell entrypoints respect configured git.defaultBranch*; shell lexer and mutation tests in `harness-boundary.test.mjs` |
 | Product code (`src/`), `Dockerfile`, `compose.yaml`, `.dockerignore`, `.env.example` and unclassified product tests reference no harness file. | *product code, image, compose and product tests reference no harness file* |
+
+### Shell entrypoint boundary (#743)
+
+The shell guard uses **tracked** files from `git ls-files` and includes every `*.sh`
+under `scripts/` or `infra/`, with exactly one extraction classification
+required per file. The current seven entrypoints are:
+`scripts/beelink-update-restart.sh`, `scripts/orbit-context-preflight.sh`,
+`scripts/upgrade-n150-docker-client.sh`,
+`infra/github-runner-autoscaler/manager.sh`,
+`infra/github-runner-autoscaler/control-runner-entrypoint.sh`,
+`infra/github-runner-autoscaler/worker-entrypoint.sh`, and
+`infra/zoekt/update-index.sh`. Shell files under `tests/` are **test fixtures**
+rather than deployed workflow entrypoints; their intended grep/assertion literals
+do not belong in the production-code guard.
+
+The rule takes `git.defaultBranch` from `.agent-harness.json` through
+`projectConfig()`, not a literal default value. It checks Git tracking and
+remote refs (`origin/<branch>`, `refs/heads/<branch>`,
+`refs/remotes/origin/<branch>`), GitHub API query arguments (`base=`,
+`head=`, `ref=`), branch flags (`--base`, `--head`, `--ref`,
+`--branch`, `-branches=`), and literal Git checkout/switch/clone/fetch/pull
+and related commands. It honors whole branch boundaries, including names with
+slashes, and recognizes continued lines ending in a backslash.
+
+The lexical check removes line/inline comments only outside single/double quotes,
+preserves quoted command arguments, skips `<<EOF`, `<<'EOF'`, and `<<-EOF`
+here-document **bodies** (treated as data), and ignores simple diagnostic
+`echo`/`printf`/`log` lines. This is not a complete Bash interpreter:
+dynamically constructed/evaluated shell (`eval`, `bash -c`, and executable
+shell passed via heredocs), arithmetic/process substitution and unusual
+heredoc syntax must be reviewed separately. The guard does not claim coverage
+of those forms. It deliberately does not ban project-specific infra wiring
+such as image tags, volume names or deployment host paths.
+
+Previously hardcoded Beelink staging Git commands and the Zoekt index refresh
+now read `git.defaultBranch` from the checkout config with `jq` and
+validate it with `git check-ref-format --branch`. Beelink's explicit
+deployment-repository identity and Zoekt's repository URL remain
+project-specific infrastructure, not branch-policy violations.
 
 ## Coupling found and removed in this step
 

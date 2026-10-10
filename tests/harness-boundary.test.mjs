@@ -46,6 +46,85 @@ function defaultBranchPatterns(branch) {
   ];
 }
 
+// Shell entrypoints are classified under extraction.move.infra; test *.sh files are fixtures.
+// Keep shell quotes and command arguments, ignore comments and heredoc data.
+// Evaluated shell in heredocs and eval/bash -c strings requires separate review.
+function shellStatements(source) {
+  const statements = [];
+  let quote = null;
+  let pending = [];
+  let joined = '';
+  let firstLine = 1;
+  const lines = source.split(/\r?\n/);
+  for (let number = 0; number < lines.length; number++) {
+    const line = lines[number];
+    if (pending.length) {
+      const active = pending[0];
+      if ((active.tabs ? line.replace(/^\t+/, '') : line) === active.delimiter) pending.shift();
+      continue;
+    }
+    if (!joined) firstLine = number + 1;
+    let fragment = '';
+    let continued = false;
+    const upcoming = [];
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        fragment += ch;
+        if (ch === '\\' && quote === '"' && i + 1 < line.length) fragment += line[++i];
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '\\' && i === line.length - 1) { continued = true; break; }
+      if (ch === '\\' && i + 1 < line.length) { fragment += ch + line[++i]; continue; }
+      if (ch === '#' && (i === 0 || /[\s;|&({]/.test(line[i - 1]))) break;
+      if (ch === "'" || ch === '"') { quote = ch; fragment += ch; continue; }
+      if (ch === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+        const match = line.slice(i).match(/^<<(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/);
+        if (match) {
+          upcoming.push({ delimiter: match[3], tabs: match[1] === '-' });
+          fragment += match[0];
+          i += match[0].length - 1;
+          continue;
+        }
+      }
+      fragment += ch;
+    }
+    joined += fragment;
+    if (quote || continued) { joined += ' '; continue; }
+    if (joined.trim()) statements.push({ line: firstLine, code: joined });
+    joined = '';
+    pending.push(...upcoming);
+  }
+  if (joined.trim()) statements.push({ line: firstLine, code: joined });
+  return statements;
+}
+
+function shellBranchViolations(source, branch) {
+  const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const end = '(?![\\w./-])';
+  const rules = [
+    ['remote ref', new RegExp(`\\borigin/${escaped}${end}`)],
+    ['Git ref', new RegExp(`\\b(?:refs/(?:heads|remotes/origin)|heads)/${escaped}${end}`)],
+    ['GitHub parameter', new RegExp(`\\b(?:base|head|ref)\\s*=\\s*['"]?${escaped}${end}`)],
+    ['branch option', new RegExp(`(?:--(?:base|head|ref|branch)|-branches)(?:\\s+|=)\\s*['"]?${escaped}${end}`)],
+  ];
+  const gitCommand = /\bgit\b[^\n;]*?\b(?:checkout|switch|pull|push|fetch|clone|branch|merge|rebase|reset|rev-parse|worktree)\b[^\n;]*/g;
+  const gitBranch = new RegExp(`(?:^|[\\s"'=])${escaped}${end}`);
+  const violations = [];
+  for (const { line, code } of shellStatements(source)) {
+    // User-facing diagnostics are data, not Git/GitHub operations.
+    if (/^\s*(?:echo|printf|log|die|usage)\b/.test(code) && !/(?:;|&&|\|\||\$\(|`)/.test(code)) continue;
+    for (const [kind, rule] of rules) {
+      if (rule.test(code)) violations.push({ line, kind });
+    }
+    for (const match of code.matchAll(gitCommand)) {
+      if (gitBranch.test(match[0])) violations.push({ line, kind: 'Git branch command' });
+    }
+  }
+  return violations;
+}
+
 test('every control-plane script is classified in exactly one layer and every entry exists', () => {
   const listed = layers.flatMap(layer => manifest[layer]);
   assert.deepEqual([...new Set(listed)].length, listed.length, 'a script appears in two layers');
@@ -117,6 +196,80 @@ function trackedFiles(t) {
   }
   return result.stdout.split('\0').filter(Boolean);
 }
+
+
+test('tracked harness shell entrypoints respect configured git.defaultBranch', t => {
+  const files = trackedFiles(t);
+  if (!files) return;
+  const shells = files.filter(file => /^(?:scripts|infra)\/.*\.sh$/.test(file));
+  assert.ok(shells.includes('scripts/beelink-update-restart.sh'), 'Beelink entrypoint covered');
+  assert.ok(shells.includes('infra/zoekt/update-index.sh'), 'Zoekt entrypoint covered');
+  for (const file of shells) {
+    const matches = classification.filter(({ entry }) => covers(entry, file));
+    assert.equal(matches.length, 1, file + ' has one extraction classification');
+    assert.equal(matches[0].as, 'move', file + ' is a harness or infra entrypoint');
+    const violations = shellBranchViolations(fs.readFileSync(file, 'utf8'), projectConfig().git.defaultBranch);
+    assert.deepEqual(violations, [], file + ': ' + JSON.stringify(violations));
+  }
+});
+
+test('shell branch guard catches Git/GitHub args, refs, and line continuations', () => {
+  const branch = projectConfig().git.defaultBranch;
+  const positives = [
+    'git checkout ' + branch,
+    "git switch '" + branch + "'",
+    'git -C "$checkout" pull --ff-only origin ' + branch,
+    'git fetch origin +refs/heads/' + branch + ':refs/heads/' + branch,
+    'git rev-parse refs/remotes/origin/' + branch,
+    'curl "https://api.github.com/repos/demo/pulls?base=' + branch + '"',
+    'url="https://api.github.com/repos/demo/pulls?head=' + branch + '"',
+    "gh pr create --base '" + branch + "'",
+    'gh workflow run build.yml --ref="' + branch + '"',
+    'zoekt-git-index -branches=' + branch,
+    ['git checkout \\', '  ' + branch].join('\n'),
+  ];
+  for (const source of positives) {
+    assert.notDeepEqual(shellBranchViolations(source, branch), [], 'should reject: ' + source);
+  }
+  const negatives = [
+    '# git checkout ' + branch + '\n# curl "https://api.github.com/?base=' + branch + '"',
+    'git switch "$DEFAULT_BRANCH" # git checkout ' + branch,
+    'git fetch origin "refs/heads/$DEFAULT_BRANCH"',
+    'git checkout ' + branch + '-candidate',
+    'curl "https://api.github.com/?base=' + branch + 'elopment"',
+    "echo 'Example: git checkout " + branch + "'",
+    "printf 'target origin/" + branch + "\\n'",
+    "cat <<'DOC'\ngit checkout " + branch + '\nbase=' + branch + '\nDOC',
+    'cat <<-DOC\n\tgit fetch origin refs/heads/' + branch + '\nDOC',
+  ];
+  for (const source of negatives) {
+    assert.deepEqual(shellBranchViolations(source, branch), [], 'should allow: ' + source);
+  }
+});
+
+test('shell guard works against a non-dev configured base branch fixture', () => {
+  const fixture = JSON.parse(fs.readFileSync('.agent-harness.json', 'utf8'));
+  fixture.git.defaultBranch = 'release/v2';
+  assert.notDeepEqual(shellBranchViolations('git switch release/v2', fixture.git.defaultBranch), []);
+  assert.notDeepEqual(shellBranchViolations('curl "https://api.github.com/pulls?base=release/v2"', fixture.git.defaultBranch), []);
+  assert.notDeepEqual(shellBranchViolations('git fetch origin +refs/heads/release/v2:refs/heads/release/v2', fixture.git.defaultBranch), []);
+  assert.deepEqual(shellBranchViolations('git switch dev', fixture.git.defaultBranch), []);
+  assert.deepEqual(shellBranchViolations('git switch "$DEFAULT_BRANCH"', fixture.git.defaultBranch), []);
+});
+
+test('inserting a GitHub query or Git ref in the covered Beelink script fails the guard', () => {
+  const branch = projectConfig().git.defaultBranch;
+  const script = fs.readFileSync('scripts/beelink-update-restart.sh', 'utf8');
+  assert.deepEqual(shellBranchViolations(script, branch), []);
+  const mutations = [
+    '\ncurl "https://api.github.com/repos/example/pulls?base=' + branch + '"\n',
+    '\ngit fetch origin refs/heads/' + branch + '\n',
+  ];
+  for (const mutation of mutations) {
+    assert.notDeepEqual(shellBranchViolations(script + mutation, branch), [],
+      'a new hardcoded branch in the Beelink entrypoint must fail');
+  }
+});
 
 test('every workflow-related file is classified exactly once as move, split or stay', t => {
   const files = trackedFiles(t);

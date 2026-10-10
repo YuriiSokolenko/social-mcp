@@ -18,7 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: sudo bash scripts/beelink-update-restart.sh [OPTIONS]
 
-Update origin/dev in an isolated user-owned checkout, build required images,
+Update the configured default branch in an isolated user-owned checkout, build required images,
 then recreate the documented N150 runner and Zoekt services without deleting
 volumes or rebooting the host.
 
@@ -91,6 +91,8 @@ fi
 [[ -d "$REPO_DIR/.git" ]] || die "not inside a Git checkout: $REPO_DIR"
 [[ -f "$REPO_DIR/$AUTOSCALER_REL/compose.yaml" && -f "$REPO_DIR/infra/zoekt/compose.yaml" ]] || die 'tracked N150 Compose manifests are missing'
 [[ -f "$REPO_DIR/$AUTOSCALER_REL/.env" ]] || die "host configuration missing: $AUTOSCALER_REL/.env"
+DEFAULT_BRANCH="$(jq -er '.git.defaultBranch | select(type == "string" and length > 0)' "$REPO_DIR/.agent-harness.json" 2>/dev/null)" || die 'cannot read configured git.defaultBranch'
+[[ "$DEFAULT_BRANCH" != -* ]] && git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1 || die 'configured git.defaultBranch is not a valid Git branch'
 DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')" || die 'cannot identify Docker storage location'
 for storage_path in "$REPO_DIR" "$DOCKER_ROOT"; do
   df -Pk "$storage_path" | awk 'NR==2 { if ($4 < 5242880) exit 1 }' || die "less than 5 GiB free on filesystem containing $storage_path"
@@ -169,7 +171,7 @@ RUNNER_TOTAL="$(jq -er 'if (.total_count|type)=="number" and (.runners|type)=="a
 BUSY="$(jq '[.runners[] | select(.busy == true)] | length' <<<"$RUNNERS_JSON")"
 unset RUNNERS_JSON RUNS_JSON GH_TOKEN
 
-PLAN="Repository $REPO_DIR ($BRANCH @ ${CURRENT_COMMIT:0:12}, dirty paths: $DIRTY); target origin/dev. Build manager, Pi worker, general worker, control runner, and run-check sandbox before stopping the documented managers, control runner, labeled ephemeral workers, and Zoekt. Keep all named volumes. Recreate those services and reindex Zoekt."
+PLAN="Repository $REPO_DIR ($BRANCH @ ${CURRENT_COMMIT:0:12}, dirty paths: $DIRTY); target origin/$DEFAULT_BRANCH. Build manager, Pi worker, general worker, control runner, and run-check sandbox before stopping the documented managers, control runner, labeled ephemeral workers, and Zoekt. Keep all named volumes. Recreate those services and reindex Zoekt."
 PLAN+=" Reuse existing Compose projects: runners=$RUNNER_COMPOSE_PROJECT, Zoekt=$ZOEKT_COMPOSE_PROJECT."
 if (( BESZEL_SAFE )); then PLAN+=" Beszel and Beszel Agent are safely identified; recreate them from their existing local images without pulling and preserve their host data directories."; else PLAN+=" Beszel was not safely identifiable and will be left untouched."; fi
 printf 'Beelink N150 update plan\n%s\n\nCurrent named containers:\n%s\nDocker images in n150 namespace: %s\nGitHub active/queued runs: %s / %s busy self-hosted runners.\n' "$PLAN" "$CONTAINERS" "$DISK_IMAGES" "$ACTIVE" "$BUSY"
@@ -199,14 +201,14 @@ as_user mkdir -m 0700 "$STAGE" || die 'cannot create user-owned staging checkout
 STAGE="$(cd -- "$STAGE" && pwd -P)"
 cleanup() { [[ -n "$STAGE" && -d "$STAGE" ]] && rm -rf -- "$STAGE" || true; }
 trap 'rc=$?; if (( rc != 0 )); then log "rollback guidance: previous image tags and volumes remain; restore the prior checkout/config backup and run docker compose up -d --force-recreate from the previous revision"; fi; cleanup; log "finished exit=$rc"; if (( rc != 0 )); then printf "\nUpdate stopped (exit %s). Report: %s\n" "$rc" "${REPORT:-unavailable}" >&2; fi' EXIT
-as_user git clone --single-branch --branch dev "$REMOTE" "$STAGE" >/dev/null 2>&1 || die 'could not clone origin/dev into isolated staging checkout'
+as_user git clone --single-branch --branch "$DEFAULT_BRANCH" "$REMOTE" "$STAGE" >/dev/null 2>&1 || die "could not clone origin/$DEFAULT_BRANCH into isolated staging checkout"
 [[ -d "$STAGE/.git" ]] || die 'staging checkout is invalid'
 # Clone establishes an isolated checkout; this explicit fast-forward pull closes
-# the race where origin/dev advanced during the clone. The deployment checkout
+# the race where the configured remote branch advanced during the clone. The deployment checkout
 # itself is never pulled or changed, so its dirty/untracked host config survives.
-as_user git -C "$STAGE" pull --ff-only origin dev >/dev/null 2>&1 || die 'could not fast-forward the isolated checkout to latest origin/dev'
+as_user git -C "$STAGE" pull --ff-only origin "$DEFAULT_BRANCH" >/dev/null 2>&1 || die "could not fast-forward the isolated checkout to latest origin/$DEFAULT_BRANCH"
 install -m 0600 -o "$ORIGINAL_USER" -g "$(id -gn "$ORIGINAL_USER")" "$REPO_DIR/$AUTOSCALER_REL/.env" "$STAGE/$AUTOSCALER_REL/.env" || die 'could not preserve host .env in staging checkout'
-# Force only image tags to the values trusted by the fetched dev checkout.
+# Force only image tags to the values trusted by the fetched default-branch checkout.
 # Host tokens, paths, and other local settings remain in the copied .env.
 awk -F= '/^(PI_RUNNER_MANAGER_IMAGE|RUNNER_IMAGE|GENERAL_RUNNER_IMAGE|CONTROL_RUNNER_IMAGE|RUN_CHECK_SANDBOX_IMAGE)=/ {print}' \
   "$STAGE/$AUTOSCALER_REL/.env.example" >"$STAGE/$AUTOSCALER_REL/latest-images.env"
@@ -288,8 +290,8 @@ curl --fail --silent --show-error --max-time 10 -X POST -H 'Content-Type: applic
 PI_MANAGER_RUNNING_IMAGE="$(docker inspect --format '{{.Config.Image}}' pi-runner-manager)"
 GENERAL_MANAGER_RUNNING_IMAGE="$(docker inspect --format '{{.Config.Image}}' general-runner-manager)"
 CONTROL_RUNNING_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$CONTROL_ID")"
-[[ "$PI_MANAGER_RUNNING_IMAGE" == "$MANAGER_IMAGE" && "$GENERAL_MANAGER_RUNNING_IMAGE" == "$MANAGER_IMAGE" ]] || die 'runner manager image tags do not match the trusted dev configuration'
-[[ "$CONTROL_RUNNING_IMAGE" == "$CONTROL_IMAGE" ]] || die 'control runner image tag does not match the trusted dev configuration'
+[[ "$PI_MANAGER_RUNNING_IMAGE" == "$MANAGER_IMAGE" && "$GENERAL_MANAGER_RUNNING_IMAGE" == "$MANAGER_IMAGE" ]] || die 'runner manager image tags do not match the trusted default-branch configuration'
+[[ "$CONTROL_RUNNING_IMAGE" == "$CONTROL_IMAGE" ]] || die 'control runner image tag does not match the trusted default-branch configuration'
 for image in "$MANAGER_IMAGE" "$PI_WORKER_IMAGE" "$GENERAL_WORKER_IMAGE" "$CONTROL_IMAGE" "$SANDBOX_IMAGE"; do
   [[ -n "$image" ]] || die 'could not identify an expected configured image'
   image_id="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)"
@@ -302,7 +304,7 @@ docker run --rm --entrypoint mcp-searxng "$PI_WORKER_IMAGE" --help >/dev/null 2>
 curl --fail --silent --show-error --max-time 5 http://127.0.0.1:17343/healthz >/dev/null || die 'run-check executor health endpoint failed'
 log 'verification managers_running=true control_runner_running=true zoekt_running=true orbit_probe=ok run_check_executor=ok; worker SearXNG MCP handshake/search occurs on ephemeral worker startup'
 
-printf '\nUpdate/restart completed. Target dev commit: %s\nServices: pi-runner-manager, general-runner-manager, control-runner, social-mcp-zoekt\nRun-check executor: healthy; Orbit: verified.\n' "$TARGET_COMMIT"
+printf '\nUpdate/restart completed. Target %s commit: %s\nServices: pi-runner-manager, general-runner-manager, control-runner, social-mcp-zoekt\nRun-check executor: healthy; Orbit: verified.\n' "$DEFAULT_BRANCH" "$TARGET_COMMIT"
 printf 'Image IDs:\n'
 docker image inspect --format '{{.RepoTags}} {{.Id}}' "$MANAGER_IMAGE" "$PI_WORKER_IMAGE" "$GENERAL_WORKER_IMAGE" "$CONTROL_IMAGE" "$SANDBOX_IMAGE"
 printf 'Report: %s\n' "$REPORT"
