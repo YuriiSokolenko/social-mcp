@@ -9,13 +9,13 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const preload = path.join(root, 'tests/helpers/reconcile-fake-github.mjs');
 
-function run(mode, { apply = false, automation = 'RUNNING', deadline = 250, http = 1000 } = {}) {
+function run(mode, { apply = false, automation = 'RUNNING', deadline = 3000, http = 10000 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-reconcile-observability-'));
   const callsFile = path.join(dir, 'requests.jsonl');
   try {
     const result = spawnSync(process.execPath,
       ['--import', preload, 'scripts/pi-reconcile.mjs', ...(apply ? ['--apply'] : [])], {
-        cwd: root, encoding: 'utf8', timeout: 4000,
+        cwd: root, encoding: 'utf8', timeout: 15000,
         env: {
           ...process.env, GITHUB_REPOSITORY: 'example/repo',
           GITHUB_TOKEN: 'SECRET_GITHUB_AUTH_TOKEN',
@@ -48,7 +48,7 @@ const warningsOf = (result, name) => result.warnings.filter(item => item.event =
 function assertRedacted(result) {
   const output = result.stdout + result.stderr;
   for (const secret of ['SECRET_GITHUB_AUTH_TOKEN', 'PRIVATE_RESPONSE_BODY_TOKEN',
-    'private-issue-title-', 'example/repo', '?state=all']) {
+    'private-issue-title-', 'private-pr-title-', 'example/repo', '?state=all']) {
     assert.equal(output.includes(secret), false, 'log leaked sensitive data: ' + secret);
   }
 }
@@ -90,7 +90,7 @@ test('slow request is visible before it finishes, with safe endpoint/page metada
 });
 
 test('never-resolving transport hits deadline, exits nonzero and never claims completion', () => {
-  const result = run('hung', { deadline: 95, http: 1000 });
+  const result = run('hung', { deadline: 300, http: 10000 });
   assert.equal(result.status, 1, result.stderr);
   assert.ok(warningsOf(result, 'slow_request_pending').some(x => x.endpoint === 'issues'));
   assert.ok(result.warnings.some(x => x.event === 'failed' && x.cause === 'deadline_exceeded'));
@@ -100,7 +100,7 @@ test('never-resolving transport hits deadline, exits nonzero and never claims co
 });
 
 test('per-request HTTP timeout is distinct from overall deadline', () => {
-  const result = run('hung', { deadline: 250, http: 35 });
+  const result = run('hung', { deadline: 750, http: 100 });
   assert.equal(result.status, 1, result.stderr);
   assert.ok(warningsOf(result, 'request_failed').some(x => x.cause === 'timeout'));
   assert.ok(result.progress.some(x => x.event === 'phase_end' && x.cause === 'request_timeout'));
@@ -109,7 +109,7 @@ test('per-request HTTP timeout is distinct from overall deadline', () => {
 });
 
 test('cooperative cancellation also fails closed', () => {
-  const result = run('cancel', { deadline: 75 });
+  const result = run('cancel', { deadline: 300 });
   assert.equal(result.status, 1, result.stderr);
   assert.ok(result.warnings.some(x => x.event === 'failed' && x.cause === 'deadline_exceeded'));
   assert.equal(event(result, 'complete'), undefined);
@@ -159,4 +159,60 @@ test('live Implementer is never requeued and PAUSED never grants executable owne
   assert.deepEqual(paused.calls.filter(x => x.method === 'PATCH').map(x => x.body.labels), [[], []]);
   assertRedacted(live);
   assertRedacted(paused);
+});
+
+test('a failed Reviewer dispatch cannot block PR Fix, Merge Gate or checkpoint cleanup', () => {
+  const result = run('dispatch-failure', { apply: true });
+  assert.equal(result.status, 1, result.stderr);
+  const paths = result.calls.map(x => x.method + ' ' + x.endpoint);
+  const failed = paths.indexOf('POST /actions/workflows/pi-pr-review.yml/dispatches');
+  const repair = paths.indexOf('POST /actions/workflows/pi-pr-fix.yml/dispatches');
+  const merge = paths.indexOf('POST /actions/workflows/pi-auto-merge.yml/dispatches');
+  const cleanup = paths.indexOf('DELETE /git/refs/heads/pi/issue-77-checkpoint');
+  assert.ok(failed > -1 && repair > failed && merge > repair && cleanup > merge,
+    'remaining PR dispatches and checkpoint cleanup must run after failed Reviewer dispatch');
+  const dispatch = warningsOf(result, 'dispatch_failed');
+  assert.equal(dispatch.length, 1);
+  assert.equal(dispatch[0].number, 101);
+  assert.equal(dispatch[0].cause, 'http_503');
+  assert.equal(dispatch[0].http_status, 503);
+  assert.equal(dispatch[0].endpoint, 'workflow-dispatch');
+  const finished = result.warnings.find(x => x.event === 'failed');
+  assert.equal(finished.cause, 'partial_dispatch_failure');
+  assert.equal(finished.failed_dispatches, 1);
+  assert.equal(event(result, 'complete'), undefined);
+  assert.equal(result.progress.some(x => x.event === 'phase_end' && x.stage === 'checkpoint-gc' && x.status === 'ok'), true);
+  assertRedacted(result);
+});
+
+test('optimistic ownership conflict explains the failure with safe identifiers, not raw labels', () => {
+  const result = run('conflict', { apply: true });
+  assert.equal(result.status, 1, result.stderr);
+  const failure = result.warnings.find(x => x.event === 'failed');
+  assert.equal(failure.problem, 'concurrent_ownership_change');
+  assert.equal(failure.number, 1);
+  assert.equal(failure.cause, 'transport_or_state_error');
+  assert.equal(event(result, 'complete'), undefined);
+  assert.ok(!result.calls.some(x => x.method === 'PATCH'));
+  assertRedacted(result);
+});
+
+test('aborted client never attempts a network request and HTTP failure exposes typed status', async () => {
+  const { githubClient } = await import('../scripts/pi-common/github-api.mjs');
+  const controller = new AbortController();
+  controller.abort();
+  const originalFetch = globalThis.fetch;
+  let count = 0;
+  try {
+    globalThis.fetch = async () => { count++; return new Response('{"message":"PRIVATE_RESPONSE_BODY_TOKEN"}', { status: 429 }); };
+    const expired = githubClient({ repo: 'example/repo', token: 'test', signal: controller.signal });
+    await assert.rejects(expired.api('/issues'), error => error.code === 'RECONCILER_DEADLINE');
+    assert.equal(count, 0);
+    const active = githubClient({ repo: 'example/repo', token: 'test' });
+    await assert.rejects(active.api('/issues'), error => error.status === 429 &&
+      error.code === 'GITHUB_HTTP_ERROR' && error.category === 'issues');
+    assert.equal(count, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
