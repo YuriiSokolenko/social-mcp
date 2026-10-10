@@ -16,6 +16,7 @@ env/
 .coverage.*
 htmlcov/
 coverage.xml
+/coverage/
 
 # Packaging
 build/

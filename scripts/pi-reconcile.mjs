@@ -105,7 +105,7 @@ for (const issue of issues) {
 // A split parent is the durable transaction marker. Repair any child that was
 // created but not labeled because Architect publication was interrupted.
 const childrenOfEpic = (body) => {
-  const match = /<!-- architect-children:([1-9]\\d*(?:,[1-9]\\d*)*) -->/.exec(body ?? '');
+  const match = /<!-- architect-children:([1-9]\d*(?:,[1-9]\d*)*) -->/.exec(body ?? '');
   return match ? match[1].split(',').map(Number) : [];
 };
 for (const parent of issues) {

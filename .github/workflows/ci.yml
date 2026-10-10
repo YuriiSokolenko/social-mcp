@@ -97,6 +97,21 @@ jobs:
       - name: Agent workflow checks
         run: node --test tests/*.test.mjs
 
+      - name: Orchestration coverage report
+        # Observability only (#727): the gate is "Agent workflow checks" above. This re-runs the
+        # Node suite with V8 coverage and writes the orchestration module table to the step summary.
+        continue-on-error: true
+        run: node tests/helpers/orchestration-coverage.mjs --out "$RUNNER_TEMP/orchestration-coverage-${{ github.run_id }}-${{ github.run_attempt }}"
+
+      - name: Upload orchestration coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orchestration-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/orchestration-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Runner autoscaler checks
         run: bash tests/test_runner_autoscaler.sh
 
