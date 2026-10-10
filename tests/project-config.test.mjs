@@ -110,12 +110,12 @@ test('package-root canonical roots reject unsafe paths and typos when validated 
 });
 
 
-test('swift is an explicit catalog model and qwen stays the versioned default', () => {
+test('swift is an explicit catalog model and the versioned default', () => {
   const choices = projectConfig().model.choices;
   assert.equal(choices.swift.id, 'swift-1.5-qwen3.8-flash-next');
   assert.equal(choices.qwen.id, 'Qwen3.8-Flash-Next-NVFP4');
   assert.equal(choices.laguna.id, 'laguna-s-2.1-gguf');
-  assert.equal(fs.readFileSync('.pi/default-model', 'utf8').trim(), 'qwen');
+  assert.equal(fs.readFileSync('.pi/default-model', 'utf8').trim(), 'swift');
 });
 
 test('every manually selectable model workflow offers exactly default plus the catalog', () => {

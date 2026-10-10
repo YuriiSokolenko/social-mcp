@@ -1282,7 +1282,8 @@ test('deterministic review failure routes directly to PR Fix instead of stopping
 
 test('trusted reviewer default model is a supported dispatch choice', () => {
   const model = fs.readFileSync('.pi/default-model', 'utf8').trim();
-  assert.ok(['laguna', 'qwen'].includes(model), `unsupported .pi/default-model: ${model}`);
+  const catalog = JSON.parse(fs.readFileSync('.agent-harness.json', 'utf8')).model.choices;
+  assert.ok(Object.hasOwn(catalog, model), `unsupported .pi/default-model: ${model}`);
 });
 
 test('failed independent reviews persist recovery state, retry once, and retain the reviewer trace', () => {
