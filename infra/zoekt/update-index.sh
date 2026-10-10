@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ZOEKT_ROOT="${ZOEKT_ROOT:-/home/yurasik/zoekt-social-mcp}"
-ZOEKT_IMAGE="${ZOEKT_IMAGE:-ghcr.io/sourcegraph/zoekt@sha256:403b51206099f04d53bb7fcdfed0c81a20f263722f287cb7830376fd6a7c3923}"
+ZOEKT_IMAGE="${ZOEKT_IMAGE:-ghcr.io/sourcegraph/zoekt@sha256:f19dac0fa75e51a6c37fb619983d2ad026b951cb67d6ef837c31696605d75461}"
 REPO_URL="https://github.com/YuriiSokolenko/social-mcp.git"
 mkdir -p "$ZOEKT_ROOT/mirror" "$ZOEKT_ROOT/index"
 exec 9>"$ZOEKT_ROOT/update.lock"
