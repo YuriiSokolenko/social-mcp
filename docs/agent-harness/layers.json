@@ -258,6 +258,7 @@
         "agents/triage/AGENTS.md"
       ],
       "docs": [
+        "scripts/README.md",
         "scripts/pi-common/README.md",
         "docs/agent-harness/",
         "docs/llm-research/",

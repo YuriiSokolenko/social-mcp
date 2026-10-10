@@ -53,6 +53,20 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `session-state.mjs` — runtime record of completed one-shot control transitions (LSP startup, subagent enablement, preparation).
 - `repo-search.mjs` — exact literal path/content discovery in the current tracked worktree.
 - `zoekt-search.mjs` — optional read-only Zoekt client for fast indexed `dev` content/path/symbol discovery. The runtime exposes `indexed_repo_search` only when `PI_ZOEKT_URL` is configured; `PI_ZOEKT_REPOSITORY` can scope a shared index and `PI_ZOEKT_TIMEOUT_MS` controls the bounded request timeout.
+- `candidate-revision.mjs` — resolves the candidate base once and computes the candidate revision shared by receipt, final checks and publication.
+- `terminal-receipt.mjs` — writes/reads/invalidates the run/issue/attempt-bound terminal receipt (a consistency binding, not an authentication token).
+- `terminal-session-binding.mjs` — single-flight binding of the Implementer's terminal session for the pinned `pi-subagents` foreground adapter.
+- `terminal-recovery-controller.mjs` — selects the one bounded deterministic recovery action for an unmet terminal obligation, or blocks.
+- `coding-session-capability.mjs` / `coding-session-outcome.mjs` / `coding-session-validation.mjs` — coding-session fork sidecars: capabilities the fork could not use, normalization of the fork's terminal outcome (a failed delegation is never upgraded by a leftover receipt), and behavioral (pytest) validation coverage shared between parent and fork.
+- `implementation-planner.mjs` / `planner-orbit.mjs` / `planner-request-budget.mjs` — read-only Planner: evidence gate and task construction, the safety-bounded pre-request Orbit seed, and session-local response-ceiling provenance.
+- `main-tool-profile.mjs` / `main-prompt-observability.mjs` / `runtime-steering.mjs` — Implementer Main outbound tool-schema profile (not an authorization boundary), prompt-composition telemetry (`PI_MAIN_PROMPT`), and compaction of replaceable runtime action steers at the provider boundary.
+- `structured-subagent.mjs` — runs text/structured `pi-subagents` children (including `context: 'fork'`) and records descendant usage.
+- `mutation-journal.mjs` / `worktree-baseline.mjs` — bounded durable mutation journal for undo/checkpoints, and the run-start worktree baseline that proves which unjournaled paths the stage may clean up (#438).
+- `runtime-failure.mjs` — classifies `PI_RUNTIME_FAILURE_FILE` records into model-abort vs infrastructure failure classes (diagnostic provenance only).
+- `diagnostics-artifact.mjs` — sanitized, best-effort JSONL diagnostics appended for the `pi-diagnostics-*` artifact.
+- `model-trace-proxy.mjs` — local OpenAI-compatible forwarding proxy that records model exchanges for the `pi-model-trace-*` artifact and provider tool-contract/usage evidence.
+- `usage-ledger.mjs` — shared `PI_METRIC` usage accounting for job summaries and the usage CSV.
+- `package-root-check.mjs` — duplicate Python package-root detection used by `product-checks.mjs` (the `package_roots` final check) and `run-check.mjs`, driven by `.agent-harness.json` `checks.packageRoots`.
 - `pi-run-stage.mjs` loads the pinned `pi-repomap` git extension only for Architect. Implementer uses LSP, indexed/current-worktree search, Orbit, and exact reads instead. `.pi/repomap.json` fixes the Architect map budget, while `.pi/cache/` is runtime-only and gitignored.
 
 ## What does NOT belong here

@@ -25,7 +25,7 @@ This document is the human- and agent-readable text map of the current Social MC
     |       +-- Capability discovery ......................... DONE #18
     |       +-- Threads profile/posts read tools ............. DONE #3
     |       +-- Threads insights ............................. OPEN #4
-    |       +-- Threads replies/search/mentions .............. OPEN #5
+    |       +-- Threads replies/search/mentions .............. OPEN #5 (closed as duplicate; not implemented)
     |       +-- Threads publishing ........................... OPEN #6
     |       +-- Threads reply/content actions ................ OPEN #71-#74
     |       +-- TikTok profile/video read tools .............. OPEN #21
@@ -47,7 +47,7 @@ This document is the human- and agent-readable text map of the current Social MC
     |   |   +-- Token lifecycle / connection status .......... OPEN #17
     |   |   +-- Profile/posts adapter ........................ DONE #3
     |   |   +-- Insights adapter behavior .................... OPEN #4
-    |   |   +-- Replies/search/mentions ...................... OPEN #5
+    |   |   +-- Replies/search/mentions ...................... OPEN #5 (closed as duplicate; not implemented)
     |   |   +-- Publishing/write operations .................. OPEN #6, #71-#74
     |   |
     |   +-- TikTok
@@ -124,7 +124,7 @@ The issue → Dispatcher/Architect → Implementer/Planner/coding session → Re
 | --- | --- | --- |
 | Threads profile/posts reads | DONE | #3 |
 | Threads insights | OPEN | #4 |
-| Threads replies/search/mentions | OPEN | #5 |
+| Threads replies/search/mentions | OPEN (not implemented; #5 closed as duplicate without a successor) | #5 |
 | Threads publishing | OPEN | #6 |
 | Threads reply/content actions | EPIC / OPEN | #7, #71-#74 |
 | Threads token lifecycle | OPEN | #17 |

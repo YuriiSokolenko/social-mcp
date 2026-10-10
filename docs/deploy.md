@@ -1,9 +1,11 @@
 # Docker deployment on N150
 
 This document describes how to run Social MCP as a single Docker workload on the
-N150 Linux host. The service is packaged as one container that contains the
-FastAPI HTTP layer, the MCP endpoint, and the Web Admin. Persistent data and all
-secrets live outside the disposable container filesystem.
+N150 Linux host. The service is packaged as one container that runs the
+FastAPI HTTP layer (`uvicorn social_mcp.app:app`) and the Web Admin. The MCP
+server ships in the same image but uses the stdio transport
+(`python -m social_mcp.server`); it is not exposed over HTTP. Persistent data
+and all secrets live outside the disposable container filesystem.
 
 ## Prerequisites
 
@@ -66,8 +68,12 @@ DATABASE_URL=sqlite:////srv/social-mcp/data/social-mcp.db
 ```
 
 OAuth credentials (`META_APP_ID`, `META_APP_SECRET`, `TIKTOK_CLIENT_KEY`,
-`TIKTOK_CLIENT_SECRET`) are also placed in `.env`. They are configuration
-identifiers rather than long-lived secrets, but keep `.env` out of Git regardless.
+`TIKTOK_CLIENT_SECRET`) and the optional `THREADS_REDIRECT_URI` /
+`THREADS_SCOPES` can also be placed in `.env`. The app IDs/client keys are
+identifiers, but `META_APP_SECRET` and `TIKTOK_CLIENT_SECRET` are secrets: keep
+`.env` out of Git and prefer a secret manager in production. The Threads connect
+flow additionally needs `OAUTH_STATE_SECRET` (or `OAUTH_STATE_SECRET_FILE`);
+see [OAuth and token strategy](oauth.md).
 
 ## Step 3 — Start the service
 
@@ -82,20 +88,35 @@ docker compose ps            # container should reach "healthy"
 docker compose logs --follow
 ```
 
-The HTTP layer is published on the host at `http://127.0.0.1:8000` by default.
-The `/health` endpoint reports `ok` only when the SQLite account store is
-reachable, so a healthy status means the persistent data is mounted correctly.
+`compose.yaml` publishes container port 8000 on host loopback with a **random
+host port** (`127.0.0.1::8000`) to avoid conflicts. Discover it with:
 
-The initial Web Admin entry points are `/admin/dashboard` and `/admin/accounts`.
-They remain unavailable until `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and
+```bash
+docker compose port app 8000     # e.g. 127.0.0.1:49153
+```
+
+To use a fixed port, change the mapping in a local Compose override (for
+example `127.0.0.1:8000:8000`). The Threads OAuth redirect URI defaults to
+`http://127.0.0.1:8000/admin/oauth/callback/threads`, so with the random host
+port either pin the mapping to 8000 or set `THREADS_REDIRECT_URI` to the URL
+Meta should actually redirect to. The `/health` endpoint reports `ok` only when
+the SQLite account store is reachable, so a healthy status means the persistent
+data is mounted correctly.
+
+The Web Admin pages are `/admin/dashboard`, `/admin/accounts`, and
+`/admin/logs`; the Accounts page's `POST /admin/connect/threads` starts the
+Threads OAuth flow. They
+remain unavailable until `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and
 `ADMIN_SESSION_SECRET` are all set in the runtime environment or the untracked
-`.env` file. When any of these is missing, every `/admin` request (including
-login) is rejected with `503 Service Unavailable`, so the admin surface can
-never be exposed accidentally.
+`.env` file. When any of these is missing, every protected `/admin` route and
+`POST /admin/login` is rejected with `503 Service Unavailable` (the login form
+itself still renders), so the admin surface can never be exposed accidentally.
 
-The admin authenticates with HTTP Basic credentials, but access to every
-`/admin` route is gated on a signed session cookie rather than on per-request
-credentials. The cookie is `HttpOnly` and `SameSite=Lax`, and is `Secure`
+`POST /admin/login` accepts either the login form fields or HTTP Basic
+credentials (for API clients), but access to every protected `/admin` route is
+gated on a signed session cookie rather than on per-request credentials.
+State-changing admin requests also require the session's CSRF token
+(`x-csrf-token` header or `csrf_token` form field). The cookie is `HttpOnly` and `SameSite=Lax`, and is `Secure`
 (only sent over HTTPS) unless `ENVIRONMENT=development`. `ADMIN_SESSION_SECRET`
 signs that cookie; it must never be committed. `/health` does not require admin
 credentials and remains suitable for container health checks.
@@ -113,8 +134,10 @@ export ENVIRONMENT=development
 ```
 
 In development mode the session cookie is not marked `Secure` so it can be
-used over plain HTTP on localhost. Log in at `http://127.0.0.1:8000/admin/login`
-with the credentials above; authenticated navigation is then available at
+used over plain HTTP on localhost. When running directly with
+`uvicorn social_mcp.app:app --port 8000`, log in at
+`http://127.0.0.1:8000/admin/login` (under Compose, use the port reported by
+`docker compose port app 8000`) with the credentials above; authenticated navigation is then available at
 `/admin/dashboard` and `/admin/accounts`. Keep the service bound to localhost
 and use HTTPS (and a non-development `ENVIRONMENT`) before exposing it remotely.
 
@@ -123,6 +146,13 @@ secret manager instead of committing it. A file-based alternative is supported
 via `ADMIN_SESSION_SECRET_FILE`, pointing at a file (for example
 `secrets/admin_session_secret`) that holds the secret; verify the file is
 ignored by Git:
+
+```bash
+git check-ignore secrets/admin_session_secret   # prints the path when ignored
+```
+
+A missing or unreadable session-secret file is treated as unset, so the admin
+surface stays closed (503) instead of crashing startup.
 
 ## Persistent token storage strategy
 
@@ -154,6 +184,7 @@ host: social-mcp-data (named volume)
 | ----------------------- | --------------------------------------- | -------------------------------- |
 | `TOKEN_ENCRYPTION_KEY`  | host env / secret manager               | `TOKEN_ENCRYPTION_KEY` env var (Compose interpolation) |
 | `ADMIN_SESSION_SECRET`  | host env / secret manager               | `ADMIN_SESSION_SECRET` / `ADMIN_SESSION_SECRET_FILE` env var |
+| `OAUTH_STATE_SECRET`    | host env / secret manager               | `OAUTH_STATE_SECRET` / `OAUTH_STATE_SECRET_FILE` env var |
 | OAuth client secrets    | `.env` / host secret manager            | environment variables            |
 | OAuth tokens at rest    | encrypted in `social-mcp.db`            | never in Git or the image        |
 
@@ -201,7 +232,8 @@ docker compose down --volumes --remove-orphans
 ## CI verification
 
 The GitHub Actions `docker` job builds the image, starts Compose with an
-ephemeral encryption key exported in the environment, polls `/health`, runs
+ephemeral encryption key exported in the environment, waits for the `/health`
+healthcheck (`docker compose up --build --wait`), resolves the random host port, runs
 `tests/test_ci_container.py` against the live endpoint, and tears down the
 environment with `--volumes` in an `always()` step. No live social credentials
 are required.

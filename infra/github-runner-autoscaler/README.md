@@ -8,11 +8,14 @@ pool's stuck loop can never block the other's:
 - **`pi-runner-manager`** (pool label `pi-agent`) watches queued runs of
   `.github/workflows/pi-issue-agent.yml`, `.github/workflows/pi-pr-review.yml`,
   `.github/workflows/pi-pr-fix.yml`, `.github/workflows/pi-dispatcher.yml`,
-  `.github/workflows/pi-architect.yml`, and `.github/workflows/pi-triage.yml` --
-  jobs that call the Pi/LLM agent, gated by `MODEL_STATUS_URL` capacity.
+  `.github/workflows/pi-architect.yml`, `.github/workflows/pi-triage.yml`, and the
+  manual `.github/workflows/verify-run-check-beelink.yml` sandbox check --
+  jobs that call the Pi/LLM agent (or its `run_check` sandbox), gated by
+  `MODEL_STATUS_URL` capacity (`WORKFLOW_FILES` in `manager.sh` / `.env`).
 - **`general-runner-manager`** (pool label `general`) watches queued runs of
   every workflow with a job on the `general` label: `.github/workflows/ci.yml`
-  (`test` and `docker` only), `pi-auto-merge.yml`, `pi-reconcile.yml`,
+  (`test`, `docker`, `harness`, `harness-images`; its `wake-merge-gate` job uses
+  the control runner), `pi-auto-merge.yml`, `pi-reconcile.yml`,
   and `pi-usage.yml` -- none of these call the Pi/LLM agent, so this pool has
   no model gate; `MAX_RUNNERS` is the only cap. **This list must stay in sync
   with `GENERAL_WORKFLOW_FILES`** (`compose.yaml`'s default / the host's
@@ -109,9 +112,10 @@ runtime cannot answer `--version`. During Docker shutdown it waits up to
 Compose gives the container a 120-second stop grace period.
 
 The `general` pool instead sets `MOUNT_DOCKER_SOCKET=true`: its worker image
-(`worker-general.Dockerfile`) starts directly from the public
-pinned Node.js 26.11.1 runtime, adds Python 3.12 from its digest-pinned official
-image, and installs GitHub CLI for general CI jobs. It installs the
+(`worker-general.Dockerfile`) starts from a digest-pinned Debian bookworm base,
+installs the checksum-verified Node.js 26.11.1 tarball, copies Python 3.12 from
+the digest-pinned official `python:3.12-slim-bookworm` image, and installs
+GitHub CLI for general CI jobs. It installs the
 checksum-pinned GitHub Actions runner archive and Docker CLI, Buildx, and
 Compose, and the host's
 `/var/run/docker.sock` is bind-mounted
@@ -130,9 +134,8 @@ only to `general-runner-manager`; the Pi pool does not receive it. For up to
 three simultaneous CI runners, use a shared writable directory (for example
 mode `0770`) and current pip (23.3.1 or newer); pip's cache supports normal
 concurrent use, though duplicate downloads can still occur during races.
-
-Until this mount is deployed, `ci.yml` also retains `actions/setup-python`'s
-`cache: pip` as a transitional fallback.
+`ci.yml` no longer uses `actions/setup-python`; its jobs create a venv from the
+worker image's `python3`, so without this mount there is no pip cache.
 
 Linux `run_check` uses a separate trusted executor process inside
 `pi-runner-manager`. The manager already has Docker daemon access; the Pi worker
@@ -151,23 +154,31 @@ Build the manager, Pi worker, general worker, dedicated control runner, and sepa
 
 ```bash
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.9 .
-docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3 .
+docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r4 .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.10 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.7 .
 docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.2 .
 ```
 
-Both autoscaled worker Dockerfiles start from a digest-pinned Debian base and
+Pi worker image tags: `.env.example` recommends `1.1.0-mini-swe-r4` (adds the
+SearXNG preflight readable by the UID 1001 runner), while the `manager.sh`
+fallback used when `RUNNER_IMAGE` is unset is still `1.1.0-mini-swe-r3`
+(asserted by `tests/test_runner_autoscaler.sh`). Always set `RUNNER_IMAGE`
+explicitly in the host `.env`.
+
+Both autoscaled worker Dockerfiles start from digest-pinned Debian-based images
+(the Pi worker from `python:3.12-slim-trixie`, the general worker from
+`debian:bookworm-slim` plus Python copied from `python:3.12-slim-bookworm`) and
 install Node `26.11.1` from the official tarball with its SHA-256 verified;
 npm is pinned to `12.2.0`. GitHub Actions Runner `2.338.0` is also checksum
-verified. The manager image pins Docker CLI `29.8.2`. The general image also
-pins Python `3.12.15`, GitHub CLI `2.102.0`, Docker CLI `29.8.2`, Buildx
-`0.37.1`, and Compose `5.6.0`. They do
+verified. The manager image is based on `docker:29.8.2-cli`. The general image
+also pins GitHub CLI `2.102.0`, Docker CLI `29.8.2`, Buildx `0.37.1`, and
+Compose `5.6.0` (Debian bookworm packages). They do
 not use locally built N150 images as build stages, so BuildKit can resolve
 every base independently in a clean builder. The manager and general worker
 retry a failed Docker daemon check once after five seconds before quarantining
-the pool or refusing runner registration. The Pi worker tag `1.1.0-mini-swe-r3`
-pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit CLI `0.138.0` (GNU x86_64 artifact),
+the pool or refusing runner registration. The Pi worker image (tag
+`1.1.0-mini-swe-r4`) pins Pi CLI `@earendil-works/pi-coding-agent@1.1.0`, Orbit CLI `0.138.0` (GNU x86_64 artifact),
 `pi-mcp-adapter@5.1.0`, SearXNG MCP `2.5.1`, `pi-subagents@0.76.1`, `mini-swe-agent==2.4.6`,
 `lsp-mcp-server@1.1.26`, `git-context-mcp@1.0.0`, `@ast-grep/cli@0.45.3`,
 BasedPyright `1.40.2`, and JetBrains Kotlin LSP `263.6379.0`. The image tag is
@@ -225,16 +236,20 @@ the package. The adapter passed its type checks and regression suite against
 Pi `1.1.0` with strict peer resolution. The experimental `mini-swe`
 Implementer backend uses the upstream mini-SWE-agent CLI with the same loaded
 local model endpoint; Pi remains the default backend. The Pi and general worker
-image tags are `1.1.0-mini-swe-r3` and `0.87.10`. Pi itself remains version
+image tags are `1.1.0-mini-swe-r4` and `0.87.10`. Pi itself remains version
 `1.1.0`; `r1` records the image-only Python alias fix, `r2` adds the required
-SearXNG MCP runtime, and `r3` combines SearXNG with GNU Orbit and DuckDB JSON
-provisioning. `run_check` tooling remains in the separate `0.1.2` sandbox
+SearXNG MCP runtime, `r3` combines SearXNG with GNU Orbit and DuckDB JSON
+provisioning, and `r4` makes the SearXNG preflight readable by the runner user.
+`run_check` tooling remains in the separate `0.1.2` sandbox
 image. System-package changes must use a new image tag rather than silently
 reusing an already-built local tag. The sandbox
-image independently contains Python 3.12, the repository's pinned Ruff and
-pytest tooling, Node for the configured `node_tests` profile, and Git for
+image independently contains Python 3.12, its own pinned Ruff (`0.16.10`),
+pytest (`9.1.1`) and pytest-asyncio, pinned copies of the product runtime
+dependencies, Node for the configured `node_tests` profile, and Git for
 repository tests; it contains no runner registration, GitHub CLI, SSH client,
-or agent runtime.
+or agent runtime. Note that CI and the README's local commands pin
+`ruff==0.12.12`, so focused `run_check` Ruff results can differ from CI; both
+use the same `pyproject.toml` rule selection.
 
 The Pi worker installs `mcp-searxng` in the image because the mounted global Pi
 MCP configuration starts `mcp-searxng` by executable name. The host's
@@ -256,7 +271,7 @@ untracked `.env` and recreate only `pi-runner-manager` after confirming the
 pool has no active job:
 
 ```dotenv
-RUNNER_IMAGE=n150/github-pi-runner-ephemeral:1.0.4-mini-swe
+RUNNER_IMAGE=n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r3
 ```
 
 ```bash

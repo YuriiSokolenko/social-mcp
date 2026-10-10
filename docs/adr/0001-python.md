@@ -29,3 +29,7 @@ Do not introduce FastAPI or another web framework until a concrete requirement (
 The first implementation can remain small and async. Platform adapters stay independent from MCP tool definitions. Type hints and Pydantic provide explicit API contracts. Deployment remains suitable for the N150 Linux host.
 
 If remote HTTP transport or OAuth callbacks later need a dedicated web layer, it can be added without changing the platform adapter interfaces.
+
+## Follow-up
+
+FastAPI was later introduced for the Web Admin and the Threads OAuth callback (`src/social_mcp/app.py`, `src/social_mcp/admin/`), as anticipated above. The MCP server still uses the stdio transport.
