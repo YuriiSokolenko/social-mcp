@@ -273,7 +273,8 @@ await phase('issue-repairs', async () => {
     repair.entry.recovery = repair.recovery;
   }
 }, () => ({ completed_repairs: successfulMutations.filter(x => x.kind === 'issue').length,
-  planned_repairs: pendingRepairs.length }));
+  planned_repairs: pendingRepairs.length,
+  remaining_repairs: Math.max(0, pendingRepairs.length - successfulMutations.filter(x => x.kind === 'issue').length) }));
 
 let mergeGateRecoveryNeeded = false;
 await phase('pr-recovery', async () => {
@@ -350,7 +351,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
   if (!report.length) lines.push('No inconsistent pipeline state found.');
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
 }
-});
+}, () => ({ findings: report.length, completed_mutations: successfulMutations.length }));
 }
 try {
   await reconcile();
