@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -1524,4 +1524,23 @@ test('model verification accepts a served swift id and fails closed without subs
     /"swift-1\.5-qwen3\.8-flash-next" is not loaded/);
   served = [];
   await assert.rejects(verifyModelIsLoaded(baseUrl, 'swift-1.5-qwen3.8-flash-next'), /currently loaded: none/);
+});
+
+
+test('no harness stage requests server-side JSON-schema decoding (#720: Swift runs without xgrammar)', () => {
+  // TensorFold answers response_format json_schema with HTTP 400 unless xgrammar is installed.
+  // Terminal results are tool calls validated by trusted code, so the harness must never depend on
+  // response_format; Pi 1.1 also sends custom-provider tools non-strict (supportsStrictMode=false).
+  const roots = ['scripts', 'infra/github-runner-autoscaler'];
+  const offenders = [];
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = join(dir, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== 'research') walk(file); continue; }
+      if (!/\.(mjs|js|sh|py)$/.test(entry.name)) continue;
+      if (/response_format|json_schema|supportsStrictMode/.test(readFileSync(file, 'utf8'))) offenders.push(file);
+    }
+  };
+  roots.forEach(walk);
+  assert.deepEqual(offenders, []);
 });

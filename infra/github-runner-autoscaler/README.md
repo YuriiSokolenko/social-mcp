@@ -547,6 +547,18 @@ into `.pi/default-model` and make sure Qwen is the model actually served.
 Restore the host file from its `models.json.bak-*` backup only if the new
 entry itself is wrong.
 
+TensorFold rejects `response_format: json_schema` with HTTP 400
+(`structured output needs xgrammar on the server`). The harness does not need
+it: terminal results (`submit_plan`, `submit_result`) are tool calls whose
+arguments trusted code validates, no stage sends `response_format`, and Pi
+sends this custom provider's tools non-strict. Pi's `compat.supportsStrictMode`
+defaults to `false`, and its built-in tools only *prefer* strict mode. Tool
+calls were verified both with and without `strict: true` through the proxy on
+2026-10-10. Do not install `tensorfold[grammar]` for the harness, and do not
+set `supportsStrictMode` in the host `models.json` without re-testing. A test
+in `tests/pi-run-stage.test.mjs` fails if a stage starts requesting
+`response_format`/`json_schema` (#720).
+
 ## Local Zoekt index for Pi Implementer
 
 The optional indexed search service runs on the N150 host from
