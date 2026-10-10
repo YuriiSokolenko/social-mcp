@@ -157,7 +157,7 @@ docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-run
 docker build -f infra/github-runner-autoscaler/worker.Dockerfile -t n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r5 .
 docker build -f infra/github-runner-autoscaler/worker-general.Dockerfile -t n150/github-general-runner-ephemeral:0.87.11 .
 docker build -f infra/github-runner-autoscaler/control-runner.Dockerfile -t n150/github-control-runner:0.1.8 .
-docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.3 .
+docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.4 .
 ```
 
 The current tags are the same in each Dockerfile's documented build command,
@@ -245,7 +245,7 @@ SearXNG MCP runtime, `r3` combines SearXNG with GNU Orbit and DuckDB JSON
 provisioning, `r4` makes the SearXNG preflight readable by the runner user, and
 `r5` updates Orbit, ast-grep, the MCP adapter and the base image digest, and
 includes the pinned-adapter patch changes made after r4.
-`run_check` tooling remains in the separate `0.1.3` sandbox
+`run_check` tooling remains in the separate `0.1.4` sandbox
 image. System-package changes must use a new image tag rather than silently
 reusing an already-built local tag. The sandbox
 image independently contains Python 3.12, the same Ruff (`0.17.0`), pytest
@@ -333,7 +333,7 @@ is an explicit reset that discards registration and cooldown state. Do not add
 ### `run_check` sandbox backend
 
 `RUN_CHECK_SANDBOX_IMAGE` independently selects the versioned sandbox image; it
-defaults to `n150/run-check-sandbox:0.1.3`. Set it in the host's untracked
+defaults to `n150/run-check-sandbox:0.1.4`. Set it in the host's untracked
 `.env`, build that exact tag, and restart only `pi-runner-manager` when changing
 the sandbox version. The manager refuses to start Pi workers unless the image
 exists locally, a hardened no-network container can run the image probe, and
@@ -354,14 +354,14 @@ budget. If Pi schedules a request despite the abort, the request hook strips all
 tools and sets `tool_choice` to `none`, so no tool-capable provider request is
 sent. The sandbox wrapper must accept every key in the environment contract;
 the v2 acceptance-target keys were added in sandbox image `0.1.1`. Build the
-manager with the current `run-check-docker-0.1.10` tag and the sandbox with `0.1.3`,
+manager with the current `run-check-docker-0.1.10` tag and the sandbox with `0.1.4`,
 set `PI_RUNNER_MANAGER_IMAGE` and `RUN_CHECK_SANDBOX_IMAGE` in the host `.env`
 to those exact tags, then recreate
 `pi-runner-manager` so new ephemeral workers load the rebuilt executor:
 
 ```bash
 docker build -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/pi-runner-manager:run-check-docker-0.1.10 .
-docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.3 .
+docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t n150/run-check-sandbox:0.1.4 .
 docker compose --env-file .env up -d --force-recreate --no-deps pi-runner-manager
 ```
 
@@ -716,7 +716,7 @@ Evidence is disabled when `INFRA_EVIDENCE_DIR` is unset.
 
 Deploy these changes by building the new manager tag
 `n150/pi-runner-manager:run-check-docker-0.1.10`, sandbox tag
-`n150/run-check-sandbox:0.1.3`, and general worker tag
+`n150/run-check-sandbox:0.1.4`, and general worker tag
 `n150/github-general-runner-ephemeral:0.87.11` from this checkout, then updating the
 host `.env` and recreating the managers. Existing cached tags do not acquire the
 new gates. Do not restart busy worker containers during deployment.

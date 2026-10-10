@@ -106,7 +106,7 @@ jobs:
     needs: docker
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, n150, general]
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       COMPOSE_PROJECT_NAME: agent-harness-ci-${{ github.run_id }}-${{ github.run_attempt }}
       DOCKER_BUILDKIT: "1"
@@ -202,6 +202,29 @@ jobs:
                 throw new Error("pi-mcp-adapter does not declare tested Pi 1.1 compatibility");
               }
             }
+          '
+
+      - name: Build run_check sandbox and run its startup probe
+        # Same hardened probe the Pi runner manager runs before starting any Pi runner (manager.sh
+        # verify_run_check_sandbox). Without it a broken sandbox only shows up on N150.
+        shell: bash
+        run: |
+          set -euo pipefail
+          sandbox_image="${COMPOSE_PROJECT_NAME}-run-check-sandbox-check:latest"
+          trap 'docker image rm "$sandbox_image" >/dev/null 2>&1 || true' EXIT
+          docker build -f infra/github-runner-autoscaler/run-check-sandbox.Dockerfile -t "$sandbox_image" .
+          probe="$(docker run --rm --pull=never --network none --cap-drop ALL \
+            --security-opt no-new-privileges --read-only --user 1001:1001 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=16m --entrypoint python3 "$sandbox_image" \
+            /usr/local/lib/run-check-sandbox-probe.py image)"
+          printf '%s\n' "$probe"
+          jq -e '.ok == true and .node_available == true' <<<"$probe" >/dev/null
+          docker run --rm --pull=never --network none --user 1001:1001 --entrypoint sh "$sandbox_image" -c '
+            set -eu
+            test "$(node --version)" = v26.11.1
+            ruff --version
+            python3 -c "import yaml, pytest, fastapi, cryptography"
+            node -e "require(\"/node_modules/typebox/package.json\")"
           '
 
       - name: Control runner capability and graceful-stop smoke

@@ -28,7 +28,8 @@ COPY infra/github-runner-autoscaler/run-check-sandbox-exec.py /usr/local/lib/run
 COPY infra/github-runner-autoscaler/run-check-sandbox-probe.py /usr/local/lib/run-check-sandbox-probe.py
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git libstdc++6 \
+    # libatomic1: the copied official Node binary links against libatomic.so.1 (#635 probe).
+    && apt-get install -y --no-install-recommends ca-certificates git libatomic1 libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m pip install --no-cache-dir \
       "ruff==${RUFF_VERSION}" \
