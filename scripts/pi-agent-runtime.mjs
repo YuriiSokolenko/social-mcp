@@ -33,6 +33,12 @@ import { filterFreshMainToolProfile, isFreshMainToolProfilePhase, mainToolProfil
 import { repoSearch } from './pi-common/repo-search.mjs';
 import { CHECK_KINDS, checkMetricRecord, runCheck, sandboxPreflight } from './pi-common/run-check.mjs';
 import {
+  acceptMutationScopeParameters,
+  structuralEditParameters,
+  safeEditParameters,
+  runCheckParameters,
+} from './pi-common/runtime-tool-schemas.mjs';
+import {
   appendCheckRecord,
   groupKey,
   latestUnresolvedRunCheckFailure,
@@ -2649,14 +2655,7 @@ export default function (pi) {
       name: ACCEPT_MUTATION_SCOPE_TOOL,
       label: 'Accept mutation scope',
       description: 'Record task-related mutation intent in trusted runtime state before changing a new path. disposition=publishable authorizes the path for the final diff only when accepted before it becomes changed. disposition=temporary permits scratch/probe work but the path must be removed before final validation/publication. A path that is already changed cannot be retroactively made publishable.',
-      parameters: Type.Object({
-        paths: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 20 }),
-        disposition: Type.Union([
-          Type.Literal('publishable'),
-          Type.Literal('temporary'),
-        ]),
-        rationale: Type.String({ minLength: 8, maxLength: 500 }),
-      }),
+      parameters: acceptMutationScopeParameters(),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = registerMutationScope({
           cwd: ctx.cwd,
@@ -2681,11 +2680,7 @@ export default function (pi) {
       name: 'structural_edit',
       label: 'Structural AST edit',
       description: 'Preferred source-code mutation when one exact syntax node can be described with an ast-grep pattern/rewrite. ast-grep infers the language from the target file, dry-runs the rewrite, requires exactly one AST match, verifies the matched byte range is still current, then writes that one replacement atomically. Use metavariables to preserve untouched code instead of reproducing neighboring statements. Use safe_edit for bounded text/config edits or when structural matching is not a good fit.',
-      parameters: Type.Object({
-        path: Type.String({ minLength: 1, maxLength: 1000 }),
-        pattern: Type.String({ minLength: 1, maxLength: 20000 }),
-        rewrite: Type.String({ minLength: 1, maxLength: 20000 }),
-      }),
+      parameters: structuralEditParameters(),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = structuralEdit(ctx.cwd, params);
         return {
@@ -2699,18 +2694,7 @@ export default function (pi) {
       name: 'safe_edit',
       label: 'Safe line edit',
       description: 'Deterministic current-worktree mutation by 1-based line/range. Prefer it for bounded insert/replace changes when reproducing multiline oldText would be brittle. It re-reads the file immediately before writing, validates an optional expected marker, preserves newline style/final-newline state, writes atomically, returns a bounded post-edit preview of what landed on disk, and participates in normal rollback/progress handling. A result with changed=false means no edit occurred. Do not re-read merely to verify a successful change.',
-      parameters: Type.Object({
-        path: Type.String({ minLength: 1, maxLength: 1000 }),
-        operation: Type.Union([
-          Type.Literal('insert_before'),
-          Type.Literal('insert_after'),
-          Type.Literal('replace'),
-        ]),
-        start_line: Type.Integer({ minimum: 1 }),
-        end_line: Type.Optional(Type.Integer({ minimum: 1 })),
-        text: Type.String({ minLength: 1, maxLength: 20000 }),
-        expected_marker: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
-      }),
+      parameters: safeEditParameters(),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = safeEdit(ctx.cwd, params);
         return {
@@ -2815,12 +2799,7 @@ export default function (pi) {
       name: 'run_check',
       label: 'Run focused check',
       description: 'Focused local verification without shell access. kind=python_compile|ruff take paths (workspace files/dirs); kind=pytest takes Python .py test targets (optionally ::test_node), e.g. {kind:"pytest",targets:["tests/test_engine.py"]}; kind=node_test takes explicit .test.mjs/.test.js files, e.g. {kind:"node_test",targets:["examples/workflow-smoke/arkanoid/engine.test.mjs"]}; kind=profile takes a trusted profile=node_tests|pytest_all. Never pass JavaScript targets to pytest or Python targets to node_test: the mismatched request is invalid, not a test failure. Returns {status: pass|fail|timeout|invalid|infra_error, summary, diagnostics[{file,line,column,code,message}], stdout_tail, stderr_tail}. A failing check creates an exact kind+scope recovery requirement: fix the diagnostic with a mutation, then use retry_last_failed_check; broader or different scopes cannot resolve it. status=infra_error means the runner could not run the check (sandbox or tool missing): it says nothing about your change, so do not retry, do not look for a shell workaround, and report it as an infrastructure blocker. Available once after each successful mutation; the permit is consumed when the call is accepted regardless of the check outcome. Passing does not replace final validation; still call submit_result.',
-      parameters: Type.Object({
-        kind: Type.Union(CHECK_KINDS.map(kind => Type.Literal(kind))),
-        paths: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
-        targets: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 20 })),
-        profile: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-      }),
+      parameters: runCheckParameters(CHECK_KINDS),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const { result, response } = await executeAuthoritativeRunCheck(params, ctx);
         return { content: [{ type: 'text', text: JSON.stringify(response) }], details: result };

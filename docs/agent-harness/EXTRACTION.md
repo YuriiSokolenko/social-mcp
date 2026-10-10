@@ -14,6 +14,21 @@
 | Tracked workflow/harness shell entrypoints in `scripts/` and `infra/` contain no executable hardcoded reference to configured `git.defaultBranch`. | *tracked harness shell entrypoints respect configured git.defaultBranch*; shell lexer and mutation tests in `harness-boundary.test.mjs` |
 | Product code (`src/`), `Dockerfile`, `compose.yaml`, `.dockerignore`, `.env.example` and unclassified product tests reference no harness file. | *product code, image, compose and product tests reference no harness file* |
 
+### Pure Implementer TypeBox tool contracts (#764)
+
+`scripts/pi-common/runtime-tool-schemas.mjs` belongs to **adapter-pi**
+(move with the Pi runtime). It imports only `typebox` and exports four pure
+schema builders for `accept_mutation_scope`, `structural_edit`, `safe_edit`
+and `run_check`. Runtime passes the original `CHECK_KINDS` array to the
+`runCheckParameters` builder at registration, keeping `run-check.mjs` the
+sole authority for supported kinds and their ordering. This introduces no
+import from schema code back into the runtime or the check executor.
+
+The Pi runtime keeps all registrations, names/labels/descriptions, ordering,
+execute handlers, authorization, mutation state, permits, validation ledger,
+retry/recovery, provider exposure and lifecycle callbacks. Other tool schemas
+and all workflow YAML/product/infra boundaries are intentionally unchanged.
+
 ### Shell entrypoint boundary (#743)
 
 The shell guard uses **tracked** files from `git ls-files` and includes every `*.sh`
@@ -92,9 +107,9 @@ The table is generated from `layers.json`. Directory entries (ending in `/`) are
 
 </details>
 
-<details><summary><b>Pi adapter scripts</b> — layer <code>adapter-pi</code>, 47 files</summary>
+<details><summary><b>Pi adapter scripts</b> — layer <code>adapter-pi</code>, 48 files</summary>
 
-`scripts/pi-agent-runtime.mjs`, `scripts/pi-architect-result-tool.mjs`, `scripts/pi-bash-timeout.mjs`, `scripts/pi-common/bash-timeout-policy.mjs`, `scripts/pi-common/coding-repair-policy.mjs`, `scripts/pi-common/coding-session-capability.mjs`, `scripts/pi-common/coding-session-input.mjs`, `scripts/pi-common/coding-session-outcome.mjs`, `scripts/pi-common/coding-session-validation.mjs`, `scripts/pi-common/implementation-planner.mjs`, `scripts/pi-common/main-prompt-observability.mjs`, `scripts/pi-common/main-tool-profile.mjs`, `scripts/pi-common/model-trace-proxy.mjs`, `scripts/pi-common/mutation-snapshot.mjs`, `scripts/pi-common/mutation-target.mjs`, `scripts/pi-common/package-root-check.mjs`, `scripts/pi-common/pi-stage-backend.mjs`, `scripts/pi-common/planner-orbit.mjs`, `scripts/pi-common/progress-controller.mjs`, `scripts/pi-common/provider-wire-policy.mjs`, `scripts/pi-common/repo-search.mjs`, `scripts/pi-common/restored-work.mjs`, `scripts/pi-common/runtime-budget-telemetry.mjs`, `scripts/pi-common/runtime-steering.mjs`, `scripts/pi-common/runtime-tool-guidance.mjs`, `scripts/pi-common/safe-edit.mjs`, `scripts/pi-common/semantic-loop-guard.mjs`, `scripts/pi-common/session-state.mjs`, `scripts/pi-common/structural-edit.mjs`, `scripts/pi-common/structured-subagent.mjs`, `scripts/pi-common/terminal-recovery-controller.mjs`, `scripts/pi-common/terminal-session-binding.mjs`, `scripts/pi-common/terminal-tool.mjs`, `scripts/pi-common/usage-ledger.mjs`, `scripts/pi-common/worktree-baseline.mjs`, `scripts/pi-common/worktree-recovery.mjs`, `scripts/pi-common/zoekt-search.mjs`, `scripts/pi-dispatcher-result-tool.mjs`, `scripts/pi-implementer-bootstrap.mjs`, `scripts/pi-implementer-result-tool.mjs`, `scripts/pi-implementer-skill-index.mjs`, `scripts/pi-log-filter.mjs`, `scripts/pi-planner-evidence.mjs`, `scripts/pi-repair-result-tool.mjs`, `scripts/pi-reviewer-result-tool.mjs`, `scripts/pi-subagent-response-budget.mjs`, `scripts/pi-triage-result-tool.mjs`
+`scripts/pi-agent-runtime.mjs`, `scripts/pi-architect-result-tool.mjs`, `scripts/pi-bash-timeout.mjs`, `scripts/pi-common/bash-timeout-policy.mjs`, `scripts/pi-common/coding-repair-policy.mjs`, `scripts/pi-common/coding-session-capability.mjs`, `scripts/pi-common/coding-session-input.mjs`, `scripts/pi-common/coding-session-outcome.mjs`, `scripts/pi-common/coding-session-validation.mjs`, `scripts/pi-common/implementation-planner.mjs`, `scripts/pi-common/main-prompt-observability.mjs`, `scripts/pi-common/main-tool-profile.mjs`, `scripts/pi-common/model-trace-proxy.mjs`, `scripts/pi-common/mutation-snapshot.mjs`, `scripts/pi-common/mutation-target.mjs`, `scripts/pi-common/package-root-check.mjs`, `scripts/pi-common/pi-stage-backend.mjs`, `scripts/pi-common/planner-orbit.mjs`, `scripts/pi-common/progress-controller.mjs`, `scripts/pi-common/provider-wire-policy.mjs`, `scripts/pi-common/repo-search.mjs`, `scripts/pi-common/restored-work.mjs`, `scripts/pi-common/runtime-budget-telemetry.mjs`, `scripts/pi-common/runtime-steering.mjs`, `scripts/pi-common/runtime-tool-guidance.mjs`, `scripts/pi-common/runtime-tool-schemas.mjs`, `scripts/pi-common/safe-edit.mjs`, `scripts/pi-common/semantic-loop-guard.mjs`, `scripts/pi-common/session-state.mjs`, `scripts/pi-common/structural-edit.mjs`, `scripts/pi-common/structured-subagent.mjs`, `scripts/pi-common/terminal-recovery-controller.mjs`, `scripts/pi-common/terminal-session-binding.mjs`, `scripts/pi-common/terminal-tool.mjs`, `scripts/pi-common/usage-ledger.mjs`, `scripts/pi-common/worktree-baseline.mjs`, `scripts/pi-common/worktree-recovery.mjs`, `scripts/pi-common/zoekt-search.mjs`, `scripts/pi-dispatcher-result-tool.mjs`, `scripts/pi-implementer-bootstrap.mjs`, `scripts/pi-implementer-result-tool.mjs`, `scripts/pi-implementer-skill-index.mjs`, `scripts/pi-log-filter.mjs`, `scripts/pi-planner-evidence.mjs`, `scripts/pi-repair-result-tool.mjs`, `scripts/pi-reviewer-result-tool.mjs`, `scripts/pi-subagent-response-budget.mjs`, `scripts/pi-triage-result-tool.mjs`
 
 </details>
 
