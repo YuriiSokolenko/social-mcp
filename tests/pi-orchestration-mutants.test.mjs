@@ -95,7 +95,7 @@ const MUTANTS = [
   },
   {
     stage: 'GitHub client', regression: 'no request timeout: a stalled GitHub call hangs the stage',
-    file: 'scripts/pi-common/github-api.mjs', from: 'signal: AbortSignal.timeout(timeoutMs),', to: '',
+    file: 'scripts/pi-common/github-api.mjs', from: 'const requestTimeout = AbortSignal.timeout(timeoutMs);', to: 'const requestTimeout = new AbortController().signal;',
     scenario: 'mergeGateTransportFaults',
   },
   {
