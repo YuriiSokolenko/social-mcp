@@ -208,6 +208,35 @@ runtime/executor behavior.
 **Intentional non-extractions:** all other schemas, provider/exposure
 decisions, tool callbacks, policy and stateful verification/recovery.
 
+## Slice 8 (#766): registered repository search schemas
+
+Move only the `repo_search` and `indexed_repo_search` TypeBox parameter
+declarations into the existing `pi-common/runtime-tool-schemas.mjs` as two
+separate, pure, lazily invoked builders. Both share the exact ordered
+`query`, `pathPrefix`, `extensions` and `maxResults` constraints, but
+the `kind` union remains distinct: `content|path` for local search and
+`content|path|symbol` for indexed search.
+
+**Counts:** runtime 5433 → 5419 lines;
+schema module 48 → 74 lines. No new
+module, inventory classification or layer boundary; `layers.json` already
+classifies the single schema module under `adapter-pi`.
+
+**Characterization:** `tests/ci/pi-implementer-typebox-schema-contract.test.mjs`
+checks the actual registered tool definitions with real TypeBox against the
+pre-extraction golden JSON schemas, including metadata, ordering, required/
+optional fields and `Value.Check` boundaries. With Zoekt disabled only
+`repo_search` registers; enabling `PI_ZOEKT_URL` adds
+`indexed_repo_search` directly before it. Both registered execution
+callbacks are smoke-tested using a tracked-file Git fixture and a mocked
+Zoekt HTTP response.
+
+**Runtime ownership retained:** conditional Zoekt registration and order,
+tool names, labels, descriptions, callback bodies, endpoint/repository/timeout,
+logging, tool exposure, validation, authorization and all lifecycle state.
+Dependency direction stays `pi-agent-runtime → runtime-tool-schemas → typebox`;
+builders run only at their original registration sites.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,

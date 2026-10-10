@@ -14,18 +14,22 @@
 | Tracked workflow/harness shell entrypoints in `scripts/` and `infra/` contain no executable hardcoded reference to configured `git.defaultBranch`. | *tracked harness shell entrypoints respect configured git.defaultBranch*; shell lexer and mutation tests in `harness-boundary.test.mjs` |
 | Product code (`src/`), `Dockerfile`, `compose.yaml`, `.dockerignore`, `.env.example` and unclassified product tests reference no harness file. | *product code, image, compose and product tests reference no harness file* |
 
-### Pure Implementer TypeBox tool contracts (#764)
+### Pure Implementer TypeBox tool contracts (#764, #766)
 
 `scripts/pi-common/runtime-tool-schemas.mjs` belongs to **adapter-pi**
-(move with the Pi runtime). It imports only `typebox` and exports four pure
-schema builders for `accept_mutation_scope`, `structural_edit`, `safe_edit`
-and `run_check`. Runtime passes the original `CHECK_KINDS` array to the
-`runCheckParameters` builder at registration, keeping `run-check.mjs` the
-sole authority for supported kinds and their ordering. This introduces no
-import from schema code back into the runtime or the check executor.
+(move with the Pi runtime). It imports only `typebox` and exports six pure
+schema builders: the original four for `accept_mutation_scope`,
+`structural_edit`, `safe_edit` and `run_check` (#764), plus two for
+`repo_search` and `indexed_repo_search` (#766). Runtime passes the original
+`CHECK_KINDS` array to `runCheckParameters` at registration, keeping
+`run-check.mjs` authoritative. The two search builders retain independent
+ordered `kind` unions (`content|path` versus `content|path|symbol`). No
+schema builder executes on module import, and no schema module imports
+runtime or any executor.
 
-The Pi runtime keeps all registrations, names/labels/descriptions, ordering,
-execute handlers, authorization, mutation state, permits, validation ledger,
+The Pi runtime keeps all registrations, names/labels/descriptions, ordering
+(including the `PI_ZOEKT_URL` gate), execute handlers, endpoint selection,
+logging, authorization, mutation state, permits, validation ledger,
 retry/recovery, provider exposure and lifecycle callbacks. Other tool schemas
 and all workflow YAML/product/infra boundaries are intentionally unchanged.
 

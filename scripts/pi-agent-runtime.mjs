@@ -37,6 +37,8 @@ import {
   structuralEditParameters,
   safeEditParameters,
   runCheckParameters,
+  indexedRepoSearchParameters,
+  repoSearchParameters,
 } from './pi-common/runtime-tool-schemas.mjs';
 import {
   appendCheckRecord,
@@ -3420,17 +3422,7 @@ export default function (pi) {
         name: 'indexed_repo_search',
         label: 'Indexed repository search',
         description: 'Fast read-only search against the configured Zoekt index of dev. Prefer it for literal/path discovery when the source symbol/path is not already known. For a known source-code symbol, use semantic LSP lookup first. Results may lag the current worktree, so use direct read/repo_search for exact post-mutation verification.',
-        parameters: Type.Object({
-          kind: Type.Optional(Type.Union([
-            Type.Literal('content'),
-            Type.Literal('path'),
-            Type.Literal('symbol'),
-          ])),
-          query: Type.String({ minLength: 1, maxLength: 300 }),
-          pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
-          extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
-          maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
-        }),
+        parameters: indexedRepoSearchParameters(),
         async execute(_toolCallId, params) {
           const startedAt = performance.now();
           const result = await zoektSearch({
@@ -3449,13 +3441,7 @@ export default function (pi) {
       name: 'repo_search',
       label: 'Repository search',
       description: 'Cheap deterministic literal search over tracked repository paths or content in the current worktree. Use before scout for mechanical discovery; no child model is launched.',
-      parameters: Type.Object({
-        kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
-        query: Type.String({ minLength: 1, maxLength: 300 }),
-        pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
-        extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
-        maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
-      }),
+      parameters: repoSearchParameters(),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const result = repoSearch(ctx.cwd, params);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };

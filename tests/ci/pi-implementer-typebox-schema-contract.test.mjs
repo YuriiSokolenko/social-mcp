@@ -234,3 +234,208 @@ test('registered mutation and run_check TypeBox contracts remain unchanged (#764
     assert.equal(child.status, 0, child.stderr + child.stdout);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// #766: characterize both *registered* search schemas before extracting their builders.
+// These golden schemas intentionally do not import runtime-tool-schemas.mjs.
+const EXPECTED_SEARCH_TOOL_METADATA = {
+  indexed_repo_search: {
+    label: 'Indexed repository search',
+    description: 'Fast read-only search against the configured Zoekt index of dev. Prefer it for literal/path discovery when the source symbol/path is not already known. For a known source-code symbol, use semantic LSP lookup first. Results may lag the current worktree, so use direct read/repo_search for exact post-mutation verification.',
+  },
+  repo_search: {
+    label: 'Repository search',
+    description: 'Cheap deterministic literal search over tracked repository paths or content in the current worktree. Use before scout for mechanical discovery; no child model is launched.',
+  },
+};
+
+async function checkRegisteredSearchContracts(runtimeUrl, metadata) {
+  const assert = (await import('node:assert/strict')).default;
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { Type } = await import('typebox');
+  const { Value } = await import('typebox/value');
+  const { default: runtime } = await import(runtimeUrl);
+
+  const expected = {
+    indexed_repo_search: Type.Object({
+      kind: Type.Optional(Type.Union([
+        Type.Literal('content'),
+        Type.Literal('path'),
+        Type.Literal('symbol'),
+      ])),
+      query: Type.String({ minLength: 1, maxLength: 300 }),
+      pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+      extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+      maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    }),
+    repo_search: Type.Object({
+      kind: Type.Optional(Type.Union([Type.Literal('content'), Type.Literal('path')])),
+      query: Type.String({ minLength: 1, maxLength: 300 }),
+      pathPrefix: Type.Optional(Type.String({ maxLength: 300 })),
+      extensions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { maxItems: 12 })),
+      maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    }),
+  };
+
+  function registerTools() {
+    const tools = [];
+    runtime({
+      registerTool(tool) { tools.push(tool); },
+      on() {}, appendEntry() {},
+      events: { on() {}, emit() {} },
+      getActiveTools() { return []; },
+      setActiveTools() {},
+      getAllTools() { return tools.map(tool => ({ name: tool.name })); },
+      sendUserMessage() {},
+    });
+    return tools;
+  }
+
+  const saved = {
+    url: process.env.PI_ZOEKT_URL,
+    repository: process.env.PI_ZOEKT_REPOSITORY,
+    timeout: process.env.PI_ZOEKT_TIMEOUT_MS,
+  };
+  try {
+    delete process.env.PI_ZOEKT_URL;
+    const withoutZoekt = registerTools();
+    const plainNames = withoutZoekt.map(tool => tool.name);
+    assert.equal(plainNames.includes('indexed_repo_search'), false, 'Zoekt-disabled tool must not register');
+    assert.equal(plainNames.filter(name => name === 'repo_search').length, 1, 'repo_search is independent of Zoekt');
+
+    process.env.PI_ZOEKT_URL = 'http://127.0.0.1:6070';
+    process.env.PI_ZOEKT_REPOSITORY = 'org/repo';
+    process.env.PI_ZOEKT_TIMEOUT_MS = '3000';
+    const withZoekt = registerTools();
+    const names = withZoekt.map(tool => tool.name);
+    assert.equal(names.filter(name => name === 'indexed_repo_search').length, 1);
+    assert.equal(names.filter(name => name === 'repo_search').length, 1);
+    assert.equal(names.indexOf('indexed_repo_search') + 1, names.indexOf('repo_search'),
+      'search registration order and adjacency');
+    assert.deepEqual(names.filter(name => name !== 'indexed_repo_search'), plainNames,
+      'enabling Zoekt adds only its original conditional registration');
+
+    const tools = new Map(withZoekt.map(tool => [tool.name, tool]));
+    for (const [name, golden] of Object.entries(expected)) {
+      const tool = tools.get(name);
+      assert.ok(tool, name + ' registered');
+      assert.equal(tool.label, metadata[name].label, name + ' label');
+      assert.equal(tool.description, metadata[name].description, name + ' description');
+      assert.equal(JSON.stringify(tool.parameters), JSON.stringify(golden),
+        name + ' exact serialized provider schema, constraints, metadata and ordering');
+      assert.deepEqual(Object.keys(tool.parameters.properties), Object.keys(golden.properties),
+        name + ' property order');
+      assert.deepEqual(tool.parameters.required, ['query'], name + ' required field');
+      assert.deepEqual(tool.parameters.required, golden.required, name + ' required vs optional');
+
+      const base = { query: 'needle' };
+      const cases = [
+        [base, true],
+        [{ ...base, kind: 'content' }, true],
+        [{ ...base, kind: 'path' }, true],
+        [{ ...base, kind: 'symbol' }, name === 'indexed_repo_search'],
+        [{ ...base, kind: 'regex' }, false],
+        [{ query: 'q'.repeat(300) }, true],
+        [{ query: '' }, false],
+        [{ query: 'q'.repeat(301) }, false],
+        [{ kind: 'path' }, false],
+        [{ ...base, pathPrefix: '' }, true],
+        [{ ...base, pathPrefix: 'p'.repeat(300) }, true],
+        [{ ...base, pathPrefix: 'p'.repeat(301) }, false],
+        [{ ...base, extensions: [] }, true],
+        [{ ...base, extensions: Array(12).fill('x'.repeat(16)) }, true],
+        [{ ...base, extensions: Array(13).fill('js') }, false],
+        [{ ...base, extensions: [''] }, false],
+        [{ ...base, extensions: ['x'.repeat(17)] }, false],
+        [{ ...base, maxResults: 1 }, true],
+        [{ ...base, maxResults: 50 }, true],
+        [{ ...base, maxResults: 0 }, false],
+        [{ ...base, maxResults: 51 }, false],
+        [{ ...base, maxResults: 1.5 }, false],
+      ];
+      for (const [input, valid] of cases) {
+        assert.equal(Value.Check(tool.parameters, input), valid,
+          name + ' boundary ' + JSON.stringify(input).slice(0, 100));
+      }
+    }
+
+    // Execute the actual registered callbacks, not substitute helpers.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-repo-search-contract-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'src'));
+      fs.writeFileSync(path.join(dir, 'src', 'needle.txt'), 'needle inside a tracked file\n');
+      for (const args of [['init', '-q', dir], ['-C', dir, 'add', 'src/needle.txt']]) {
+        const result = spawnSync('git', args, { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+      }
+      const result = await tools.get('repo_search').execute(
+        'repo-search-contract', { kind: 'path', query: 'needle' }, undefined, undefined, { cwd: dir },
+      );
+      assert.deepEqual(result.details, {
+        kind: 'path', query: 'needle', matches: [{ path: 'src/needle.txt' }], truncated: false,
+      });
+      assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(result.details) }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    const originalFetch = globalThis.fetch;
+    let request;
+    globalThis.fetch = async (url, options) => {
+      request = { url, options };
+      return { ok: true, status: 200, async json() {
+        return { Files: [{ FileName: 'src/needle.txt', Repository: 'org/repo', Version: 'rev1' }] };
+      } };
+    };
+    try {
+      const result = await tools.get('indexed_repo_search').execute(
+        'indexed-search-contract', { kind: 'symbol', query: 'NeedleSymbol', maxResults: 1 },
+      );
+      assert.equal(request.url, 'http://127.0.0.1:6070/api/search');
+      assert.equal(request.options.method, 'POST');
+      const payload = JSON.parse(request.options.body);
+      assert.match(payload.Q, /repo:\^org\/repo\$/);
+      assert.match(payload.Q, /sym:/);
+      assert.equal(payload.Opts.MaxDocDisplayCount, 1);
+      assert.deepEqual(result.details, {
+        backend: 'zoekt', kind: 'symbol', query: 'NeedleSymbol',
+        matches: [{ path: 'src/needle.txt', version: 'rev1', repository: 'org/repo' }],
+        truncated: true,
+      });
+      assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(result.details) }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    for (const [key, value] of [
+      ['PI_ZOEKT_URL', saved.url],
+      ['PI_ZOEKT_REPOSITORY', saved.repository],
+      ['PI_ZOEKT_TIMEOUT_MS', saved.timeout],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+test('registered repository search schemas match original TypeBox and exposure contracts (#766)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-search-typebox-'));
+  try {
+    const loader = writeTypeboxLoader(dir);
+    const source = [
+      "import { register } from 'node:module';",
+      "import { pathToFileURL } from 'node:url';",
+      'register(pathToFileURL(' + JSON.stringify(loader) + '), import.meta.url);',
+      'await (' + checkRegisteredSearchContracts.toString() + ')(' + JSON.stringify(RUNTIME_SCHEMA_URL) + ', ' + JSON.stringify(EXPECTED_SEARCH_TOOL_METADATA) + ');',
+    ].join('\n');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, PI_STAGE: 'implementer', PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
