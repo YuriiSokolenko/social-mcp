@@ -210,6 +210,8 @@ bash tests/test_runner_autoscaler.sh
 
 CI additionally installs `typebox` into a temporary prefix and runs `tests/ci/pi-implementer-typebox-schema-contract.test.mjs` with `PI_TYPEBOX_PACKAGE_ROOT` pointing at it; see the `harness` job in `.github/workflows/ci.yml`.
 
+The cross-stage orchestration tests (`node --test tests/pi-orchestration-*.test.mjs`) run the stage scripts against a stateful fake GitHub, with no model and no network. `node tests/helpers/orchestration-coverage.mjs` reports control-plane coverage; CI publishes the same report in the job summary and as an artifact. [Orchestration coverage](docs/agent-harness/ORCHESTRATION_COVERAGE.md) has the stage matrix, the fault scenarios and the baseline.
+
 ## Development phases
 
 1. Define MCP runtime/language and stable Threads tool contract. **Done.**
