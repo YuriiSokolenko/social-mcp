@@ -5,7 +5,11 @@ Usage: sudo python3 pi-models-add-swift.py <PI_HOME_HOST>/.pi/agent/models.json
 Keeps every existing provider/model/secret, writes a timestamped backup first,
 and preserves the file owner and mode (UID 1001 on N150).
 """
-import json, os, shutil, sys, time
+import json
+import os
+import shutil
+import sys
+import time
 path = sys.argv[1]
 with open(path) as fh:
     config = json.load(fh)
