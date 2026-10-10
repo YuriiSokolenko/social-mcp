@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout trusted dev
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: dev
           persist-credentials: false
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload sanitized runtime diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pi-diagnostics-triage-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-diagnostics-triage-${{ github.run_id }}-${{ github.run_attempt }}.jsonl

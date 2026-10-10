@@ -23,7 +23,7 @@ OLD_COMPOSE = "5.1.4-1~ubuntu.26.04~resolute"
 NEW_BUILDX = "0.38.0-1~ubuntu.26.04~resolute"
 NEW_COMPOSE = "5.6.0-1~ubuntu.26.04~resolute"
 OLD_CLI = "Docker version 29.5.3, build mock"
-NEW_CLI = "Docker version 29.8.2, build mock"
+NEW_CLI = "Docker version 29.9.0, build mock"
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -52,7 +52,7 @@ def _test_env(root: Path, overrides: dict[str, str] | None = None) -> dict[str, 
             "N150_STATE": str(root / "state"),
             "N150_APT_LOG": str(root / "apt.log"),
             "N150_OLD_DOCKER": str(root / "old/docker"),
-            "N150_NEW_DOCKER": str(root / "usr/local/lib/docker-cli/29.8.2/docker"),
+            "N150_NEW_DOCKER": str(root / "usr/local/lib/docker-cli/29.9.0/docker"),
             "N150_CLI_ARCHIVE": str(root / "cli.tgz"),
             "PATH": f"{root}/usr/local/bin:{root}/mockbin:{env['PATH']}",
         }
@@ -65,7 +65,7 @@ def _test_env(root: Path, overrides: dict[str, str] | None = None) -> dict[str, 
 def _prepare(root: Path) -> dict[str, str]:
     mockbin = root / "mockbin"
     local_bin = root / "usr/local/bin"
-    cli_root = root / "usr/local/lib/docker-cli/29.8.2"
+    cli_root = root / "usr/local/lib/docker-cli/29.9.0"
     backup_root = root / "var/backups/n150-docker-client-upgrade"
     for directory in (mockbin, local_bin, cli_root, backup_root, root / "old"):
         directory.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,7 @@ set -euo pipefail
 source "$N150_STATE"
 resolved="$(readlink -f -- "$0")"
 if [[ "$resolved" == "$N150_NEW_DOCKER" ]]; then
-  cli='Docker version 29.8.2, build mock'
+  cli='Docker version 29.9.0, build mock'
 else
   cli='Docker version 29.5.3, build mock'
 fi
@@ -209,7 +209,7 @@ exec {real_install} "${{args[@]}}"
         "readonly BACKUP_ROOT='/var/backups/n150-docker-client-upgrade'",
         f"readonly BACKUP_ROOT='{backup_root}'",
     )
-    source = source.replace("readonly CLI_ROOT='/usr/local/lib/docker-cli/29.8.2'", f"readonly CLI_ROOT='{cli_root}'")
+    source = source.replace("readonly CLI_ROOT='/usr/local/lib/docker-cli/29.9.0'", f"readonly CLI_ROOT='{cli_root}'")
     source = source.replace("readonly CLI_BINARY=\"$CLI_ROOT/docker\"", f"readonly CLI_BINARY='{cli_root}/docker'")
     source = source.replace("readonly CLI_LINK='/usr/local/bin/docker'", f"readonly CLI_LINK='{local_bin}/docker'")
     source = source.replace(
@@ -273,7 +273,7 @@ def test_successful_install_records_ephemeral_container_turnover_and_reruns_idem
     first = _run(tmp_path, env)
     assert first.returncode == 0, first.stdout
     assert _state(tmp_path / "state") == {"BUILDX": NEW_BUILDX, "COMPOSE": NEW_COMPOSE}
-    assert os.readlink(tmp_path / "usr/local/bin/docker") == str(tmp_path / "usr/local/lib/docker-cli/29.8.2/docker")
+    assert os.readlink(tmp_path / "usr/local/bin/docker") == str(tmp_path / "usr/local/lib/docker-cli/29.9.0/docker")
     backup = next((tmp_path / "var/backups/n150-docker-client-upgrade").iterdir())
     assert (backup / "COMPLETED").exists()
     assert (backup / "container-turnover.txt").read_text() == "container-a\n\tcontainer-c\n"
@@ -432,7 +432,7 @@ def test_interrupted_run_marker_is_recovered_before_new_upgrade(tmp_path: Path) 
     env = _prepare(tmp_path)
     state = tmp_path / "state"
     _write_state(state, buildx=NEW_BUILDX, compose=NEW_COMPOSE)
-    new_cli = tmp_path / "usr/local/lib/docker-cli/29.8.2/docker"
+    new_cli = tmp_path / "usr/local/lib/docker-cli/29.9.0/docker"
     shutil.copy2(tmp_path / "archive/docker/docker", new_cli)
     (tmp_path / "usr/local/bin/docker").unlink()
     (tmp_path / "usr/local/bin/docker").symlink_to(new_cli)

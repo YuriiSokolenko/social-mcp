@@ -185,7 +185,7 @@ To run the same checks locally with Python 3.12 and Docker Compose:
 ```bash
 python3.12 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
+python -m pip install -e . pytest==9.1.1 pytest-asyncio==1.4.0 ruff==0.17.0 PyYAML==6.0.3
 ruff check .
 pytest
 

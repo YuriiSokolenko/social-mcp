@@ -202,9 +202,10 @@
             "-m",
             "pip",
             "install",
-            "pytest",
-            "pytest-asyncio",
-            "ruff==0.12.12"
+            "pytest==9.1.1",
+            "pytest-asyncio==1.4.0",
+            "ruff==0.17.0",
+            "PyYAML==6.0.3"
           ]
         },
         {
@@ -239,9 +240,10 @@
             "install",
             "-e",
             ".",
-            "pytest",
-            "pytest-asyncio",
-            "ruff==0.12.12"
+            "pytest==9.1.1",
+            "pytest-asyncio==1.4.0",
+            "ruff==0.17.0",
+            "PyYAML==6.0.3"
           ]
         }
       ],
@@ -262,9 +264,10 @@
             "install",
             "-e",
             ".",
-            "pytest",
-            "pytest-asyncio",
-            "ruff==0.12.12"
+            "pytest==9.1.1",
+            "pytest-asyncio==1.4.0",
+            "ruff==0.17.0",
+            "PyYAML==6.0.3"
           ]
         }
       ]

@@ -26,7 +26,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout trusted dev
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: dev
           persist-credentials: false

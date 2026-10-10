@@ -20,7 +20,7 @@ jobs:
   collect:
     runs-on: [self-hosted, linux, x64, n150, general]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: dev
           persist-credentials: false

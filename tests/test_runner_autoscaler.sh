@@ -13,14 +13,14 @@ patch_fixture="$(mktemp -d)"
 cat > "$patch_fixture/package.json" <<'JSON'
 {
   "name": "pi-mcp-adapter",
-  "version": "5.1.0",
+  "version": "5.2.0",
   "peerDependencies": {"@earendil-works/pi-ai": "^0.84.1 || ^0.85.0 || ^0.86.0 || ^0.87.0 || ^0.99.0 || ^1.0.0"}
 }
 JSON
 node "$repo_root/infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs" "$patch_fixture/package.json"
 node -e 'const p=require(process.argv[1]); if (!p.peerDependencies["@earendil-works/pi-ai"].endsWith("|| ^1.1.0")) process.exit(1)' "$patch_fixture/package.json"
 node "$repo_root/infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs" "$patch_fixture/package.json"
-sed 's/"5.1.0"/"5.0.0"/' "$patch_fixture/package.json" > "$patch_fixture/wrong-version.json"
+sed 's/"5.2.0"/"5.0.0"/' "$patch_fixture/package.json" > "$patch_fixture/wrong-version.json"
 assert_failure node "$repo_root/infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs" "$patch_fixture/wrong-version.json"
 rm -rf "$patch_fixture"
 
@@ -50,7 +50,7 @@ grep -q 'no-new-privileges:true' <<<"$control_compose" || fail 'control runner n
 ! grep -q '/var/run/docker.sock' <<<"$control_compose" || fail 'control runner must never receive Docker socket'
 ! grep -q 'MODEL_STATUS_URL\|PI_HOME\|PI_CONFIG\|MOUNT_PI_CONFIG' <<<"$control_compose" || fail 'control runner must not depend on Pi/model runtime'
 
-grep -q '^FROM debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91$' <<<"$control_dockerfile" || fail 'control runner must use a pinned slim Debian/glibc base'
+grep -q '^FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587$' <<<"$control_dockerfile" || fail 'control runner must use a pinned slim Debian/glibc base'
 ! grep -qi 'alpine\|docker-ce\|docker-compose' <<<"$control_dockerfile" || fail 'control runner image must stay free of Alpine and Docker tooling'
 grep -q 'ACTIONS_RUNNER_VERSION=2.338.0' <<<"$control_dockerfile" || fail 'control runner Actions Runner version must be pinned'
 grep -q 'ACTIONS_RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32' <<<"$control_dockerfile" || fail 'control runner archive checksum must be pinned'
@@ -72,20 +72,20 @@ for worker_dockerfile in "$general_worker_dockerfile" "$pi_worker_dockerfile"; d
   grep -q 'af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32' <<<"$worker_dockerfile" || fail 'worker Actions Runner archive checksum must be pinned'
   ! grep -q 'n150/github-pi-runner' <<<"$worker_dockerfile" || fail 'worker build must not depend on an unpublished N150 base image'
 done
-grep -q '^FROM --platform=\${RUNNER_PLATFORM} debian:bookworm-slim@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91$' <<<"$general_worker_dockerfile" || fail 'general worker must use its pinned Debian base image'
-grep -q '^FROM --platform=\${RUNNER_PLATFORM} python:3.12-slim-trixie@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe$' <<<"$pi_worker_dockerfile" || fail 'Pi worker must use its pinned Python 3.12 Trixie base image'
+grep -q '^FROM --platform=\${RUNNER_PLATFORM} debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587$' <<<"$general_worker_dockerfile" || fail 'general worker must use its pinned Debian base image'
+grep -q '^FROM --platform=\${RUNNER_PLATFORM} python:3.12-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1$' <<<"$pi_worker_dockerfile" || fail 'Pi worker must use its pinned Python 3.12 Trixie base image'
 grep -q '^FROM --platform=${RUNNER_PLATFORM} python:3.12-slim-bookworm@sha256:' <<<"$general_worker_dockerfile" || fail 'general worker must use a digest-pinned Python 3.12 runtime'
 grep -q '"gh=${GH_CLI_VERSION}"' <<<"$general_worker_dockerfile" || fail 'general worker must include the pinned GitHub CLI'
 grep -q 'GH_CLI_KEYRING_SHA256=' <<<"$general_worker_dockerfile" || fail 'general worker must verify the official GitHub CLI package keyring'
 grep -q 'docker-ce-cli=${DOCKER_CLI_VERSION}' <<<"$general_worker_dockerfile" || fail 'general worker must include Docker CLI'
 grep -q 'docker-compose-plugin=${DOCKER_COMPOSE_VERSION}' <<<"$general_worker_dockerfile" || fail 'general worker must include Compose'
 grep -q 'docker-buildx-plugin' <<<"$general_worker_dockerfile" || fail 'general worker must include Buildx'
-grep -q 'DOCKER_CLI_VERSION=5:29.8.2-1~debian.12~bookworm' <<<"$general_worker_dockerfile" || fail 'general worker Docker CLI version must be pinned'
+grep -q 'DOCKER_CLI_VERSION=5:29.9.0-1~debian.12~bookworm' <<<"$general_worker_dockerfile" || fail 'general worker Docker CLI version must be pinned'
 grep -q 'DOCKER_COMPOSE_VERSION=5.6.0-1~debian.12~bookworm' <<<"$general_worker_dockerfile" || fail 'general worker Compose version must be pinned'
 grep -q 'GH_CLI_VERSION=2.102.0' <<<"$general_worker_dockerfile" || fail 'general worker GitHub CLI version must be pinned'
 grep -q 'groupadd --gid 983 hostdocker' <<<"$general_worker_dockerfile" || fail 'general worker socket group must preserve the host docker GID'
 grep -q 'PI_CODING_AGENT_VERSION=1.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current stable Pi runtime'
-grep -q 'PI_MCP_ADAPTER_VERSION=5.1.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current MCP adapter'
+grep -q 'PI_MCP_ADAPTER_VERSION=5.2.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current MCP adapter'
 grep -q '^COPY --chown=1001:1001 infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs /home/runner/build-tools/patch-pi-mcp-adapter.mjs$' <<<"$pi_worker_dockerfile" \
   || fail 'MCP adapter patch helper must be owned by the runner in its home directory'
 grep -q 'node /home/runner/build-tools/patch-pi-mcp-adapter.mjs' <<<"$pi_worker_dockerfile" \
@@ -97,10 +97,10 @@ grep -q 'mcp-searxng@${MCP_SEARXNG_VERSION}' <<<"$pi_worker_dockerfile" || fail 
 ! grep -q '@gitlab/orbit@${ORBIT_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must use the GNU Orbit binary instead of the musl npm package'
 grep -q 'check-pi-searxng-mcp' infra/github-runner-autoscaler/worker-entrypoint.sh || fail 'Pi workers must preflight SearXNG MCP before runner registration'
 grep -q "'-builtin:mcp'" infra/github-runner-autoscaler/worker-entrypoint.sh || fail 'Pi worker must select pi-mcp-adapter as the sole /mcp provider'
-grep -q 'github-pi-runner-ephemeral:1.1.0-mini-swe-r3' infra/github-runner-autoscaler/manager.sh || fail 'Pi worker image default must use a fresh versioned tag'
+grep -q 'github-pi-runner-ephemeral:1.1.0-mini-swe-r5' infra/github-runner-autoscaler/manager.sh || fail 'Pi worker image default must use a fresh versioned tag'
 grep -q 'PI_SUBAGENTS_VERSION=0.76.1' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current subagents extension'
-grep -q 'ORBIT_VERSION=0.138.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current Orbit version'
-grep -q 'ORBIT_SHA256=5cdf2c397eb8990c7a2503a85c7f12740bbe52c2bf262aa2eb883297c74d7ce6' <<<"$pi_worker_dockerfile" || fail 'Pi worker must verify the GNU Orbit binary'
+grep -q 'ORBIT_VERSION=0.139.0' <<<"$pi_worker_dockerfile" || fail 'Pi worker must pin the current Orbit version'
+grep -q 'ORBIT_SHA256=c1880eda51c9bb7596e9790d44555fed5ebc65b34012c890a99565a69a2d723c' <<<"$pi_worker_dockerfile" || fail 'Pi worker must verify the GNU Orbit binary'
 grep -q 'DUCKDB_JSON_SHA256=325c0e08e081a928c66bba1528f3848e54dade9f82a8afe84f97df137333962e' <<<"$pi_worker_dockerfile" || fail 'Pi worker must verify the preloaded DuckDB JSON extension'
 grep -q 'duckdb/extensions/v\${ORBIT_DUCKDB_VERSION}/linux_amd64/json.duckdb_extension' <<<"$pi_worker_dockerfile" || fail 'Pi worker must preload the DuckDB JSON extension into runner HOME'
 grep -q 'orbit-context-preflight.sh' .github/workflows/pi-issue-agent.yml || fail 'Implementer workflow must preflight Orbit contexts'
@@ -121,7 +121,7 @@ grep -q '@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}' <<<"$pi_wor
 grep -q 'npm:pi-subagents@${PI_SUBAGENTS_VERSION}' <<<"$pi_worker_dockerfile" || fail 'Pi worker must seed the pinned subagents extension'
 grep -Fq 'npm:pi-subagents@${subagentsVersion}' infra/github-runner-autoscaler/worker-entrypoint.sh || fail 'Pi worker entrypoint must pin subagents in writable job config'
 grep -q "npm', \['root', '-g'\]" infra/github-runner-autoscaler/lsp-mcp-server-wrapper.mjs || fail 'LSP wrapper must resolve the npm global path for the public Node base'
-grep -q 'RUNNER_IMAGE:.*github-general-runner-ephemeral:0.87.10' infra/github-runner-autoscaler/compose.yaml || fail 'Compose must use the rebuilt general worker tag'
+grep -q 'RUNNER_IMAGE:.*github-general-runner-ephemeral:0.87.11' infra/github-runner-autoscaler/compose.yaml || fail 'Compose must use the rebuilt general worker tag'
 grep -q '/opt/actions-runner-baseline' <<<"$control_dockerfile" || fail 'control image must keep baseline package outside the persistent runner root'
 grep -q 'cp -a /opt/actions-runner-baseline/. /home/runner/actions-runner/' <<<"$control_dockerfile" || fail 'new control volume must be seeded with the runner package'
 

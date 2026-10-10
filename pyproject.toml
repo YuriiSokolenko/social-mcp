@@ -9,23 +9,23 @@ description = "Self-hosted MCP server for official social-network APIs"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "mcp[cli]>=2,<3",
-  "fastapi>=0.116,<1",
-  "uvicorn[standard]>=0.35,<1",
-  "httpx>=0.28,<1",
-  "pydantic>=2.12,<3",
-  "pydantic-settings>=2.10,<3",
-  "cryptography>=45,<47",
-  "itsdangerous>=2.1,<3",
-  "python-multipart>=0.0.18,<1",
+  "mcp[cli]>=2.3,<3",
+  "fastapi>=0.143,<1",
+  "uvicorn[standard]>=0.54,<1",
+  "httpx>=0.28.1,<1",
+  "pydantic>=2.14,<3",
+  "pydantic-settings>=2.15,<3",
+  "cryptography>=50,<51",
+  "itsdangerous>=2.2,<3",
+  "python-multipart>=0.0.32,<1",
 ]
 
 [dependency-groups]
 dev = [
-  "pytest>=8.4,<10",
-  "pytest-asyncio>=1.1,<2",
-  "ruff==0.12.12",
-  "PyYAML>=6,<7",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "ruff==0.17.0",
+  "PyYAML==6.0.3",
 ]
 
 [tool.hatch.build.targets.wheel]
