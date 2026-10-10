@@ -88,6 +88,21 @@ HTTP parsing and retryability in isolation. Other focused coverage:
 registration, provider-event callbacks and child-session orchestration remain
 in runtime; moving them requires separate stateful lifecycle characterization.
 
+## Slice 3 (#741): Coding Session input admission
+
+Move only pure `begin_coding_session` argument parsing, validation and handoff normalization out of the runtime. Keep the lifecycle, correction/abort routing, tool registry, provider hook and child launch unchanged.
+
+| Responsibility | Before | After / owner |
+| --- | --- | --- |
+| Unicode-safe handoff trim and truncation | runtime-private `normalizedCodingSessionHandoff` | `pi-common/coding-session-input.mjs` |
+| Optional-field validation and diagnostics | runtime public `codingSessionArgumentValidation` | input module, re-exported unchanged by runtime |
+| Serialized tool-call argument admission | runtime-private `codingSessionArgumentFailure` | input module, preserving JSON precedence and diagnostics |
+| Shared handoff upper bound | runtime-local constant | `CODING_SESSION_HANDOFF_MAX_LENGTH` from input module |
+
+**Counts:** runtime 5622 → 5576 lines; one new pure module (55 lines). Dependency is `runtime → coding-session-input`; module has no imports, session state, registration side effects or IO. Public export, error text, 1,200-codepoint bound and tool visibility gating are unchanged.
+
+**Characterization:** existing `pi-coding-session.test.mjs` covers prepared/fallback child launch, handoff truncation, invalid-argument correction, repeated-invalid fail-closed abort, and terminal results. New `pi-coding-session-input.test.mjs` checks missing/hidden tools, input envelopes and precedence, exact errors and astral Unicode boundaries. Runtime retains session orchestration, stateful correction policy and trusted fork construction.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,
