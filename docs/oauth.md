@@ -271,7 +271,6 @@ export TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet
 | Concern                         | Status        | Tracked by |
 | ------------------------------- | ------------- | ---------- |
 | Meta app config and OAuth docs  | Documented here | #2 (closed) |
-| OAuth `state` minting/validation | Implemented   | #15 (closed) |
-| Web Admin connect + callback handling | Implemented | #16 (closed) |
-| Code exchange and encrypted token persistence | Implemented (short-lived token) | #16 (closed) |
-| Long-lived exchange, refresh, reconnect-on-failure, status reporting | Not implemented | [#17](https://github.com/YuriiSokolenko/social-mcp/issues/17) (open) |
+| OAuth `state` minting/validation and callback handling | Implemented | #15 (closed) |
+| Web Admin connect flow, code exchange and encrypted token persistence | Implemented (short-lived token) | #16 (closed) |
+| Token lifecycle: long-lived exchange, refresh, reconnect-on-failure, status reporting | Not implemented | [#17](https://github.com/YuriiSokolenko/social-mcp/issues/17) (open) |

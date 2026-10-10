@@ -88,9 +88,9 @@ The table is generated from `layers.json`. Directory entries (ending in `/`) are
 
 </details>
 
-<details><summary><b>Harness documentation</b> — <code>extraction.move.docs</code>, 10 entries</summary>
+<details><summary><b>Harness documentation</b> — <code>extraction.move.docs</code>, 11 entries</summary>
 
-`scripts/pi-common/README.md`, `docs/agent-harness/` (4 files), `docs/llm-research/` (5 files), `docs/infra/ORBIT_ROLLOUT_CODEX.md`, `docs/pi-model-traces.md`, `docs/github-actions-logs.md`, `docs/beelink-update-restart.md`, `docs/ISSUE_430_INFRA_RECOVERY.md`, `docs/releases/v0.1.0-workflow-smoke-report.md`, `tasks/README.md`
+`scripts/README.md`, `scripts/pi-common/README.md`, `docs/agent-harness/` (4 files), `docs/llm-research/` (5 files), `docs/infra/ORBIT_ROLLOUT_CODEX.md`, `docs/pi-model-traces.md`, `docs/github-actions-logs.md`, `docs/beelink-update-restart.md`, `docs/ISSUE_430_INFRA_RECOVERY.md`, `docs/releases/v0.1.0-workflow-smoke-report.md`, `tasks/README.md`
 
 </details>
 
