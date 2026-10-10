@@ -145,12 +145,13 @@ test('real reconciler apply path restarts stranded PR ownership after the grace 
       },
     ]);
 
-    assert.match(result.stdout, /PR #101 stranded unreviewed PR/);
+    assert.match(result.stdout, /PR #101/);
     assert.match(result.stdout, /recovery: unreviewed \+ Reviewer/);
-    assert.match(result.stdout, /PR #102 stranded changes-requested PR/);
+    assert.match(result.stdout, /PR #102/);
     assert.match(result.stdout, /recovery: review:changes-requested \+ PR Fix/);
-    assert.match(result.stdout, /PR #103 stranded passed PR/);
+    assert.match(result.stdout, /PR #103/);
     assert.match(result.stdout, /recovery: review:passed \+ Merge Gate/);
+    assert.doesNotMatch(result.stdout, /stranded unreviewed PR|stranded changes-requested PR|stranded passed PR/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
