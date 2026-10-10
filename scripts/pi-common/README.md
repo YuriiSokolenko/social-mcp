@@ -38,6 +38,7 @@ A module belongs here only when the same trusted rule is useful to more than one
 - `workflow-dispatch.mjs` — tiny workflow-facing adapter for no-input workflow wakes; it keeps authenticated REST and the trusted `dev` ref out of YAML.
 - `terminal-tool.mjs` / `result-jsonl.mjs` — one machine-checkable terminal-tool contract plus tolerant Pi JSONL reading; free-text result markers are not pipeline state.
 - `restored-work.mjs` — shared Implementer resume predicate, kept self-contained for the pinned Pi coding adapter's source injection via `toString()` during Docker build.
+- `provider-wire-policy.mjs` — pure provider-boundary payload decisions for both Main and coding child (thinking flag, serializable tool_choice/zero-tool safety, provider error status and retry classification); does not own hooks or mutable session state.
 - `stage-config.mjs` — single source of per-agent runtime defaults and prompt builders (shared + role contract injection into the initial prompt, turn/repeat limits, complexity mode, bash timeout, fixed token budget, result tool, stage prompt).
 - `stage-run-contract.mjs` — backend-neutral `StageRunSpec`/`StageRunResult` shapes passed between `pi-run-stage.mjs` and a backend.
 - `pi-stage-backend.mjs` / `mini-swe-stage-backend.mjs` — the two stage backends (Pi and the experimental, implementer-only mini-swe).
