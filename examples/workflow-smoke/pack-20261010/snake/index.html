@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snake — pack-20261010</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="game">
+      <h1>Snake</h1>
+      <p class="hint">
+        Arrows or WASD to steer. Space starts, pauses and resumes.
+      </p>
+
+      <section aria-labelledby="board-heading" class="board-wrap">
+        <h2 id="board-heading" class="visually-hidden">Game board</h2>
+        <canvas id="board" width="400" height="400" aria-label="Snake game board"></canvas>
+      </section>
+
+      <p class="score-line">
+        Score: <span id="score" aria-live="polite">0</span>
+      </p>
+      <p id="status" role="status" aria-live="polite">Ready — press an arrow key, WASD, or Start.</p>
+
+      <div class="controls">
+        <button id="start" type="button">Start</button>
+        <button id="pause" type="button" disabled>Pause</button>
+        <button id="restart" type="button">Restart</button>
+      </div>
+
+      <fieldset class="touch">
+        <legend class="visually-hidden">On-screen direction controls</legend>
+        <div class="pad">
+          <button type="button" data-direction="up" aria-label="Move up">▲</button>
+          <div class="pad-mid">
+            <button type="button" data-direction="left" aria-label="Move left">◀</button>
+            <button type="button" data-direction="down" aria-label="Move down">▼</button>
+            <button type="button" data-direction="right" aria-label="Move right">▶</button>
+          </div>
+        </div>
+      </fieldset>
+    </main>
+
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>

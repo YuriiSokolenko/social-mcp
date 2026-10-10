@@ -1,0 +1,141 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0f12;
+  --panel: #141a20;
+  --fg: #e8f0e3;
+  --muted: #9fb0a6;
+  --accent: #79c93a;
+  --focus: #ffd166;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.game {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  max-width: 32rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+.board-wrap {
+  width: 100%;
+  background: var(--panel);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  touch-action: manipulation;
+  border-radius: 0.25rem;
+}
+
+.score-line {
+  margin: 0;
+  font-weight: 600;
+}
+
+#score {
+  color: var(--accent);
+}
+
+#status {
+  margin: 0;
+  min-height: 1.5rem;
+  text-align: center;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+canvas:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.touch {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.pad {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: center;
+}
+
+.pad-mid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(44px, 1fr));
+  gap: 0.5rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 22rem) {
+  .controls {
+    flex-direction: column;
+  }
+
+  .controls button {
+    flex: 1 1 100%;
+  }
+}
