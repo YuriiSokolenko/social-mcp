@@ -1,8 +1,10 @@
-function parentOf(body) {
+/** Parent issue number from a child's `architect-parent` marker, otherwise null. */
+export function parentOf(body) {
   const match = /<!-- architect-parent:(\d+); architect-key:[a-z][a-z0-9-]* -->/.exec(body ?? '');
   return match ? Number(match[1]) : null;
 }
-function childNumbers(body) {
+/** Child issue numbers from a parent's `architect-children` marker. */
+export function childNumbers(body) {
   const match = /<!-- architect-children:([1-9]\d*(?:,[1-9]\d*)*) -->/.exec(body ?? '');
   return match ? match[1].split(',').map(Number) : [];
 }
