@@ -661,7 +661,6 @@ test('runtime-owned preparation uses one plain-text planner and harness-owned st
   assert.match(runtime, /pi\.setActiveTools/);
   assert.match(runtime, /actionRequiredToolNames/);
   assert.match(runtime, /pi\.sendUserMessage/);
-  assert.match(runtime, /maxTokens: appliedActionCap \|\| controller\.fixedMaxTokens/);
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
   assert.match(bootstrapPlanner, /Preparation complete; start from the Planner handoff below/);

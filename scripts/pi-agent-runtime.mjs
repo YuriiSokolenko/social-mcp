@@ -118,6 +118,13 @@ import {
   profileHiddenToolAdvice as buildProfileHiddenToolAdvice,
   taskSpecificToolGuidance as buildTaskSpecificToolGuidance,
 } from './pi-common/runtime-tool-guidance.mjs';
+import {
+  activeResponseCeiling,
+  responseHitOutputCeiling as responseHitOutputCeilingValue,
+  turnStartBudgetTelemetry,
+  plannerTelemetryRecords,
+  codingSessionTelemetryRecords,
+} from './pi-common/runtime-budget-telemetry.mjs';
 
 // Every tool whose effect is one target-file mutation: snapshot/rollback/no-op/progress apply.
 const CONTENT_MUTATION_TOOLS = new Set(['structural_edit', 'safe_edit', 'edit', 'write']);
@@ -271,61 +278,22 @@ ${escapedJson({
 </runtime_state>`;
 }
 
-function logPreparedImplementation(prepared, applied) {
-  const stage = 'implementer';
-  const usage = prepared.plannerUsage ?? null;
-  const planTextBytes = prepared.status === 'prepared' ? Buffer.byteLength(prepared.planText, 'utf8') : 0;
-  console.log(`[PI][planner] prepared status=${prepared.status} duration=${prepared.plannerDurationMs ?? 'unknown'}ms evidence_actions=${prepared.plannerEvidenceActions ?? 'unknown'} turns=${prepared.plannerProviderTurns ?? 'unknown'} in=${usage?.input ?? 'unknown'} out=${usage?.output ?? 'unknown'} plan_bytes=${planTextBytes}`);
-  if (prepared.status === 'fallback') {
-    console.warn(`PI_PREPARATION_FALLBACK ${JSON.stringify({
-      stage,
-      preparationState: applied.preparationState,
-      evidenceBudget: applied.evidenceBudget,
-      source: 'implementation-planner',
-      failureClass: prepared.failureClass,
-      recovery: 'continue_without_planner_output',
-      reason: prepared.reason,
-      plannerDurationMs: prepared.plannerDurationMs,
-      evidenceActions: prepared.plannerEvidenceActions ?? null,
-      providerTurns: prepared.plannerProviderTurns ?? null,
-    })}`);
-  } else {
-    console.log(`PI_PLAN ${JSON.stringify({
-      stage,
-      planTextBytes,
-      complexity: prepared.complexity,
-      largeMutation: prepared.largeMutation,
-      largeMutationArmed: applied.largeMutationArmed,
-      reason: prepared.reason,
-      usage,
-      plannerDurationMs: prepared.plannerDurationMs,
-      evidenceActions: prepared.plannerEvidenceActions ?? null,
-      providerTurns: prepared.plannerProviderTurns ?? null,
-    })}`);
-    console.log(`PI_COMPLEXITY ${JSON.stringify({
-      stage,
-      complexity: prepared.complexity,
-      requiredMutationAnchors: [],
-      largeMutation: false,
-      reason: prepared.reason,
-      usage,
-      source: 'implementation-planner-harness-default',
-    })}`);
+// The formatters only yield log/warn. Reject accidental new levels instead
+// of dynamically indexing arbitrary console properties.
+function emitRuntimeTelemetry(records) {
+  for (const record of records) {
+    if (record.level === 'log') console.log(record.text);
+    else if (record.level === 'warn') console.warn(record.text);
+    else throw new Error(`Unsupported runtime telemetry level: ${String(record.level)}`);
   }
-  console.log(`PI_BOOTSTRAP ${JSON.stringify({ phase: 'prepared_state_applied', status: prepared.status, beforeFirstProviderRequest: true })}`);
+}
+
+function logPreparedImplementation(prepared, applied) {
+  emitRuntimeTelemetry(plannerTelemetryRecords(prepared, applied));
 }
 
 function codingSessionLog(phase, fields) {
-  const line = `PI_CODING_SESSION ${JSON.stringify({ phase, ...fields })}`;
-  const summaryFields = ['side', 'agent', 'tool', 'status', 'durationMs', 'reason']
-    .filter(key => fields[key] != null)
-    .map(key => `${key}=${String(fields[key]).replace(/\s+/g, ' ').slice(0, 100)}`)
-    .join(' ');
-  const readable = `[PI][coding] phase=${phase}${summaryFields ? ` ${summaryFields}` : ''}`;
-  if (['failed', 'rejected', 'cancelled', 'blocked', 'ended_without_submit'].includes(phase)) console.warn(readable);
-  else console.log(readable);
-  if (['failed', 'rejected', 'cancelled'].includes(phase)) console.warn(line);
-  else console.log(line);
+  emitRuntimeTelemetry(codingSessionTelemetryRecords(phase, fields));
 }
 
 
@@ -2380,7 +2348,9 @@ export default function (pi) {
       }
       console.log('PI_PROVIDER_OUTPUT_BUDGET ' + JSON.stringify({
         stage, request: providerCapabilitySnapshot?.request ?? null,
-        requested_budget: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+        requested_budget: activeResponseCeiling(
+          appliedActionCap, controller.fixedMaxTokens, controller.budgets[controller.turnLevel],
+        ),
         effective_budget: providerWireOutputBudget.ceiling,
         verified: providerWireOutputBudget.verified,
         reason: providerWireOutputBudget.reason ?? null,
@@ -3604,15 +3574,16 @@ export default function (pi) {
     controller.onTurnStart(event.turnIndex);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
-    console.log(`PI_BUDGET ${JSON.stringify({
+    console.log(`PI_BUDGET ${JSON.stringify(turnStartBudgetTelemetry({
       turn: event.turnIndex,
       stage,
-      budget: controller.fixedMaxTokens ? 'fixed' : controller.turnLevel,
-      maxTokens: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+      fixedMaxTokens: controller.fixedMaxTokens,
+      turnLevel: controller.turnLevel,
+      levelMaxTokens: controller.budgets[controller.turnLevel],
+      appliedActionCap,
       productiveState,
-      actionCapApplied: appliedActionCap > 0,
       largeMutationBudget: controller.largeMutationBudgetState,
-    })}`);
+    }))}`);
   });
 
   pi.on('tool_call', async (event, ctx) => {
@@ -4960,10 +4931,10 @@ export default function (pi) {
       codingFirstResponseLogged = true;
       codingSessionLog('first_response', { side: 'fork', sessionId: codingSession.sessionId, outputTokens, attemptedTool: actionTurnAttemptedTool });
     }
-    const activeResponseCap =
-      appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel];
-    const responseHitOutputCeiling =
-      activeResponseCap > 0 && outputTokens >= activeResponseCap;
+    const activeResponseCap = activeResponseCeiling(
+      appliedActionCap, controller.fixedMaxTokens, controller.budgets[controller.turnLevel],
+    );
+    const responseHitOutputCeiling = responseHitOutputCeilingValue(outputTokens, activeResponseCap);
     const next = controller.afterTurn(outputTokens);
     const productiveState = syncProductiveState();
     syncActionToolSurface(productiveState);
@@ -4984,7 +4955,9 @@ export default function (pi) {
       console.warn('PI_CODING_TOOL_TRANSPORT_INCOMPLETE ' + JSON.stringify({
         stage, request: providerCapabilitySnapshot?.request ?? null,
         tool: incompleteTransport.toolName,
-        requested_budget: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+        requested_budget: activeResponseCeiling(
+          appliedActionCap, controller.fixedMaxTokens, controller.budgets[controller.turnLevel],
+        ),
         effective_budget: providerWireOutputBudget.ceiling,
         output_ceiling: incompleteTransport.ceiling,
         output_tokens: outputTokens,
