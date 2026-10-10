@@ -59,11 +59,41 @@ One intentional tightening: post-merge's linkage now also rejects an issue
 branch number that is not a safe integer (20+ digit branch names), as Merge
 Gate already did. No real issue can have such a number.
 
+
+## Slice 2 (#741): pure provider wire-policy extraction
+
+This slice starts from `dev` commit `a42e0ab9ff98` and changes no workflow YAML,
+agent prompt, registered tool, mutable counter or provider call order.
+
+| Responsibility | Before | After / owner |
+| --- | --- | --- |
+| Coding thinking on outbound messages | `pi-agent-runtime.mjs` | `pi-common/provider-wire-policy.mjs`: `applyCodingThinkingPolicy`, `disableThinkingInPayload` |
+| Final serialized `tool_choice` enforcement and zero/named-tool safety | runtime | `provider-wire-policy.mjs`: `requireToolChoiceInPayload`, `withoutProviderTools`, `implementerToolChoiceDecision` |
+| Parsing and retry classification of provider HTTP failures | runtime | `provider-wire-policy.mjs`: `providerErrorStatus`, `retryableProviderErrorStatus` |
+
+**Counts:** runtime 5734 → 5622 lines; one new pure module (119 lines), seven existing named exports preserved at the original runtime entry point. Dependency direction is
+`pi-agent-runtime → provider-wire-policy → session-state.providerToolNames`;
+there is no reverse dependency or runtime state in the extracted module. Runtime
+still owns on-payload hooks, request phase, available/deferred capabilities,
+tool registrations, coding child and terminal/recovery wiring.
+
+**Characterization:** Existing `tests/pi-coding-session.test.mjs` tests the
+runtime's public named exports, provider status shapes and live Main/coding
+request forcing/compatibility fallbacks. New `tests/pi-provider-wire-policy.test.mjs`
+tests thinking, payload identity, serialized tool constraints, named/stale tools,
+HTTP parsing and retryability in isolation. Other focused coverage:
+`pi-provider-tool-boundary`, `pi-provider-tool-recovery`, `pi-session-state-runtime`,
+`pi-main-tool-profile-runtime`. CI/full harness checks remain authoritative.
+
+**Intentional non-extractions:** session mutation/progress ledgers, live tool
+registration, provider-event callbacks and child-session orchestration remain
+in runtime; moving them requires separate stateful lifecycle characterization.
+
 ## Remaining candidates (not yet done)
 
-1. **`pi-agent-runtime.mjs` split** — extract cohesive, already-pure clusters
-   (tool-schema builders, steering text, budget arithmetic) into
-   `pi-common/` modules one at a time with characterization tests first.
+1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,
+   extract separate cohesive schema/steering/budget clusters one at a time with
+   characterization tests first; defer stateful orchestration until safe.
 2. **Fetch-style `api` adapters** — `pi-dispatcher.mjs` and `pi-triage.mjs`
    wrap `githubClient().api` with an `{ method, body: JSON.stringify(...) }`
    shim that is immediately `JSON.parse`d back. Callers can use the client
