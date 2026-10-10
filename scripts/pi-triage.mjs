@@ -3,8 +3,8 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { githubClient } from "./pi-common/github-api.mjs";
-import { replaceIssueState } from "./pi-common/github-state.mjs";
-import { PIPELINE_LABELS, validateIssueTransition } from "./pi-common/state-machine.mjs";
+import { transitionIssueState } from "./pi-common/github-state.mjs";
+import { PIPELINE_LABELS } from "./pi-common/state-machine.mjs";
 import { acceptanceCriteria, taskMetadata } from "./pi-common/task-metadata.mjs";
 import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 
@@ -16,20 +16,8 @@ function usage() {
 }
 
 const labelsOf = issue => new Set(issue.labels.map(label => label.name));
-async function transitionIssue(number, action) {
-  const expected = await api(`/issues/${number}`);
-  const target = validateIssueTransition(expected, action);
-  await replaceIssueState({
-    number,
-    expected,
-    target,
-    context: "Triage",
-    load: issue => api(`/issues/${issue}`),
-    patch: (issue, labels) => api(`/issues/${issue}`, {
-      method: "PATCH",
-      body: JSON.stringify({ labels }),
-    }),
-  });
+function transitionIssue(number, action) {
+  return transitionIssueState({ api: request, number, action, context: "Triage" });
 }
 
 
