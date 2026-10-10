@@ -167,7 +167,7 @@ export function forcePiProviderBaseUrl(model, env = process.env) {
   overrideProviderBaseUrl(model, env);
 }
 
-async function verifyModelIsLoaded(baseUrl, expectedId) {
+export async function verifyModelIsLoaded(baseUrl, expectedId) {
   const url = new URL('models', baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`);
   let res;
   try {

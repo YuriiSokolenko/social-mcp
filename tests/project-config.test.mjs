@@ -108,3 +108,27 @@ test('package-root canonical roots reject unsafe paths and typos when validated 
     /does not identify an existing directory: scr/,
   );
 });
+
+
+test('swift is an explicit catalog model and the versioned default', () => {
+  const choices = projectConfig().model.choices;
+  assert.equal(choices.swift.id, 'swift-1.5-qwen3.8-flash-next');
+  assert.equal(choices.qwen.id, 'Qwen3.8-Flash-Next-NVFP4');
+  assert.equal(choices.laguna.id, 'laguna-s-2.1-gguf');
+  assert.equal(fs.readFileSync('.pi/default-model', 'utf8').trim(), 'swift');
+});
+
+test('every manually selectable model workflow offers exactly default plus the catalog', () => {
+  const expected = ['default', ...Object.keys(projectConfig().model.choices)].sort();
+  const files = fs.readdirSync('.github/workflows').filter(name => /^pi-.*\.yml$/.test(name));
+  let checked = 0;
+  for (const name of files) {
+    const text = fs.readFileSync(path.join('.github/workflows', name), 'utf8');
+    const block = text.match(/\n {6}model:\n(?: {8}.*\n)+/);
+    if (!block) continue;
+    const options = [...block[0].matchAll(/\n {10}- ([a-z0-9._-]+)/g)].map(match => match[1]).sort();
+    assert.deepEqual(options, expected, `${name} model choices drifted from .agent-harness.json`);
+    checked += 1;
+  }
+  assert.equal(checked, 6, 'expected six Pi workflows with a manual model choice');
+});

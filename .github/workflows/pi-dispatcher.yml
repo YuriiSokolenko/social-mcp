@@ -13,6 +13,7 @@ on:
           - default
           - laguna
           - qwen
+          - swift
   issues:
     types: [labeled, closed]
 

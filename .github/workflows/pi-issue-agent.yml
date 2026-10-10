@@ -33,6 +33,7 @@ on:
           - default
           - laguna
           - qwen
+          - swift
 
 permissions:
   actions: write

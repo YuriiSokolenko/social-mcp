@@ -1022,3 +1022,28 @@ test('review workflow and reconciler cover missing step outputs and whole-workfl
   assert.match(reconciler, /const needsFix = labels\.has\(REVIEW_CHANGES_REQUESTED\);[\s\S]*?workflowFile\(needsFix \? 'repair' : 'reviewer'\)/);
   assert.match(reconciler, /add: needsFix \? REVIEW_CHANGES_REQUESTED : 'unreviewed'/);
 });
+
+
+test('a swift review run keeps its catalog model through the durable record and retry', async () => {
+  const client = fakeClient();
+  const recorded = await recordReviewRun({
+    prNumber: 7, reviewedHead: 'head-1', runId: '601', runAttempt: 1,
+    runUrl: 'https://github.test/runs/601', model: 'swift',
+  }, client);
+  assert.deepEqual(recorded, { status: 'recorded', reviewedHead: 'head-1', model: 'swift' });
+  await markReviewStarted({ prNumber: 7, reviewedHead: 'head-1', runId: '601', runAttempt: 1 }, client);
+  const result = await recoverReviewWorkflowRun({
+    displayTitle: '🔬 Review PR #7', runId: '601', runAttempt: 1, outcome: 'cancelled',
+    runUrl: 'https://github.test/runs/601',
+  }, client);
+  assert.deepEqual(result, { status: 'retry-dispatched' });
+  assert.deepEqual(client.state.dispatches, [{ workflow: 'pi-pr-review.yml', inputs: { pr_number: '7', model: 'swift' } }]);
+});
+
+test('a model alias outside the catalog is recorded as default, never passed through', async () => {
+  const client = fakeClient();
+  const recorded = await recordReviewRun({
+    prNumber: 7, reviewedHead: 'head-1', runId: '602', runAttempt: 1, model: 'not-a-model',
+  }, client);
+  assert.deepEqual(recorded, { status: 'recorded', reviewedHead: 'head-1', model: 'default' });
+});

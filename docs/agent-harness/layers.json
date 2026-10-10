@@ -238,6 +238,7 @@
         "infra/github-runner-autoscaler/manager.sh",
         "infra/github-runner-autoscaler/model-status-samples/tensorfold-2026-10-10.md",
         "infra/github-runner-autoscaler/patch-pi-mcp-adapter.mjs",
+        "infra/github-runner-autoscaler/pi-models-add-swift.py",
         "infra/github-runner-autoscaler/patch-pi-subagents-planner-terminal.mjs",
         "infra/github-runner-autoscaler/run-check-executor.mjs",
         "infra/github-runner-autoscaler/run-check-sandbox-exec.py",
