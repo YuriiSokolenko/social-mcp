@@ -57,7 +57,7 @@ const requestFields = info => ({
 });
 function onRequest(info) {
   if (info.event === 'start') {
-    pending.set(info.id, { ...requestFields(info), started: performance.now(), warned: false });
+    pending.set(info.id, { ...info, started: performance.now(), warned: false });
     return;
   }
   const record = pending.get(info.id);
