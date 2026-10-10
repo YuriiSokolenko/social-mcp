@@ -125,7 +125,7 @@ test('architect and reconciler contain no removed terminal-state machinery', () 
 test('reconciler may recover a lost PASS-to-merge-gate handoff without becoming the normal scheduler', () => {
   const reconcile = readScript('scripts/pi-reconcile.mjs', 'utf8');
   assert.match(reconcile, /passed-pr-needs-merge-gate/);
-  assert.match(reconcile, /bestEffortDispatch\(0,\s*'dispatch-merge-gate',[\s\S]*?workflowFile\('mergeGate'\)/);
+  assert.match(reconcile, /bestEffortDispatch\(0,\s*'dispatch-merge-gate',\s*'pi-auto-merge\.yml'/);
   assert.match(reconcile, /RECOVERY_GRACE_MS = 10 \* 60 \* 1000/);
 });
 
