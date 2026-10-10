@@ -242,6 +242,8 @@ model_start_capacity() {
     printf '%s unknown %s\n' "$MODEL_MAX_CONCURRENCY" "$available"
     return 0
   fi
+  # Exit 1: endpoint unreachable/HTTP error. Exit 2: response reached but invalid
+  # or unrecognized. Either way the caller defers new runners (fail closed).
   status="$(curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 5 "$MODEL_STATUS_URL")" || return 1
   case "$MODEL_STATUS_URL" in
     */slots|*/slots\?*)
@@ -256,30 +258,40 @@ model_start_capacity() {
           | ($total - (if $active > $busy then $active else $busy end)) as $capacity
           | [$total, $busy, (if $capacity > 0 then $capacity else 0 end)] | @tsv
         end
-      '
+      ' || return 2
       ;;
     *)
+      # Prometheus /metrics. vLLM exports vllm:num_requests_{running,waiting};
+      # TensorFold exports the same gauges as tensorfold:num_requests_* ("a mirror
+      # of tensorfold:requests_*"). Only the num_requests_* names are read, so the
+      # tensorfold:requests_* duplicates are never double counted. TensorFold must
+      # report both gauges; a partial sample is invalid. vLLM keeps its historical
+      # rule (waiting is required, running defaults to 0).
       metrics="$(printf '%s\n' "$status" | awk '
-    /^vllm:num_requests_running(\{[^}]*\})?[[:space:]]/ {
+    /^(vllm|tensorfold):num_requests_(running|waiting)(\{[^}]*\})?[[:space:]]/ {
       value = $NF
       if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
-      running += value
+      split($1, name, ":")
+      provider = name[1]
+      providers[provider] = 1
+      if ($1 ~ /num_requests_running/) { running += value; seen[provider, "running"] = 1 }
+      else { total += value; seen[provider, "waiting"] = 1 }
     }
-    /^vllm:num_requests_waiting(\{[^}]*\})?[[:space:]]/ {
-      value = $NF
-      if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
-      total += value
-      found = 1
+    END {
+      count = 0
+      for (p in providers) { count++; detected = p }
+      if (count != 1 || !seen[detected, "waiting"]) exit 2
+      if (detected == "tensorfold" && !seen[detected, "running"]) exit 2
+      printf "%d %d %s\n", running, total, detected
     }
-    END { if (!found) exit 2; printf "%d %d\n", running, total }
-      ')" || return 1
-      read -r busy waiting <<< "$metrics"
+      ')" || return 2
+      read -r busy waiting provider <<< "$metrics"
       if awk -v waiting="$waiting" 'BEGIN { exit !(waiting > 0) }'; then
-        printf '%s %s 0\n' "$MODEL_MAX_CONCURRENCY" "$busy"
+        printf '%s %s 0 %s\n' "$MODEL_MAX_CONCURRENCY" "$busy" "$provider"
       else
         available=$((MODEL_MAX_CONCURRENCY - (active > busy ? active : busy)))
         [ "$available" -gt 0 ] || available=0
-        printf '%s %s %s\n' "$MODEL_MAX_CONCURRENCY" "$busy" "$available"
+        printf '%s %s %s %s\n' "$MODEL_MAX_CONCURRENCY" "$busy" "$available" "$provider"
       fi
       ;;
   esac
@@ -287,6 +299,9 @@ model_start_capacity() {
 
 # Set once the configured sandbox image and trusted executor have passed real checks.
 RUN_CHECK_SANDBOX_VERIFIED=false
+# Last model-status problem and detected provider; warnings are logged only on change.
+MODEL_STATUS_PROBLEM=""
+MODEL_STATUS_PROVIDER=""
 verify_run_check_sandbox() {
   local image_id probe
   if [ "$RUN_CHECK_SANDBOX_VERIFIED" != true ]; then
@@ -563,12 +578,28 @@ main() {
     fi
 
     if snapshot="$(model_start_capacity "$active")"; then
-      read -r model_total model_busy available <<< "$snapshot"
+      read -r model_total model_busy available model_provider <<< "$snapshot"
+      model_provider="${model_provider:-llama.cpp-slots}"
+      if [ -n "$MODEL_STATUS_PROBLEM" ]; then
+        log "model status recovered (provider=$model_provider); new runners allowed again"
+      elif [ "$model_provider" != "$MODEL_STATUS_PROVIDER" ]; then
+        log "model status provider detected: $model_provider"
+      fi
+      MODEL_STATUS_PROBLEM=""
+      MODEL_STATUS_PROVIDER="$model_provider"
     else
+      case "$?" in
+        1) problem="unreachable" ;;
+        *) problem="invalid or unrecognized response" ;;
+      esac
       model_total=unknown
       model_busy=unknown
       available=0
-      log "warning: model status unavailable or invalid; delaying new runners"
+      # Log the cause once per state change; every poll still reports model_capacity=0 below.
+      if [ "$problem" != "$MODEL_STATUS_PROBLEM" ]; then
+        log "warning: model status $problem; delaying new runners until a valid sample"
+        MODEL_STATUS_PROBLEM="$problem"
+      fi
     fi
 
     to_start=0

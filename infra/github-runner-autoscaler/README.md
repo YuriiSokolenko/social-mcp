@@ -447,10 +447,37 @@ It also counts any occupied slots beyond those reservations as other load.
 The server does not identify which client owns a slot, so this is an estimate.
 Each manager poll logs `model_slots_total`, `model_slots_busy`, and
 `model_capacity` (new runner places after reserving active runners), including
-when no GitHub work is queued. The vLLM `/metrics` endpoint does not expose a
-fixed slot total, so those first two fields are `unknown` for vLLM.
-The local `MAX_RUNNERS` still limits the number of workers. For vLLM, point
-to `/metrics`; a waiting-request backlog defers new runners. An unavailable
+when no GitHub work is queued. A Prometheus `/metrics` endpoint (vLLM or
+tensorfold) does not expose a fixed slot total, so `model_slots_total` reports
+`MODEL_MAX_CONCURRENCY` there. The local `MAX_RUNNERS` still limits the number
+of workers. For vLLM or tensorfold, point to `/metrics`: the manager reads
+`vllm:num_requests_running|waiting` or `tensorfold:num_requests_running|waiting`,
+and a waiting-request backlog defers new runners. Any other metrics format is
+treated as invalid and defers all Pi runners.
+
+The provider is detected from the response, not configured: a `/slots` URL is
+llama.cpp, and a `/metrics` response with `vllm:` or `tensorfold:` gauges is
+that provider. TensorFold must report both `num_requests_running` and
+`num_requests_waiting`. The original `tensorfold:requests_*` gauges they mirror
+are ignored, so nothing is double counted. A real sample with field semantics
+is in
+[`model-status-samples/tensorfold-2026-10-10.md`](model-status-samples/tensorfold-2026-10-10.md).
+TensorFold `/health` `streams.max` is the model server's inference-stream
+count, not a Pi job limit, and is not read.
+
+Diagnostics:
+- `model status provider detected: <provider>` is logged on the first valid
+  sample and whenever the provider changes.
+- `warning: model status unreachable; …` means an HTTP or connection failure.
+- `warning: model status invalid or unrecognized response; …` means a
+  missing, partial, non-numeric, negative or mixed-provider sample, or an
+  unknown format.
+- Each warning is logged once per state change, not on every poll. The
+  per-poll status line still shows `model_capacity=0` while the problem lasts.
+- `model status recovered (provider=…)` marks the first valid sample after a
+  problem.
+- Capacity is `MODEL_MAX_CONCURRENCY - max(active runners, running
+  requests)`, floored at 0, and 0 while any request is waiting. An unavailable
 endpoint or invalid status defers new runners and logs a warning. An unset URL
 preserves the previous queue-only behavior. Recreate the manager after changing
 the URL or switching model servers.
