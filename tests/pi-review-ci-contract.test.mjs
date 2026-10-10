@@ -1468,7 +1468,11 @@ test('implementer action-required aborts keep defensive execution-failure proven
   const runtime = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   const guide = fs.readFileSync('docs/CI_RULES.md', 'utf8');
 
-  assert.match(runtime, /tool_choice: 'required'/);
+  // #741 moved the pure wire decision out of the runtime while keeping the
+  // Main/Coding runtime import and the authoritative required-choice policy.
+  const wirePolicy = readScript('scripts/pi-common/provider-wire-policy.mjs', 'utf8');
+  assert.match(runtime, /provider-wire-policy\\.mjs/);
+  assert.match(wirePolicy, /tool_choice: 'required'/);
   assert.match(runtime, /PI_IMPLEMENTER_PROVIDER_WIRE/);
   assert.match(runtime, /PI_PROVIDER_TOOL_CHOICE_CONTRACT_VIOLATION/);
   assert.match(runtime, /PI_ACTION_REQUIRED_TOOL_CHOICE_SATISFIED/);
