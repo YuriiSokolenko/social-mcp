@@ -81,9 +81,9 @@ test('#756 mutation text extent measures the largest matching field, not aggrega
 
   assert.deepEqual(
     mutationTextExtent({ path: '/tmp/a.py', metadata: { explanation: 'ignored' }, edit: {
-      old_text: 'ab\nc', new_text: 'longer', extra: { insert: '1\n2\n3\n4' },
+      old_text: 'ab\nc', new_text: 'longer than', extra: { insert: '1\n2\n3\n4' },
     } }),
-    { chars: 6, lines: 4 },
+    { chars: 11, lines: 4 },
     'the independent maxima may come from different fields',
   );
   assert.deepEqual(
