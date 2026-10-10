@@ -661,7 +661,16 @@ test('runtime-owned preparation uses one plain-text planner and harness-owned st
   assert.match(runtime, /pi\.setActiveTools/);
   assert.match(runtime, /actionRequiredToolNames/);
   assert.match(runtime, /pi\.sendUserMessage/);
-  assert.match(runtime, /maxTokens: appliedActionCap \|\| controller\.fixedMaxTokens/);
+  // #741: PI_BUDGET's precedence moved to the pure telemetry helper.
+  // Verify that the runtime supplies live controller values and that the
+  // helper retains the previous action > fixed > level fallback.
+  const budgetTelemetry = readScript('scripts/pi-common/runtime-budget-telemetry.mjs', 'utf8');
+  assert.match(runtime, /turnStartBudgetTelemetry\\(\\{/);
+  assert.match(runtime, /fixedMaxTokens: controller\\.fixedMaxTokens/);
+  assert.match(runtime, /levelMaxTokens: controller\\.budgets\\[controller\\.turnLevel\\]/);
+  assert.match(runtime, /appliedActionCap,/);
+  assert.match(budgetTelemetry, /maxTokens: activeResponseCeiling\\(appliedActionCap, fixedMaxTokens, levelMaxTokens\\)/);
+  assert.match(budgetTelemetry, /return appliedActionCap \\|\\| fixedMaxTokens \\|\\| levelMaxTokens;/);
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
   assert.match(bootstrapPlanner, /Preparation complete; start from the Planner handoff below/);
