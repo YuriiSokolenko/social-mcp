@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Fail when a control-plane wake waits too long for n150-control
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const thresholdMs = 10 * 60 * 1000;

@@ -236,7 +236,7 @@ test('automation mode transitions run on the always-on control lane without a mo
 
 test('usage collector checks out trusted dev without persisting its write token', () => {
   const workflow = fs.readFileSync('.github/workflows/pi-usage.yml', 'utf8');
-  assert.match(workflow, /uses: actions\/checkout@v5\n\s+with:\n\s+ref: dev\n\s+persist-credentials: false/);
+  assert.match(workflow, /uses: actions\/checkout@v7\n\s+with:\n\s+ref: dev\n\s+persist-credentials: false/);
 });
 
 test('control runner watchdog monitors both post-dev and PR terminal wake lanes', async () => {
@@ -1289,7 +1289,7 @@ test('failed independent reviews persist recovery state, retry once, and retain 
   const workflow = fs.readFileSync('.github/workflows/pi-pr-review.yml', 'utf8');
   const state = readScript('scripts/pi-common/review-state.mjs', 'utf8');
   assert.match(workflow, /id: independent[\s\S]*?continue-on-error: true/);
-  assert.match(workflow, /name: Preserve reviewer trace\n\s+if: always\(\)[\s\S]*?actions\/upload-artifact@v4[\s\S]*?pi-review-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\.jsonl/);
+  assert.match(workflow, /name: Preserve reviewer trace\n\s+if: always\(\)[\s\S]*?actions\/upload-artifact@v7[\s\S]*?pi-review-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\.jsonl/);
   assert.doesNotMatch(workflow, /recover_failed_review:/);
   assert.match(workflow, /name: Fail job after independent review infrastructure failure[\s\S]*?workflow_run recovery owns the bounded retry/);
   assert.doesNotMatch(workflow, /recover-failure "\$PR" "\$HEAD_SHA" "\$GITHUB_RUN_ID"/);

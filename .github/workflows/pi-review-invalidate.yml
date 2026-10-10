@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Checkout trusted dev
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           ref: dev

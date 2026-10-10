@@ -11,10 +11,10 @@ readonly BUILDX_TARGET='0.38.0-1~ubuntu.26.04~resolute'
 readonly COMPOSE_TARGET='5.6.0-1~ubuntu.26.04~resolute'
 readonly BUILDX_PREVIOUS='0.34.1-1~ubuntu.26.04~resolute'
 readonly COMPOSE_PREVIOUS='5.1.4-1~ubuntu.26.04~resolute'
-readonly CLI_VERSION='29.8.2'
-readonly CLI_URL='https://download.docker.com/linux/static/stable/x86_64/docker-29.8.2.tgz'
-readonly CLI_SHA256='995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f'
-readonly CLI_ROOT='/usr/local/lib/docker-cli/29.8.2'
+readonly CLI_VERSION='29.9.0'
+readonly CLI_URL='https://download.docker.com/linux/static/stable/x86_64/docker-29.9.0.tgz'
+readonly CLI_SHA256='33e1ab8b63d14bca449f7a3d30d7f6aa669daa544e60a86b17fec87f61afe2b4'
+readonly CLI_ROOT='/usr/local/lib/docker-cli/29.9.0'
 readonly CLI_BINARY="$CLI_ROOT/docker"
 readonly CLI_LINK='/usr/local/bin/docker'
 
@@ -40,7 +40,7 @@ secure_root_directory() {
 }
 
 verify_installed_versions() {
-  [[ "$(docker --version)" == 'Docker version 29.8.2,'* ]] || return 1
+  [[ "$(docker --version)" == 'Docker version 29.9.0,'* ]] || return 1
   [[ "$(package_version "$BUILDX_PACKAGE")" == "$BUILDX_TARGET" ]] || return 1
   [[ "$(package_version "$COMPOSE_PACKAGE")" == "$COMPOSE_TARGET" ]] || return 1
   [[ "$(docker buildx version)" == *'v0.38.0'* ]] || return 1
@@ -146,7 +146,7 @@ fi
 
 printf '%s\n' \
   'N150 Docker client upgrade plan:' \
-  '  - Install Docker CLI 29.8.2 from the official static archive after SHA-256 verification.' \
+  '  - Install Docker CLI 29.9.0 from the official static archive after SHA-256 verification.' \
   '  - Upgrade only Buildx and Compose to their exact Ubuntu package versions.' \
   '  - Save verified packages, checksums, and rollback metadata under /var/backups.' \
   '  - Do not upgrade Docker Engine, restart the daemon, stop containers, or remove images/volumes.'
@@ -174,7 +174,7 @@ PATH_DOCKER="$(command -v docker)"
 PREVIOUS_CLI_EFFECTIVE="$(readlink -f -- "$PATH_DOCKER")"
 [[ -n "$PREVIOUS_CLI_EFFECTIVE" && -f "$PREVIOUS_CLI_EFFECTIVE" && -x "$PREVIOUS_CLI_EFFECTIVE" ]] || die 'Docker executable resolution failed'
 PREVIOUS_CLI_VERSION="$("$PATH_DOCKER" --version)"
-[[ "$PREVIOUS_CLI_VERSION" == 'Docker version 29.5.3,'* || "$PREVIOUS_CLI_VERSION" == 'Docker version 29.8.2,'* ]] || die "unexpected effective Docker CLI: $PREVIOUS_CLI_VERSION"
+[[ "$PREVIOUS_CLI_VERSION" == 'Docker version 29.5.3,'* || "$PREVIOUS_CLI_VERSION" == 'Docker version 29.8.2,'* || "$PREVIOUS_CLI_VERSION" == 'Docker version 29.9.0,'* ]] || die "unexpected effective Docker CLI: $PREVIOUS_CLI_VERSION"
 [[ "$PATH_DOCKER" == "$CLI_LINK" || "$PATH_DOCKER" == /usr/bin/docker ]] || die "ambiguous Docker command path: $PATH_DOCKER"
 docker info >/dev/null 2>&1 || die 'Docker daemon is unavailable'
 
@@ -193,7 +193,7 @@ done
 if [[ -e /usr/local/lib/docker-cli ]]; then secure_root_directory /usr/local/lib/docker-cli || die 'unsafe /usr/local/lib/docker-cli directory'; fi
 if [[ -e "$CLI_ROOT" ]]; then secure_root_directory "$CLI_ROOT" || die "unsafe CLI directory: $CLI_ROOT"; fi
 if [[ -e "$CLI_BINARY" ]]; then
-  [[ ! -L "$CLI_BINARY" && -x "$CLI_BINARY" && "$("$CLI_BINARY" --version)" == 'Docker version 29.8.2,'* ]] || die "unexpected existing CLI path: $CLI_BINARY"
+  [[ ! -L "$CLI_BINARY" && -x "$CLI_BINARY" && "$("$CLI_BINARY" --version)" == 'Docker version 29.9.0,'* ]] || die "unexpected existing CLI path: $CLI_BINARY"
   [[ "$(stat -c '%u' -- "$CLI_BINARY")" == 0 ]] || die "$CLI_BINARY is not owned by root"
   [[ $(( 8#$(stat -c '%a' -- "$CLI_BINARY") & 0022 )) -eq 0 ]] || die "$CLI_BINARY is writable by non-root users"
   CLI_BINARY_PREEXISTING=yes
@@ -234,7 +234,7 @@ if [[ -d "$BACKUP_ROOT" ]]; then
 fi
 
 if [[ "$current_buildx" == "$BUILDX_TARGET" && "$current_compose" == "$COMPOSE_TARGET" \
-  && "$PREVIOUS_CLI_VERSION" == 'Docker version 29.8.2,'* && "$PATH_DOCKER" == "$CLI_LINK" ]]; then
+  && "$PREVIOUS_CLI_VERSION" == 'Docker version 29.9.0,'* && "$PATH_DOCKER" == "$CLI_LINK" ]]; then
   verify_installed_versions || die 'installed target versions or daemon health could not be verified'
   printf 'Already at target versions; no changes made.\n'
   exit 0

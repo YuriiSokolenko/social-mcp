@@ -425,7 +425,7 @@ test('Implementer workflow uploads the stage-named temporary trace after failed 
   const docs = readFileSync(fileURLToPath(new URL('../docs/pi-model-traces.md', import.meta.url)), 'utf8');
   const proxySource = readFileSync(fileURLToPath(new URL('../scripts/pi-common/model-trace-proxy.mjs', import.meta.url)), 'utf8');
   assert.match(upload, /if: always\(\)/);
-  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /uses: actions\/upload-artifact@v7/);
   assert.match(upload, /if-no-files-found: ignore/);
   assert.match(upload, /name: pi-model-trace-implementer-\$\{\{ inputs\.issue_number \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
   assert.match(upload, /retention-days: 7/);

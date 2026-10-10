@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           # Pull-request checkout is the synthetic merge commit. The acceptance
@@ -44,7 +44,7 @@ jobs:
         run: |
           python --version
           python -m pip --version
-          python -m pip install -e . pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
+          python -m pip install -e . pytest==9.1.1 pytest-asyncio==1.4.0 ruff==0.17.0 PyYAML==6.0.3
 
       - name: Ruff
         run: ruff check --config "$GITHUB_WORKSPACE/pyproject.toml" .
@@ -61,7 +61,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -76,7 +76,7 @@ jobs:
         run: |
           python --version
           python -m pip --version
-          python -m pip install pytest pytest-asyncio ruff==0.12.12 "PyYAML>=6,<7"
+          python -m pip install pytest==9.1.1 pytest-asyncio==1.4.0 ruff==0.17.0 PyYAML==6.0.3
 
       - name: Harness Python checks
         # --noconftest: tests/conftest.py is product-owned and imports the product package.
@@ -114,7 +114,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -122,11 +122,11 @@ jobs:
         run: |
           mkdir -p "$DOCKER_CONFIG"
           if ! docker buildx version >/dev/null 2>&1; then
-            version=0.37.1
+            version=0.38.0
             package="docker-buildx-plugin_${version}-1~ubuntu.24.04~noble_amd64.deb"
             url="https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/${package}"
             curl -fsSL "$url" -o "/tmp/$package"
-            echo '3c398af6eea280ddb57f32334d83867efd2bf07c4bc1be75fbd0a61c490ea925  /tmp/'"$package" | sha256sum --check --status
+            echo '7094f8b50bc6b239292d475620424a531f7fa0763e466c52ffc3a4037e72bfc5  /tmp/'"$package" | sha256sum --check --status
             sudo apt-get install --yes "/tmp/$package"
           fi
           docker buildx version
@@ -195,7 +195,7 @@ jobs:
             const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
             fs.accessSync(root + "/lsp-mcp-server/dist/index.js");
             const extensionRoot = "/opt/pi-package-seed/npm/node_modules";
-            for (const [name, version] of [["pi-mcp-adapter", "5.1.0"], ["pi-subagents", "0.76.1"]]) {
+            for (const [name, version] of [["pi-mcp-adapter", "5.2.0"], ["pi-subagents", "0.76.1"]]) {
               const metadata = JSON.parse(fs.readFileSync(`${extensionRoot}/${name}/package.json`, "utf8"));
               if (metadata.version !== version) throw new Error(`${name} version mismatch: ${metadata.version}`);
               if (name === "pi-mcp-adapter" && !metadata.peerDependencies["@earendil-works/pi-ai"].includes("^1.1.0")) {
@@ -323,7 +323,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -331,11 +331,11 @@ jobs:
         run: |
           mkdir -p "$DOCKER_CONFIG"
           if ! docker buildx version >/dev/null 2>&1; then
-            version=0.37.1
+            version=0.38.0
             package="docker-buildx-plugin_${version}-1~ubuntu.24.04~noble_amd64.deb"
             url="https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/${package}"
             curl -fsSL "$url" -o "/tmp/$package"
-            echo '3c398af6eea280ddb57f32334d83867efd2bf07c4bc1be75fbd0a61c490ea925  /tmp/'"$package" | sha256sum --check --status
+            echo '7094f8b50bc6b239292d475620424a531f7fa0763e466c52ffc3a4037e72bfc5  /tmp/'"$package" | sha256sum --check --status
             sudo apt-get install --yes "/tmp/$package"
           fi
           docker buildx version
@@ -398,7 +398,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Checkout trusted control repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           ref: dev

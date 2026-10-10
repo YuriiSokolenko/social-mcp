@@ -38,7 +38,7 @@ jobs:
       PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
     steps:
       - name: Checkout trusted control repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -87,7 +87,7 @@ jobs:
 
       - name: Upload sanitized runtime diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pi-diagnostics-repair-${{ inputs.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-diagnostics-repair-${{ github.run_id }}-${{ github.run_attempt }}.jsonl

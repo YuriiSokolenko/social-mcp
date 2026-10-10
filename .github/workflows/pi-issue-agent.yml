@@ -57,7 +57,7 @@ jobs:
 
     steps:
       - name: Checkout dev control repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: dev
           fetch-depth: 0
@@ -304,7 +304,7 @@ jobs:
 
       - name: Upload model request and response trace
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pi-model-trace-implementer-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-model-trace-implementer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
@@ -313,7 +313,7 @@ jobs:
 
       - name: Upload sanitized runtime diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pi-diagnostics-implementer-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-diagnostics-implementer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl

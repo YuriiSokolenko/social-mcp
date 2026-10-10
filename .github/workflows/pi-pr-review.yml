@@ -43,7 +43,7 @@ jobs:
       PI_MODEL_CHOICE: ${{ inputs.model || 'default' }}
     steps:
       - name: Checkout trusted control repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -152,7 +152,7 @@ jobs:
 
       - name: Preserve reviewer trace
         if: always() && steps.load.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reviewer-trace-pr-${{ inputs.pr_number }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-review-${{ github.run_id }}-${{ github.run_attempt }}.jsonl
@@ -210,7 +210,7 @@ jobs:
 
       - name: Upload sanitized runtime diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pi-diagnostics-reviewer-${{ inputs.pr_number || github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pi-diagnostics-reviewer-${{ github.run_id }}-${{ github.run_attempt }}.jsonl

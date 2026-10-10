@@ -5,8 +5,8 @@ const [metadataPath] = process.argv.slice(2);
 if (!metadataPath) throw new Error('Usage: patch-pi-mcp-adapter.mjs <package.json>');
 
 const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-if (metadata.name !== 'pi-mcp-adapter' || metadata.version !== '5.1.0') {
-  throw new Error(`Expected pi-mcp-adapter@5.1.0; found ${metadata.name}@${metadata.version}`);
+if (metadata.name !== 'pi-mcp-adapter' || metadata.version !== '5.2.0') {
+  throw new Error(`Expected pi-mcp-adapter@5.2.0; found ${metadata.name}@${metadata.version}`);
 }
 
 const peer = metadata.peerDependencies?.['@earendil-works/pi-ai'];

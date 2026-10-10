@@ -25,7 +25,7 @@ jobs:
     runs-on: [self-hosted, n150, control]
     steps:
       - name: Checkout trusted control repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           ref: dev
