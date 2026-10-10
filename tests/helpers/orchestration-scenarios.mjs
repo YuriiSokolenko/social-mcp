@@ -195,11 +195,16 @@ export function reviewerStarted(gh, pr, head, runId, attempt = '1') {
   return { recorded, started };
 }
 
+/** The Reviewer's "apply verdict" step for one run identity; safe to call again for a re-run step. */
+export function reviewerApply(gh, pr, head, verdict, runId, attempt = '1') {
+  const text = gh.file('review.md', `REVIEW_RESULT: ${verdict}\n\nFixture review for ${head}.`);
+  return lastJson(ok(gh.run(SCRIPT.review, ['apply', String(pr), head, verdict, text], { env: reviewEnv(head, runId, attempt) }), 'review apply'));
+}
+
 /** Reviewer publication: apply the verdict to the reviewed HEAD, then hand off. */
 export function reviewerVerdict(gh, pr, head, verdict, runId, attempt = '1') {
   const env = reviewEnv(head, runId, attempt);
-  const text = gh.file('review.md', `REVIEW_RESULT: ${verdict}\n\nFixture review for ${head}.`);
-  const applied = lastJson(ok(gh.run(SCRIPT.review, ['apply', String(pr), head, verdict, text], { env }), 'review apply'));
+  const applied = reviewerApply(gh, pr, head, verdict, runId, attempt);
   const followup = lastJson(ok(gh.run(SCRIPT.review, ['dispatch', String(pr), verdict], { env }), 'review dispatch'));
   return { applied, followup };
 }
@@ -250,9 +255,16 @@ export async function happyPath(t, { root } = {}) {
   assert.equal(pr.head.ref, 'pi/issue-10');
   assert.match(pr.body, /Closes #10\b/);
   assert.deepEqual(gh.labelsOf(prNumber), [], 'a verified sandboxed candidate is not gated');
-  // A retried publication step (e.g. after a later step failed) updates the same PR.
+  // A retried publication step (e.g. after a later step failed) has two separate guarantees:
+  // (1) it never opens a second PR, and (2) its only write is refreshing the same PR's
+  // title and body to identical content. It is idempotent in outcome, not write-free.
+  const published_ = gh.read().pulls[prNumber];
+  let before = gh.mark();
   assert.equal(lastJson(ok(candidate.publish(), 'PR re-publication')).number, prNumber);
-  assert.equal(gh.read().requests.filter(request => request.method === 'POST' && request.path === '/pulls').length, 1);
+  assert.equal(gh.read().requests.filter(request => request.method === 'POST' && request.path === '/pulls').length, 1, 'no second PR');
+  assert.deepEqual(gh.mutationsSince(before), [{ method: 'PATCH', path: `/pulls/${prNumber}`, status: 200 }], 'only the same-PR refresh is written');
+  assert.equal(gh.read().pulls[prNumber].title, published_.title);
+  assert.equal(gh.read().pulls[prNumber].body, published_.body);
   ok(transition(gh, 10, 'mr-created', 'Opened the implementation PR.'), 'mr-created');
   assert.deepEqual(gh.labelsOf(10), ['pi:mr-created']);
   ok(gh.run(SCRIPT.publication, ['review', String(prNumber)]), 'reviewer dispatch');
@@ -269,9 +281,14 @@ export async function happyPath(t, { root } = {}) {
   assert.deepEqual(review.applied, { status: 'applied', verdict: 'PASS' });
   assert.deepEqual(review.followup, { status: 'followup-dispatched', verdict: 'PASS' });
   assert.deepEqual(gh.labelsOf(prNumber), ['review:passed']);
+  // A re-run of the apply step for the same HEAD and run identity writes nothing.
+  before = gh.mark();
+  assert.deepEqual(reviewerApply(gh, prNumber, candidate.head, 'PASS', 7001), { status: 'already-applied', verdict: 'PASS' });
+  assert.deepEqual(gh.mutationsSince(before), [], 'a repeated verdict apply must not write');
+  assert.equal(gh.read().comments.filter(item => item.body.includes(`pi-review:verdict:${candidate.head}:PASS:run:7001:`)).length, 1);
 
   // Merge Gate without PR CI for the reviewed HEAD waits and changes nothing.
-  let before = gh.mark();
+  before = gh.mark();
   ok(gh.run(SCRIPT.mergeGate), 'Merge Gate (CI pending)');
   assert.deepEqual(gh.mutationsSince(before), []);
 
@@ -299,7 +316,12 @@ export async function happyPath(t, { root } = {}) {
   ok(triage(gh).apply, 'Triage re-run');
   assert.deepEqual(dispatcherPrepare(gh).candidates, []);
   ok(dispatcherApply(gh, []), 'Dispatcher re-run');
+  const claim = join(gh.dir, 'claim-output');
+  writeFileSync(claim, '');
+  ok(transition(gh, 10, 'running', '', { GITHUB_OUTPUT: claim }), 'late Implementer claim');
+  assert.match(readFileSync(claim, 'utf8'), /terminal=true/, 'a re-dispatched Implementer stops before any work');
   ok(transition(gh, 10, 'mr-created'), 'late mr-created');
+  assert.deepEqual(reviewerApply(gh, prNumber, candidate.head, 'PASS', 7001), { status: 'already-applied', verdict: 'PASS' });
   assert.deepEqual(lastJson(ok(gh.run(SCRIPT.review, ['dispatch', String(prNumber), 'PASS'], { env: reviewEnv(candidate.head, 7001) }))),
     { status: 'followup-already-dispatched', verdict: 'PASS' });
   ok(gh.run(SCRIPT.mergeGate), 'Merge Gate re-run');

@@ -57,6 +57,13 @@ const MUTANTS = [
     scenario: 'staleHead',
   },
   {
+    stage: 'Reviewer', regression: 'duplicate publication: a re-run apply step posts the verdict comment again',
+    file: 'scripts/pi-common/review-state.mjs',
+    from: "if (comments.some(item => String(item.body ?? '').includes(marker))) return { status: 'already-applied', verdict };",
+    to: "if (false) return { status: 'already-applied', verdict };",
+    scenario: 'happyPath',
+  },
+  {
     stage: 'Reviewer recovery', regression: 'unbounded retry: a repeated interruption is retried instead of escalated',
     file: 'scripts/pi-common/review-state.mjs', from: 'if (previousFailures === 0) {', to: 'if (true) {',
     scenario: 'rebootOrphanedReviewer',

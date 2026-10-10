@@ -131,12 +131,14 @@ Every critical path in the matrix below has a behavioral test. No critical path 
 | | Provider timeout, transport error or invalid tool call inside the model session | U | `pi-run-stage`, `pi-provider-tool-*` (#658). At the orchestration boundary this appears as a missing or truncated result, which is covered as B. |
 | | Workflow step ordering: checkpoint lease, `pi:mr-created` before the Reviewer dispatch | S | `pi-control-plane-scenarios` |
 | PR publication | Verified candidate → PR whose HEAD is the candidate and whose body contains `Closes #N` | B | flow: happy path |
-| | Retried publication updates the same PR (one `POST /pulls`) | B | flow: happy path; gated states |
+| | Retried publication never opens a second PR (one `POST /pulls`) | B | flow: happy path; gated states |
+| | Retried publication writes only a refresh of the same PR's title and body, to identical content (idempotent in outcome, not write-free) | B | flow: happy path |
 | | Unverified ledger → PR gated with `pi:needs-human`; Reviewer and Merge Gate skip it | B | flow: gated states |
 | | Truncated terminal receipt → no PR | B | faults: terminal receipts |
 | | Published PR HEAD differs from the local candidate → `pi:needs-human` | U | `pi-issue-publication-gate` |
 | Reviewer | PR guard: safe PR allowed; closed or merged PR skipped; foreign or wrong-base PR refused; control-plane change → human | B | edges: PR guard; flow |
 | | PASS → `review:passed` and one Merge Gate dispatch; CHANGES_REQUESTED → PR Fix dispatch | B | flow |
+| | Re-run of the apply step for the same HEAD, verdict, run and attempt → `already-applied`, no label write, no second comment | B | flow: happy path (**production fix, see below**) |
 | | Verdict or follow-up for a stale HEAD → rejected and verdict cleared | B | flow: stale head |
 | | Duplicate run record or start, delayed invalidator, human takeover, superseded verdict | B | edges: Reviewer state; `pi-review-failure` (U) |
 | | Publication boundary: missing, invalid, foreign or stale receipt, or context not bound → exit 4; no result → exit 3 | B | edges; faults |
@@ -179,7 +181,7 @@ Lost or duplicate signals are covered by:
 - the **#698 reboot fixture**: an interrupted Reviewer, a duplicate `workflow_run` delivery, a second interruption, and an orphaned Implementer with a checkpoint;
 - a **lost Reviewer wake**;
 - **repeated Reconciler passes**;
-- a **full second pass of every stage** after the happy path, which must cause no GitHub mutation.
+- a **full second pass of every stage** after the happy path, which must cause no GitHub mutation. It includes a late Implementer claim (stops as terminal), a repeated Reviewer verdict apply and a repeated Reviewer follow-up dispatch.
 
 The #698 fixture tests the **recovery behavior that already exists** (bounded retry, then escalation). It does not prove the crash-safe mechanics that #698 will implement.
 
@@ -187,14 +189,14 @@ The #698 fixture tests the **recovery behavior that already exists** (bounded re
 
 `tests/pi-orchestration-mutants.test.mjs` breaks one production line in a temporary copy of `scripts/` and requires a named scenario to fail with an assertion. A control run checks that every scenario first passes against an unmodified copy. Each anchor must match exactly once, so refactoring a mutated line fails loudly.
 
-There are 18 mutants. They cover:
+There are 19 mutants. They cover:
 
 - Triage: an incorrect transition.
 - Dispatcher: an incorrect dispatch, and a missing rollback.
 - Compare-and-swap disabled.
 - Architect: children never exposed.
 - Publication: a duplicate PR.
-- Reviewer: a stale-head verdict accepted, and unbounded retry.
+- Reviewer: a stale-head verdict accepted, a re-run apply posting the verdict again, and unbounded retry.
 - PR Fix: a wrong-stage handoff.
 - Merge Gate: stale-head merge, unbounded infrastructure retry, and label loss before dispatch.
 - GitHub client: no request timeout.
@@ -202,6 +204,12 @@ There are 18 mutants. They cover:
 - Reconciler: missed recovery, a duplicate Reviewer while one is live, and the escaped split regex.
 - Transition: a late failure that escalates instead of completing.
 
-## Production change: interrupted Architect split recovery never ran
+## Production changes
+
+### Interrupted Architect split recovery never ran
 
 `pi-reconcile.mjs` matched split children with `/<!-- architect-children:([1-9]\\d*…)/`. Inside a regex **literal**, `\\d` matches a backslash followed by `d`, not a digit. The pattern could never match a real marker, so the Reconciler's "complete an interrupted Architect split" path was dead code. `pi-architect.mjs` and `pi-architect-plan-validator.mjs` use the correct `\d`. The fix is one line, and the Architect split scenario together with its mutant keeps it fixed.
+
+### A re-run Reviewer apply step duplicated the verdict
+
+`applyReview()` in `scripts/pi-common/review-state.mjs` always rewrote the verdict label and posted the verdict comment. A re-run of the apply step with the same HEAD and run identity therefore posted a second verdict comment, and could overwrite a newer verdict label. It now returns `{ status: 'already-applied' }` without any write when a trusted verdict marker for the same HEAD, verdict, run and attempt already exists. Labels are written before the comment, so the marker proves both were applied. The workflow treats `already-applied` like `applied`, and the follow-up dispatch has its own idempotency markers. Found in review of PR #734.

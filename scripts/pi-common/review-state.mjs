@@ -158,7 +158,7 @@ export async function invalidateReview(prNumber, expectedHead = null, client = g
 export async function applyReview({
   prNumber, reviewedHead, verdict, text, runId = null, runAttempt = null,
 }, client = githubClient()) {
-  const { loadPullRequest, replaceLabels, comment } = client;
+  const { loadPullRequest, replaceLabels, comment, pages } = client;
   const pr = await loadPullRequest(prNumber);
   const currentLabels = prLabelNames(pr);
   if (currentLabels.includes(PIPELINE_LABELS.needsHuman)) return { status: 'human' };
@@ -166,9 +166,17 @@ export async function applyReview({
     await replaceReviewLabels(prNumber);
     return { status: 'stale' };
   }
+  const marker = reviewVerdictMarker(reviewedHead, verdict, runId, runAttempt);
+  // A re-run of the same apply step (same HEAD, verdict, run and attempt) already
+  // published this verdict. Labels were written before the comment, so the marker
+  // proves both; writing again would duplicate the comment or undo a newer verdict.
+  if (runId && runAttempt) {
+    const comments = trustedReviewMarkerComments(await pages(`/issues/${prNumber}/comments`));
+    if (comments.some(item => String(item.body ?? '').includes(marker))) return { status: 'already-applied', verdict };
+  }
   const target = verdict === 'PASS' ? REVIEW_PASSED : REVIEW_CHANGES_REQUESTED;
   await replaceLabels(prNumber, withReviewVerdict(currentLabels, target));
-  await comment(prNumber, `${text}\n\n${reviewVerdictMarker(reviewedHead, verdict, runId, runAttempt)}`);
+  await comment(prNumber, `${text}\n\n${marker}`);
   return { status: 'applied', verdict };
 }
 
