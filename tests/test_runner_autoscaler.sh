@@ -748,19 +748,74 @@ STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":true},{"
 
 MODEL_STATUS_URL='http://model:3009/metrics'
 STATUS_RESPONSE=$'vllm:num_requests_running{model_name="test"} 4\nvllm:num_requests_waiting{model_name="test"} 0\n'
-[[ "$(model_start_capacity 0)" == '8 4 4' ]] || fail 'vLLM reports running requests and admits remaining model capacity'
+[[ "$(model_start_capacity 0)" == '8 4 4 vllm' ]] || fail 'vLLM reports running requests and admits remaining model capacity'
 STATUS_RESPONSE=$'vllm:num_requests_waiting{model_name="a"} 0\nvllm:num_requests_waiting{model_name="b"} 2\n'
-[[ "$(model_start_capacity 0)" == '8 0 0' ]] || fail 'vLLM backlog defers runners'
+[[ "$(model_start_capacity 0)" == '8 0 0 vllm' ]] || fail 'vLLM backlog defers runners'
 STATUS_RESPONSE='vllm:num_requests_running 0'
 assert_failure model_start_capacity 0
-# tensorfold exports the vLLM-style counters under its own prefix plus unprefixed
-# duplicates (requests_running/requests_waiting) that must not be double counted.
-STATUS_RESPONSE=$'# TYPE tensorfold:num_requests_running gauge\ntensorfold:requests_running 3\ntensorfold:requests_waiting 0\ntensorfold:num_requests_running 3\ntensorfold:num_requests_waiting 0\n'
-[[ "$(model_start_capacity 0)" == '8 3 5' ]] || fail 'tensorfold reports running requests without double counting'
-STATUS_RESPONSE=$'tensorfold:num_requests_running 1\ntensorfold:num_requests_waiting 1\n'
-[[ "$(model_start_capacity 0)" == '8 1 0' ]] || fail 'tensorfold backlog defers runners'
+
+# TensorFold (fixture shape captured from the live N150 upstream, 2026-10-10): it exports
+# tensorfold:requests_* and vLLM-style mirrors tensorfold:num_requests_*; only the mirrors count.
+TF_HEAD=$'# HELP tensorfold:requests_running Requests in prefill or decode.\n# TYPE tensorfold:requests_running gauge\n'
+tf_metrics() { printf '%stensorfold:requests_running %s\ntensorfold:requests_waiting %s\ntensorfold:prompt_tokens_total 3514\ntensorfold:num_requests_running %s\ntensorfold:num_requests_waiting %s\n' "$TF_HEAD" "$1" "$2" "$1" "$2"; }
+STATUS_RESPONSE="$(tf_metrics 0 0)"
+[[ "$(model_start_capacity 0)" == '8 0 8 tensorfold' ]] || fail 'idle TensorFold admits the configured model capacity'
+[[ "$(model_start_capacity 3)" == '8 0 5 tensorfold' ]] || fail 'active Pi jobs stay reserved while TensorFold is momentarily idle'
+STATUS_RESPONSE="$(tf_metrics 3 0)"
+[[ "$(model_start_capacity 0)" == '8 3 5 tensorfold' ]] || fail 'busy TensorFold is counted once, not doubled by requests_* duplicates'
+[[ "$(model_start_capacity 5)" == '8 3 3 tensorfold' ]] || fail 'reservations above in-flight requests win'
+[[ "$(model_start_capacity 9)" == '8 3 0 tensorfold' ]] || fail 'capacity never goes negative'
+STATUS_RESPONSE="$(tf_metrics 3 1)"
+[[ "$(model_start_capacity 0)" == '8 3 0 tensorfold' ]] || fail 'TensorFold queue backlog defers runners'
 STATUS_RESPONSE=$'tensorfold:requests_running 0\ntensorfold:requests_waiting 0\n'
 assert_failure model_start_capacity 0
+STATUS_RESPONSE=$'tensorfold:num_requests_waiting 0\n'
+assert_failure model_start_capacity 0
+STATUS_RESPONSE=$'tensorfold:num_requests_running 0\n'
+assert_failure model_start_capacity 0
+STATUS_RESPONSE=$'tensorfold:num_requests_running NaN\ntensorfold:num_requests_waiting 0\n'
+assert_failure model_start_capacity 0
+STATUS_RESPONSE=$'tensorfold:num_requests_running -1\ntensorfold:num_requests_waiting 0\n'
+assert_failure model_start_capacity 0
+STATUS_RESPONSE=$'tensorfold:num_requests_running 0\ntensorfold:num_requests_waiting 0\nvllm:num_requests_waiting 0\n'
+assert_failure model_start_capacity 0
+STATUS_RESPONSE='<html>502 Bad Gateway</html>'
+set +e; model_start_capacity 0 >/dev/null 2>&1; rc=$?; set -e
+[[ "$rc" == 2 ]] || fail "unrecognized metrics must report invalid (2), got $rc"
+STATUS_FAIL=1
+set +e; model_start_capacity 0 >/dev/null 2>&1; rc=$?; set -e
+[[ "$rc" == 1 ]] || fail "unreachable model status must report unavailable (1), got $rc"
+STATUS_FAIL=0
+
+# Main loop: a persistent bad sample is logged once (not every poll), no runner starts
+# while it lasts, and the first valid TensorFold sample logs recovery and admits work.
+status_log="$(mktemp)"
+(
+  queued_jobs() { printf '2\n'; }
+  busy_ephemeral_runners() { printf '0\n'; }
+  active_containers() { printf '0\n'; }
+  cleanup_stale_registrations() { :; }
+  MAX_RUNNERS=8
+  spawned=0
+  polls=0
+  spawn_runner() { spawned=$((spawned + 1)); }
+  sleep() {
+    polls=$((polls + 1))
+    if (( polls < 3 )); then
+      [[ "$spawned" == 0 ]] || fail 'runner started while model status was invalid'
+      STATUS_RESPONSE='tensorfold:num_requests_waiting 0'
+    else
+      [[ "$spawned" == 2 ]] || fail "expected two runners after recovery, got $spawned"
+      exit 0
+    fi
+    if (( polls == 2 )); then STATUS_RESPONSE="$(tf_metrics 0 0)"; fi
+  }
+  STATUS_RESPONSE='tensorfold:num_requests_waiting 0'
+  main > "$status_log"
+)
+[[ "$(grep -c 'model status invalid or unrecognized response' "$status_log")" == 1 ]] || fail 'invalid model status must be logged once per state change'
+grep -q 'model status recovered (provider=tensorfold)' "$status_log" || fail 'recovery must be logged with the detected provider'
+rm -f "$status_log"
 
 QUEUED_FAIL=1
 (
