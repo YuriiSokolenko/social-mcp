@@ -14,7 +14,13 @@
 
 import { baseBranch } from './project-config.mjs';
 
-export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.env.REPO, token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN } = {}) {
+export function githubClient({
+  repo = process.env.GITHUB_REPOSITORY ?? process.env.REPO,
+  token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN,
+  // Optional, trusted control-plane diagnostics. No URL, token, or response body
+  // is passed to either callback.
+  onRequest, onPage, signal,
+} = {}) {
   const requireConfig = () => {
     if (!repo || !token) throw new Error('GitHub repository and token are required');
   };
@@ -28,18 +34,67 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw new Error('PI_GITHUB_HTTP_TIMEOUT_MS must be a positive integer');
   }
+  let requestSequence = 0;
+  const requestInfo = (path, method) => {
+    const url = new URL(path, 'https://example.invalid');
+    const name = url.pathname;
+    const category = name === '/issues' ? 'issues'
+      : name === '/pulls' ? 'pulls'
+        : name === '/actions/runs' ? 'workflow-runs'
+          : name.startsWith('/git/matching-refs/') ? 'issue-refs'
+            : name.startsWith('/actions/workflows/') ? 'workflow-dispatch'
+              : name.startsWith('/git/refs/') ? 'checkpoint-ref'
+                : /^\\/issues\\/\\d+\\/labels$/.test(name) ? 'issue-labels'
+                  : /^\\/issues\\/\\d+$/.test(name) ? 'issue'
+                    : 'other';
+    const page = Number(url.searchParams.get('page'));
+    const status = url.searchParams.get('status');
+    return {
+      method, category,
+      ...(Number.isSafeInteger(page) && page > 0 ? { page } : {}),
+      ...(category === 'workflow-runs' &&
+        ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(status) ? { status } : {}),
+    };
+  };
   async function raw(path, method = 'GET', body) {
     requireConfig();
+    const requestId = ++requestSequence;
+    const info = requestInfo(path, method);
+    const started = performance.now();
+    const requestTimeout = AbortSignal.timeout(timeoutMs);
+    const requestSignal = signal ? AbortSignal.any([signal, requestTimeout]) : requestTimeout;
+    onRequest?.({ event: 'start', id: requestId, ...info });
+    let onAbort;
     try {
-      return await fetch(root + path, {
-        method,
-        headers: { ...headers, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(timeoutMs),
+      // Promise.race also covers a transport/mock which ignores AbortSignal.
+      // The signal still aborts real in-flight fetches.
+      const aborted = new Promise((_, reject) => {
+        onAbort = () => reject(requestSignal.reason ?? new Error('request aborted'));
+        requestSignal.addEventListener('abort', onAbort, { once: true });
+        if (requestSignal.aborted) onAbort();
       });
+      const response = await Promise.race([
+        fetch(root + path, {
+          method,
+          headers: { ...headers, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          signal: requestSignal,
+        }),
+        aborted,
+      ]);
+      onRequest?.({ event: 'end', id: requestId, ...info, code: response.status,
+        durationMs: Math.round(performance.now() - started) });
+      return response;
     } catch (error) {
-      if (error?.name === 'TimeoutError') throw new Error(`${method} ${path}: timed out after ${timeoutMs}ms`);
+      const cause = signal?.aborted ? 'deadline'
+        : requestTimeout.aborted || error?.name === 'TimeoutError' ? 'timeout' : 'transport';
+      onRequest?.({ event: 'error', id: requestId, ...info, cause,
+        durationMs: Math.round(performance.now() - started) });
+      if (signal?.aborted) throw new Error('Reconciler execution deadline exceeded');
+      if (cause === 'timeout') throw new Error(`${method} ${path}: timed out after ${timeoutMs}ms`);
       throw error;
+    } finally {
+      if (onAbort) requestSignal.removeEventListener('abort', onAbort);
     }
   }
   async function api(path, method = 'GET', body) {
@@ -52,6 +107,7 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
     for (let page = 1; ; page++) {
       const batch = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
       all.push(...batch);
+      onPage?.({ ...requestInfo(path, 'GET'), page, items: batch.length, total: all.length });
       if (batch.length < 100) return all;
     }
   }
@@ -79,6 +135,7 @@ export function githubClient({ repo = process.env.GITHUB_REPOSITORY ?? process.e
       const data = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
       const batch = data.workflow_runs ?? [];
       all.push(...batch);
+      onPage?.({ ...requestInfo(path, 'GET'), page, items: batch.length, total: all.length });
       if (batch.length < 100) return all;
     }
   }
