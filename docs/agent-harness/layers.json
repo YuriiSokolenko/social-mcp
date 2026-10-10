@@ -82,6 +82,7 @@
     "scripts/pi-common/runtime-budget-telemetry.mjs",
     "scripts/pi-common/runtime-steering.mjs",
     "scripts/pi-common/runtime-tool-guidance.mjs",
+    "scripts/pi-common/runtime-tool-schemas.mjs",
     "scripts/pi-common/safe-edit.mjs",
     "scripts/pi-common/semantic-loop-guard.mjs",
     "scripts/pi-common/session-state.mjs",

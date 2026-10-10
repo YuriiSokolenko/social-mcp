@@ -178,6 +178,36 @@ Existing `tests/pi-coding-session.test.mjs` continues to exercise #499/#503
 non-convergence and history-reset behavior, and #506 repair evidence,
 localized edit bounds and rewrite enforcement.
 
+## Slice 7 (#764): four pure Implementer tool schemas
+
+Extract exactly the `Type.Object` parameter definitions for
+`accept_mutation_scope`, `structural_edit`, `safe_edit` and `run_check` into
+`pi-common/runtime-tool-schemas.mjs` as pure builders invoked at the same
+registration points. Registration order, names, labels, descriptions and
+executor callbacks stay in `pi-agent-runtime.mjs`.
+
+| Concern | Owner after extraction |
+| --- | --- |
+| Four TypeBox parameter declarations | `runtime-tool-schemas.mjs` |
+| Canonical ordered check kinds | `pi-common/run-check.mjs` (`CHECK_KINDS`) |
+| Registration, execution, authorization, validation and recovery | `pi-agent-runtime.mjs` |
+
+**Counts:** runtime 5455 → 5434 lines; one new pure
+schema module (49 lines). Dependency direction:
+`pi-agent-runtime → runtime-tool-schemas → typebox`. `runCheckParameters`
+receives the existing `CHECK_KINDS` from runtime; the schema module imports
+neither `run-check` nor runtime and runs no builder at import time.
+
+**Characterization:** the real-TypeBox CI contract test exercises the four
+registered runtime tool schemas against pre-extraction golden declarations,
+asserts JSON serialization (including property/union ordering), metadata
+and required/optional fields, and checks accepted/rejected boundary values.
+Existing coding-session, safe-edit and run-check suites continue to cover
+runtime/executor behavior.
+
+**Intentional non-extractions:** all other schemas, provider/exposure
+decisions, tool callbacks, policy and stateful verification/recovery.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,
