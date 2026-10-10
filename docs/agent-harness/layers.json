@@ -232,7 +232,8 @@
         "tests/test_run_check_sandbox_exec.py",
         "tests/test_runner_autoscaler.sh",
         "tests/tool-call-boundary-probe.test.mjs",
-        "tests/workflow_smoke/test_expense_report.py"
+        "tests/workflow_smoke/test_expense_report.py",
+        "tests/workflow_smoke/test_pack_20261010_weather.py"
       ],
       "infra": [
         "infra/github-runner-autoscaler/.env.example",
