@@ -260,12 +260,13 @@ model_start_capacity() {
       ;;
     *)
       metrics="$(printf '%s\n' "$status" | awk '
-    /^vllm:num_requests_running(\{[^}]*\})?[[:space:]]/ {
+    # vLLM and tensorfold export the same Prometheus counters under their own prefix.
+    /^(vllm|tensorfold):num_requests_running(\{[^}]*\})?[[:space:]]/ {
       value = $NF
       if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
       running += value
     }
-    /^vllm:num_requests_waiting(\{[^}]*\})?[[:space:]]/ {
+    /^(vllm|tensorfold):num_requests_waiting(\{[^}]*\})?[[:space:]]/ {
       value = $NF
       if (value !~ /^[0-9]+(\.[0-9]+)?$/) exit 2
       total += value

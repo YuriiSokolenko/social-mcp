@@ -753,6 +753,14 @@ STATUS_RESPONSE=$'vllm:num_requests_waiting{model_name="a"} 0\nvllm:num_requests
 [[ "$(model_start_capacity 0)" == '8 0 0' ]] || fail 'vLLM backlog defers runners'
 STATUS_RESPONSE='vllm:num_requests_running 0'
 assert_failure model_start_capacity 0
+# tensorfold exports the vLLM-style counters under its own prefix plus unprefixed
+# duplicates (requests_running/requests_waiting) that must not be double counted.
+STATUS_RESPONSE=$'# TYPE tensorfold:num_requests_running gauge\ntensorfold:requests_running 3\ntensorfold:requests_waiting 0\ntensorfold:num_requests_running 3\ntensorfold:num_requests_waiting 0\n'
+[[ "$(model_start_capacity 0)" == '8 3 5' ]] || fail 'tensorfold reports running requests without double counting'
+STATUS_RESPONSE=$'tensorfold:num_requests_running 1\ntensorfold:num_requests_waiting 1\n'
+[[ "$(model_start_capacity 0)" == '8 1 0' ]] || fail 'tensorfold backlog defers runners'
+STATUS_RESPONSE=$'tensorfold:requests_running 0\ntensorfold:requests_waiting 0\n'
+assert_failure model_start_capacity 0
 
 QUEUED_FAIL=1
 (
