@@ -23,7 +23,7 @@ function writeMock(mockFile, storeFile) {
 
     globalThis.fetch = async (url, options = {}) => {
       const method = options.method ?? 'GET';
-      const { pathname } = new URL(url);
+      const { pathname, searchParams, search } = new URL(url);
       const store = load();
 
       if (method === 'POST' && pathname.endsWith('/labels')) {
@@ -33,7 +33,9 @@ function writeMock(mockFile, storeFile) {
         return Response.json({ workflow_runs: [] });
       }
       if (method === 'GET' && pathname.endsWith('/pulls')) {
-        return Response.json([]);
+        store.pullQueries = [...(store.pullQueries ?? []), { base: searchParams.get('base'), raw: search }];
+        save(store);
+        return Response.json((store.prs ?? []).filter(pr => pr.base?.ref === searchParams.get('base')));
       }
       const commentsMatch = /\\/issues\\/(\\d+)\\/comments$/.exec(pathname);
       if (commentsMatch && method === 'POST') {
@@ -78,13 +80,14 @@ function writeMock(mockFile, storeFile) {
   `);
 }
 
-function run(args, storeFile) {
+function run(args, storeFile, { configFile } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pi-architect-'));
   const mockFile = join(dir, 'mock.mjs');
   writeMock(mockFile, storeFile);
   return spawnSync(process.execPath, ['--import', pathToFileURL(mockFile).href, 'scripts/pi-architect.mjs', ...args], {
     encoding: 'utf8',
-    env: { ...process.env, GITHUB_REPOSITORY: 'test/repo', GITHUB_TOKEN: 'synthetic-token' },
+    env: { ...process.env, GITHUB_REPOSITORY: 'test/repo', GITHUB_TOKEN: 'synthetic-token',
+      ...(configFile ? { AGENT_HARNESS_CONFIG: configFile } : {}) },
   });
 }
 
@@ -118,7 +121,42 @@ test('prepare + publish "keep" comments, marks dispatcher:ready, and drops archi
   const store = JSON.parse(readFileSync(storeFile, 'utf8'));
   assert.deepEqual(store.issues[42].labels.map(l => l.name), ['dispatcher:ready']);
   assert.equal(store.issues[42].comments.length, 1);
+  assert.deepEqual(store.pullQueries.map(query => query.base), ['dev']);
   assert.match(store.issues[42].comments[0].body, /Pi Architect review: \*\*keep\*\*/);
+});
+
+test('prepare uses configured PR base and includes the matching open PR in queue context', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-architect-'));
+  const storeFile = join(dir, 'store.json');
+  const configFile = join(dir, 'config.json');
+  const config = JSON.parse(readFileSync('.agent-harness.json', 'utf8'));
+  config.git.defaultBranch = 'release/v2';
+  // The temporary fixture has no src/ tree for package-root validation.
+  config.checks.packageRoots.canonicalRoots = [];
+  writeFileSync(configFile, JSON.stringify(config));
+  writeFileSync(storeFile, JSON.stringify({
+    nextId: 100,
+    issues: {
+      42: { number: 42, state: 'open', title: 'Awaiting planning',
+        body: taskBody('Prepare the queue.'), labels: [{ name: 'architect:ready' }] },
+    },
+    prs: [
+      { number: 77, title: 'Release PR', draft: false, base: { ref: 'release/v2' },
+        head: { ref: 'pi/issue-42', sha: 'abc', repo: { full_name: 'test/repo' } }, labels: [] },
+      { number: 78, title: 'Other branch PR', draft: false, base: { ref: 'dev' },
+        head: { ref: 'pi/issue-43', sha: 'def', repo: { full_name: 'test/repo' } }, labels: [] },
+    ],
+  }));
+
+  const contextFile = join(dir, 'context.json');
+  const result = run(['prepare', '42', contextFile], storeFile, { configFile });
+  assert.equal(result.status, 0, result.stderr);
+  const store = JSON.parse(readFileSync(storeFile, 'utf8'));
+  assert.deepEqual(store.pullQueries.map(query => query.base), ['release/v2']);
+  assert.match(store.pullQueries[0].raw, /(?:^|[?&])base=release%2Fv2(?:&|$)/);
+  const context = JSON.parse(readFileSync(contextFile, 'utf8'));
+  assert.deepEqual(context.queue.open_prs.map(pr => ({ number: pr.number, issue: pr.issue })),
+    [{ number: 77, issue: 42 }]);
 });
 
 test('prepare + publish "split" creates ordered children and exposes them to Dispatcher', () => {

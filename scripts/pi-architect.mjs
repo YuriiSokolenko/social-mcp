@@ -7,6 +7,7 @@ import { replaceIssueState, transitionIssueState } from './pi-common/github-stat
 import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels } from './pi-common/state-machine.mjs';
 import { childNumbers, parentOf, validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
+import { baseBranch } from './pi-common/project-config.mjs';
 import { acceptanceCriteria, taskMetadata, withTaskMetadata } from './pi-common/task-metadata.mjs';
 import { readPiJsonl } from './pi-common/result-jsonl.mjs';
 
@@ -109,7 +110,7 @@ async function prepare(issue, filename) {
   const openIssues = (await allIssues()).filter(x => x.state === 'open');
   const known = openIssues
     .map(x => ({ number: x.number, title: x.title, labels: x.labels.map(y => y.name) }));
-  const prs = await pages('/pulls?state=open&base=dev');
+  const prs = await pages(`/pulls?state=open&base=${encodeURIComponent(baseBranch())}`);
   const queue = await readQueueContext(endpoint => api(endpoint), repo, openIssues, prs);
   fs.writeFileSync(filename, JSON.stringify({
     number: issue, title: parent.title, body: parent.body,
