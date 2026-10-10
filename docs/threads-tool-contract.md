@@ -1,6 +1,29 @@
 # Threads MCP Tool Contract
 
-Status: Draft for Phase 1
+Status: Phase 1 contract; partially implemented.
+
+## Implementation status
+
+Registered in `src/social_mcp/server/server.py` (stdio entry point `python -m social_mcp.server`):
+
+| Tool | Status | Required scope in code |
+| --- | --- | --- |
+| `threads_capabilities` | Implemented (#18) | none |
+| `threads_get_profile` | Implemented (#3) | `threads_basic` |
+| `threads_list_posts` | Implemented (#3) | `threads_content` |
+| `threads_get_post` | Implemented (#3) | `threads_content` |
+| `threads_list_replies`, `threads_search`, `threads_list_mentions` | Not implemented (#5 was closed as a duplicate without a successor issue) | — |
+| `threads_get_insights` | Not implemented (#4) | — |
+| `threads_publish` | Not implemented (#6) | — |
+| `threads_reply`, `threads_repost`, `threads_quote`, `threads_delete`, `threads_manage_reply` | Not implemented (#7, #71–#74) | — |
+
+**Known discrepancy:** capability resolution in `src/social_mcp/server/capabilities.py`
+uses scope names such as `threads_content`, `threads_insights`, `threads_search`,
+`threads_mention`, `threads_repost` and `threads_quote`, which are not in the Meta
+scope list used by the OAuth flow (`src/social_mcp/platforms/threads/constants.py`,
+[OAuth scopes](oauth.md#2-required-minimum-scopes)). An account connected through
+the Web Admin with the documented Meta scopes does not carry `threads_content`, so
+the post tools report `permission_required` for it. This needs a code fix; the table above documents current behavior.
 
 ## Design rules
 

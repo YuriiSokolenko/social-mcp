@@ -2,12 +2,14 @@
 
 This document describes how Social MCP connects a Threads account through the
 official Meta OAuth flow, and how the resulting tokens are kept safe at rest.
-The current implementation covers configuration only; the
-callback route, state validation and code exchange, and token lifecycle are
-tracked in issues [#15](https://github.com/social-mcp/social-mcp/issues/15)
-(state validation and callback handling), [#16](https://github.com/social-mcp/social-mcp/issues/16)
-(token exchange), and [#17](https://github.com/social-mcp/social-mcp/issues/17)
-(token lifecycle), respectively.
+Signed `state` handling ([#15](https://github.com/YuriiSokolenko/social-mcp/issues/15)),
+the Web Admin connect/callback route and server-side code exchange with
+encrypted persistence ([#16](https://github.com/YuriiSokolenko/social-mcp/issues/16))
+are implemented in `src/social_mcp/admin/routes.py`,
+`src/social_mcp/auth/oauth_state.py` and
+`src/social_mcp/platforms/threads/oauth.py`. The long-lived token exchange and
+refresh lifecycle ([#17](https://github.com/YuriiSokolenko/social-mcp/issues/17))
+are **not implemented yet**; see [current status](#what-is-already-done-and-what-comes-next).
 
 Verified against the official Meta/Threads documentation as of September 2026.
 Meta may evolve endpoint paths, versions and scopes, so re-verify against
@@ -25,7 +27,13 @@ never baked into the image.
 | `META_APP_ID`         | The Threads App ID used as `client_id` in the OAuth flow. | Meta for Developers App Dashboard > Basic > Threads App ID. |
 | `META_APP_SECRET`     | The Threads App Secret used as `client_secret` in the token exchange. | Meta for Developers App Dashboard > Basic > Threads App secret. |
 | `TOKEN_ENCRYPTION_KEY`| Fernet key that encrypts every OAuth token at rest.     | Generated once per deployment; see [Safe local storage](#safe-local-storage). |
-| `OAUTH_STATE_SECRET`  | Secret that signs the per-flow `state` parameter (issue #15). | Generated per deployment; never committed. |
+| `OAUTH_STATE_SECRET`  | Secret that signs the per-flow `state` parameter (issue #15). `OAUTH_STATE_SECRET_FILE` is the file-based alternative. | Generated per deployment; never committed. |
+| `THREADS_REDIRECT_URI`| Optional. Must exactly match a registered OAuth redirect URI. | Defaults to the development callback `http://127.0.0.1:8000/admin/oauth/callback/threads`. |
+| `THREADS_SCOPES`      | Optional comma-separated scope list. `threads_basic` is always added. | Defaults to `threads_basic`. |
+
+The Threads connect flow is available only when `META_APP_ID`,
+`META_APP_SECRET`, `OAUTH_STATE_SECRET` and `TOKEN_ENCRYPTION_KEY` are all
+configured; otherwise the Accounts page does not offer it.
 
 `META_APP_ID` and `META_APP_SECRET` are documented as empty placeholders in
 `.env.example` and supplied from the runtime environment or a secret manager.
@@ -59,7 +67,7 @@ https://threads.com/oauth/authorize
 | `redirect_uri` | Must exactly match one of the app's registered valid OAuth URIs. The default development callback is `http://127.0.0.1:8000/admin/oauth/callback/threads` (added to the App Dashboard list). |
 | `scope`        | Comma-separated list of permissions. `threads_basic` is **required** and cannot be removed. |
 | `response_type`| Set to `code`.                                                        |
-| `state`        | A strong, unpredictable value bound to the initiating admin session. See [issue #15](https://github.com/social-mcp/social-mcp/issues/15) for the state implementation. Protects against CSRF. |
+| `state`        | A strong, unpredictable value bound to the initiating admin session, signed with `OAUTH_STATE_SECRET` (`src/social_mcp/auth/oauth_state.py`). Protects against CSRF. |
 
 ### 2. Required minimum scopes
 
@@ -142,15 +150,19 @@ user id:
 
 A rejected request (e.g. a code that was already used or not found) returns an
 error payload rather than a token. The `access_token` is then encrypted with
-`TOKEN_ENCRYPTION_KEY` and persisted; the plaintext code and short-lived token
-are never stored.
+`TOKEN_ENCRYPTION_KEY` and persisted together with its expiry; the code and
+plaintext token are never stored. Until #17 lands, the stored token is this
+**short-lived** token, so a connection must be re-established after it expires.
 
 ### 5. Long-lived token lifecycle
 
-Short-lived tokens are valid for only **1 hour**. Social MCP exchanges the
-short-lived token for a **long-lived token** immediately after a successful code
-exchange, then refreshes it on a schedule (issue #17). Long-lived tokens are
-valid for **60 days** and are refreshed server-side.
+> **Not implemented yet (#17).** This section is the target design, verified
+> against Meta's documentation; the current code stops after step 4.
+
+Short-lived tokens are valid for only **1 hour**. The target behavior is to
+exchange the short-lived token for a **long-lived token** immediately after a
+successful code exchange, then refresh it on a schedule (issue #17). Long-lived
+tokens are valid for **60 days** and are refreshed server-side.
 
 **Exchange a short-lived token for a long-lived token:**
 
@@ -222,9 +234,9 @@ mechanism.
   and is wired through `src/social_mcp/container.py`.
 - **Key outside the database.** `TOKEN_ENCRYPTION_KEY` is supplied at runtime
   from the host environment or a file (`TOKEN_ENCRYPTION_KEY_FILE`) and is
-  **never** stored in the database or the image. Rotating the key before any
-  account is stored makes encrypted values unrecoverable, so back up the key
-  separately and securely.
+  **never** stored in the database or the image. Changing the key after
+  accounts are stored makes their encrypted tokens unrecoverable (there is no
+  re-encryption/rotation tool yet), so back up the key separately and securely.
 - **Data outside the code.** The SQLite database itself is a persistent volume
   (`social-mcp-data` mounted at `/data` in `compose.yaml`), separated from the
   disposable container filesystem. Upgrading the image does not touch it. Back
@@ -258,14 +270,8 @@ export TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet
 
 | Concern                         | Status        | Tracked by |
 | ------------------------------- | ------------- | ---------- |
-| Meta app config and OAuth docs  | Documented here (issue #2) | #2 |
-| OAuth `state` minting/validation | Implemented   | #15 |
-| Callback handling and state validation | Pending    | #15 |
-| Token exchange (code exchange) | Pending    | #16 |
-| Token persistence (encrypted) and lifecycle | Pending | #17 |
-
-This issue is documentation and configuration only. The callback route and
-state validation are tracked in [#15](https://github.com/social-mcp/social-mcp/issues/15),
-token exchange in [#16](https://github.com/social-mcp/social-mcp/issues/16), and encrypted
-persistence and refresh behavior in [#17](https://github.com/social-mcp/social-mcp/issues/17),
-which follow the boundaries documented here.
+| Meta app config and OAuth docs  | Documented here | #2 (closed) |
+| OAuth `state` minting/validation | Implemented   | #15 (closed) |
+| Web Admin connect + callback handling | Implemented | #16 (closed) |
+| Code exchange and encrypted token persistence | Implemented (short-lived token) | #16 (closed) |
+| Long-lived exchange, refresh, reconnect-on-failure, status reporting | Not implemented | [#17](https://github.com/YuriiSokolenko/social-mcp/issues/17) (open) |

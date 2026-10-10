@@ -94,24 +94,24 @@ Browser
         SQLite
 ```
 
-Initial Python layout:
+Current Python layout:
 
 ```text
 src/social_mcp/
-  server/
-  admin/
-  auth/
-  platforms/
-    threads/
-    tiktok/
-  tools/
-    read/
-    write/
-  storage/
-  models/
+  app.py          # FastAPI app: /health, Web Admin routers, session middleware
+  config.py       # environment settings (pydantic-settings)
+  container.py    # application container shared by HTTP and MCP entry points
+  server/         # MCP server (stdio entry point: python -m social_mcp.server), tools, errors, capabilities
+  admin/          # Web Admin routes: login, dashboard, accounts, logs, Threads connect/callback
+  auth/           # OAuth state signing, token encryption
+  platforms/      # shared HTTP reliability and error mapping
+    threads/      # Threads OAuth + read API adapter
+    tiktok/       # TikTok OAuth/capability contract (no Web Admin flow yet)
+  storage/        # SQLite connected-account store and models
+  diagnostics/    # request-id log filter and smoke helpers
 ```
 
-The MCP layer and Web Admin use the same application core. Platform adapters own platform-specific API behavior. OAuth/token persistence belongs to the auth/storage layers rather than MCP tools.
+The MCP layer and Web Admin use the same application container. Platform adapters own platform-specific API behavior. OAuth/token persistence belongs to the auth/storage layers rather than MCP tools.
 
 ## Web Admin
 
@@ -144,14 +144,21 @@ PostgreSQL is intentionally deferred until multi-user or operational requirement
 
 ## Authentication and secrets
 
-Runtime configuration will include values such as:
+Runtime configuration (see `src/social_mcp/config.py` and `.env.example`) includes:
 
 ```text
+TOKEN_ENCRYPTION_KEY       # required at startup (or TOKEN_ENCRYPTION_KEY_FILE)
+ADMIN_USERNAME
+ADMIN_PASSWORD
+ADMIN_SESSION_SECRET       # or ADMIN_SESSION_SECRET_FILE
+OAUTH_STATE_SECRET         # or OAUTH_STATE_SECRET_FILE
 META_APP_ID
 META_APP_SECRET
+THREADS_REDIRECT_URI       # optional; defaults to the development callback
+THREADS_SCOPES             # optional; threads_basic is always included
 TIKTOK_CLIENT_KEY
 TIKTOK_CLIENT_SECRET
-TOKEN_ENCRYPTION_KEY
+DATABASE_URL
 ```
 
 Real credentials, encryption keys and OAuth tokens must never be committed. `.env.example` contains names and empty placeholders only; deployment secrets come from environment variables or an appropriate secrets mechanism. See [OAuth and token strategy](docs/oauth.md) for the end-to-end Threads/Meta OAuth flow, required scopes, token lifecycle, and safe local storage.
@@ -160,7 +167,7 @@ The Web Admin itself must be authenticated before the service is exposed beyond 
 
 ## Deployment target
 
-Initial deployment is a **single Docker workload on the N150 Linux host** containing the Python application, MCP endpoint, FastAPI HTTP layer and Web Admin assets, with persistent SQLite storage mounted outside the disposable container filesystem.
+Initial deployment is a **single Docker workload on the N150 Linux host** containing the Python application, FastAPI HTTP layer and Web Admin, with persistent SQLite storage mounted outside the disposable container filesystem. The MCP server currently uses the **stdio** transport (`python -m social_mcp.server`); there is no HTTP MCP endpoint yet.
 
 Splitting components into separate services can be done later if needed.
 
@@ -201,12 +208,14 @@ pytest --noconftest -p no:cacheprovider tests/test_run_check_sandbox_exec.py tes
 bash tests/test_runner_autoscaler.sh
 ```
 
+CI additionally installs `typebox` into a temporary prefix and runs `tests/ci/pi-implementer-typebox-schema-contract.test.mjs` with `PI_TYPEBOX_PACKAGE_ROOT` pointing at it; see the `harness` job in `.github/workflows/ci.yml`.
+
 ## Development phases
 
 1. Define MCP runtime/language and stable Threads tool contract. **Done.**
-2. Establish Python/FastAPI application skeleton, SQLite storage and minimal Web Admin shell.
-3. Implement Threads OAuth initiated from Web Admin, callback handling, encrypted token persistence and token lifecycle.
-4. Implement Threads read-only profile/content tools.
+2. Establish Python/FastAPI application skeleton, SQLite storage and minimal Web Admin shell. **Done.**
+3. Implement Threads OAuth initiated from Web Admin, callback handling, encrypted token persistence and token lifecycle. **Done except token lifecycle (#17).**
+4. Implement Threads read-only profile/content tools. **Done (#3).**
 5. Implement Threads insights/search/replies tools.
 6. Implement Threads publishing and reply-management tools.
 7. Implement TikTok OAuth through Web Admin.
@@ -247,4 +256,4 @@ Architecture decisions are recorded under `docs/adr/`.
 
 ## Status
 
-Architecture and Threads MCP tool contract are defined. No application credentials or platform secrets are stored in this repository.
+Implemented today: authenticated Web Admin (login, dashboard, accounts, logs, disconnect), Threads OAuth connect/callback with signed state and encrypted token storage, and the MCP read tools `threads_capabilities`, `threads_get_profile`, `threads_list_posts` and `threads_get_post`. Token refresh, Threads insights/replies/search/publishing and all TikTok operations are not implemented yet; [PROJECT_MAP](docs/architecture/PROJECT_MAP.md) tracks status per issue. No application credentials or platform secrets are stored in this repository.
