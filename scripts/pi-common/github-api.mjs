@@ -58,6 +58,12 @@ export function githubClient({
   };
   async function raw(path, method = 'GET', body) {
     requireConfig();
+    // Do not start a remote operation after the overall Reconciler deadline.
+    if (signal?.aborted) {
+      const error = new Error('Reconciler execution deadline exceeded');
+      error.code = 'RECONCILER_DEADLINE';
+      throw error;
+    }
     const requestId = ++requestSequence;
     const info = requestInfo(path, method);
     const started = performance.now();
@@ -90,8 +96,16 @@ export function githubClient({
         : requestTimeout.aborted || error?.name === 'TimeoutError' ? 'timeout' : 'transport';
       onRequest?.({ event: 'error', id: requestId, ...info, cause,
         durationMs: Math.round(performance.now() - started) });
-      if (signal?.aborted) throw new Error('Reconciler execution deadline exceeded');
-      if (cause === 'timeout') throw new Error(`${method} ${path}: timed out after ${timeoutMs}ms`);
+      if (signal?.aborted) {
+        const deadlineError = new Error('Reconciler execution deadline exceeded');
+        deadlineError.code = 'RECONCILER_DEADLINE';
+        throw deadlineError;
+      }
+      if (cause === 'timeout') {
+        const timeoutError = new Error(`${method} ${path}: timed out after ${timeoutMs}ms`);
+        timeoutError.code = 'GITHUB_REQUEST_TIMEOUT';
+        throw timeoutError;
+      }
       throw error;
     } finally {
       if (onAbort) requestSignal.removeEventListener('abort', onAbort);
@@ -99,7 +113,16 @@ export function githubClient({
   }
   async function api(path, method = 'GET', body) {
     const response = await raw(path, method, body);
-    if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
+    if (!response.ok) {
+      // Preserve the established text for existing callers (notably DELETE ref
+      // idempotency), but provide typed metadata to trusted diagnostic consumers.
+      const error = new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
+      error.code = 'GITHUB_HTTP_ERROR';
+      error.status = response.status;
+      error.method = method;
+      error.category = requestInfo(path, method).category;
+      throw error;
+    }
     return response.status === 204 ? null : response.json();
   }
   async function pages(path) {
