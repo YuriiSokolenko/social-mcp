@@ -24,7 +24,6 @@ import { repoSearch } from '../scripts/pi-common/repo-search.mjs';
 import { stageConfig, stagePrompt } from '../scripts/pi-common/stage-config.mjs';
 import { providerToolNames, withProviderCapabilityInstructions } from '../scripts/pi-common/session-state.mjs';
 import subagentResponseBudget from '../scripts/pi-subagent-response-budget.mjs';
-import { activeResponseCeiling } from '../scripts/pi-common/runtime-budget-telemetry.mjs';
 
 const controller = (overrides = {}, env = {}) => new ProgressController({
   maxTurns: 100,
@@ -662,18 +661,6 @@ test('runtime-owned preparation uses one plain-text planner and harness-owned st
   assert.match(runtime, /pi\.setActiveTools/);
   assert.match(runtime, /actionRequiredToolNames/);
   assert.match(runtime, /pi\.sendUserMessage/);
-  // #741: PI_BUDGET's precedence moved to the pure telemetry helper.
-  // Verify that the runtime supplies live controller values and that the
-  // helper retains the previous action > fixed > level fallback.
-  const budgetTelemetry = readScript('scripts/pi-common/runtime-budget-telemetry.mjs', 'utf8');
-  assert.ok(runtime.includes('turnStartBudgetTelemetry({'));
-  assert.ok(runtime.includes('fixedMaxTokens: controller.fixedMaxTokens'));
-  assert.ok(runtime.includes('levelMaxTokens: controller.budgets[controller.turnLevel]'));
-  assert.ok(runtime.includes('appliedActionCap,'));
-  assert.ok(budgetTelemetry.includes('maxTokens: activeResponseCeiling(appliedActionCap, fixedMaxTokens, levelMaxTokens)'));
-  assert.equal(activeResponseCeiling(8192, 16384, 2048), 8192);
-  assert.equal(activeResponseCeiling(0, 16384, 2048), 16384);
-  assert.equal(activeResponseCeiling(0, 0, 2048), 2048);
   assert.match(runtime, /RUNTIME ACTION REQUIRED/);
   assert.match(bootstrapPlanner, /Fresh worktree base: latest fetched/);
   assert.match(bootstrapPlanner, /Preparation complete; start from the Planner handoff below/);

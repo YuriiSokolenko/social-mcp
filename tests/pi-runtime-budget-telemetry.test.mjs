@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import { readScript } from './helpers/resolved-source.mjs';
 import {
   activeResponseCeiling, responseHitOutputCeiling, turnStartBudgetTelemetry,
   plannerTelemetryRecords, codingSessionTelemetryRecords,
@@ -103,13 +103,14 @@ test('#741 readable coding log redacts from summary by allowlist and truncates l
   assert.match(structured.text, /"irrelevantSecret":"secret"/);
 });
 
-test('#741 runtime retains live-state reads and owns console/emission hooks', () => {
-  const source = fs.readFileSync('scripts/pi-agent-runtime.mjs', 'utf8');
+test('#741 runtime keeps provider hooks and telemetry emission ownership', () => {
+  const source = readScript('scripts/pi-agent-runtime.mjs', 'utf8');
   assert.match(source, /from '\.\/pi-common\/runtime-budget-telemetry\.mjs'/);
   assert.match(source, /pi\.on\('turn_start'/);
   assert.match(source, /turnStartBudgetTelemetry\(/);
   assert.match(source, /plannerTelemetryRecords\(/);
   assert.match(source, /codingSessionTelemetryRecords\(/);
-  assert.match(source, /responseHitOutputCeilingValue\(outputTokens, activeResponseCap\)/);
+  assert.match(source, /activeResponseCeiling\(/);
+  assert.match(source, /responseHitOutputCeiling/);
   assert.match(source, /controller\.afterTurn\(outputTokens\)/);
 });

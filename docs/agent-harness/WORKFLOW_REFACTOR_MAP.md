@@ -132,10 +132,13 @@ controller's selection or enforcement of budgets.
 | Response cap precedence and ceiling-hit decision | inline in turn hooks | pure `activeResponseCeiling` / `responseHitOutputCeiling` |
 | `PI_BUDGET` turn-start metric field projection | inline turn hook | pure `turnStartBudgetTelemetry`, runtime keeps authoritative live reads |
 
-**Counts:** runtime 5534 → 5497 lines, plus new `scripts/pi-common/runtime-budget-telemetry.mjs`
+**Counts:** runtime 5534 → 5507 lines (including follow-up review fixes), plus new `scripts/pi-common/runtime-budget-telemetry.mjs`
 (82 lines); zero imports into the pure helper. Mutation authorization,
 large-mutation grants, output budget application, retry guard, provider
-usage ledger and hook order are unchanged.
+usage ledger and hook order are unchanged. The two previously inline
+`requested_budget` projections now call `activeResponseCeiling` at the same
+runtime points, eliminating the remaining duplicated precedence rule. The
+log emitter explicitly accepts only `log` and `warn` records.
 
 **Characterization:** `tests/pi-runtime-budget-telemetry.test.mjs` pins
 numeric boundary cases, field/key order, exact log strings, Unicode UTF-8

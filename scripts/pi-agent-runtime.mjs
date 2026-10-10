@@ -278,16 +278,22 @@ ${escapedJson({
 </runtime_state>`;
 }
 
-function logPreparedImplementation(prepared, applied) {
-  for (const record of plannerTelemetryRecords(prepared, applied)) {
-    console[record.level](record.text);
+// The formatters only yield log/warn. Reject accidental new levels instead
+// of dynamically indexing arbitrary console properties.
+function emitRuntimeTelemetry(records) {
+  for (const record of records) {
+    if (record.level === 'log') console.log(record.text);
+    else if (record.level === 'warn') console.warn(record.text);
+    else throw new Error(`Unsupported runtime telemetry level: ${String(record.level)}`);
   }
 }
 
+function logPreparedImplementation(prepared, applied) {
+  emitRuntimeTelemetry(plannerTelemetryRecords(prepared, applied));
+}
+
 function codingSessionLog(phase, fields) {
-  for (const record of codingSessionTelemetryRecords(phase, fields)) {
-    console[record.level](record.text);
-  }
+  emitRuntimeTelemetry(codingSessionTelemetryRecords(phase, fields));
 }
 
 
@@ -2342,7 +2348,9 @@ export default function (pi) {
       }
       console.log('PI_PROVIDER_OUTPUT_BUDGET ' + JSON.stringify({
         stage, request: providerCapabilitySnapshot?.request ?? null,
-        requested_budget: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+        requested_budget: activeResponseCeiling(
+          appliedActionCap, controller.fixedMaxTokens, controller.budgets[controller.turnLevel],
+        ),
         effective_budget: providerWireOutputBudget.ceiling,
         verified: providerWireOutputBudget.verified,
         reason: providerWireOutputBudget.reason ?? null,
@@ -4947,7 +4955,9 @@ export default function (pi) {
       console.warn('PI_CODING_TOOL_TRANSPORT_INCOMPLETE ' + JSON.stringify({
         stage, request: providerCapabilitySnapshot?.request ?? null,
         tool: incompleteTransport.toolName,
-        requested_budget: appliedActionCap || controller.fixedMaxTokens || controller.budgets[controller.turnLevel],
+        requested_budget: activeResponseCeiling(
+          appliedActionCap, controller.fixedMaxTokens, controller.budgets[controller.turnLevel],
+        ),
         effective_budget: providerWireOutputBudget.ceiling,
         output_ceiling: incompleteTransport.ceiling,
         output_tokens: outputTokens,
