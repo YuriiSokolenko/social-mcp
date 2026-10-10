@@ -3,24 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readQueueContext } from './pi-common/queue-context.mjs';
-import { replaceIssueState } from './pi-common/github-state.mjs';
-import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels, validateIssueTransition } from './pi-common/state-machine.mjs';
-import { validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
+import { replaceIssueState, transitionIssueState } from './pi-common/github-state.mjs';
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, issueStateLabels } from './pi-common/state-machine.mjs';
+import { childNumbers, parentOf, validateArchitectPlanAgainstBacklog } from './pi-architect-plan-validator.mjs';
 import { githubClient } from './pi-common/github-api.mjs';
 import { acceptanceCriteria, taskMetadata, withTaskMetadata } from './pi-common/task-metadata.mjs';
 import { readPiJsonl } from './pi-common/result-jsonl.mjs';
 
 const { api, pages, ensureLabel, repo } = githubClient();
 
-export function parentOf(body) {
-  const match = /<!-- architect-parent:(\d+); architect-key:([a-z][a-z0-9-]*) -->/.exec(body ?? '');
-  return match ? Number(match[1]) : null;
-}
-
-export function childNumbers(body) {
-  const match = /<!-- architect-children:([1-9]\d*(?:,[1-9]\d*)*) -->/.exec(body ?? '');
-  return match ? match[1].split(',').map(Number) : [];
-}
+export { childNumbers, parentOf };
 
 export function planFromJsonl(jsonl, parent) {
   const { customResult } = readPiJsonl(jsonl, { customType: 'architect-result' });
@@ -87,25 +79,11 @@ export function taskMetadataFromBody(number, body) {
 export { withTaskMetadata };
 
 async function allIssues() {
-  const items = [];
-  for (let page = 1; ; page++) {
-    const batch = await api(`/issues?state=all&per_page=100&page=${page}`);
-    items.push(...batch);
-    if (batch.length < 100) return items.filter(issue => !issue.pull_request);
-  }
+  return (await pages('/issues?state=all')).filter(issue => !issue.pull_request);
 }
 
-async function transitionIssue(issue, action) {
-  const expected = await api(`/issues/${issue}`);
-  const target = validateIssueTransition(expected, action);
-  await replaceIssueState({
-    number: issue,
-    expected,
-    target,
-    context: 'Architect',
-    load: number => api(`/issues/${number}`),
-    patch: (number, labels) => api(`/issues/${number}`, 'PATCH', { labels }),
-  });
+function transitionIssue(issue, action) {
+  return transitionIssueState({ api, number: issue, action, context: 'Architect' });
 }
 
 async function prepare(issue, filename) {
@@ -131,12 +109,7 @@ async function prepare(issue, filename) {
   const openIssues = (await allIssues()).filter(x => x.state === 'open');
   const known = openIssues
     .map(x => ({ number: x.number, title: x.title, labels: x.labels.map(y => y.name) }));
-  const prs = [];
-  for (let page = 1; ; page++) {
-    const batch = await api(`/pulls?state=open&base=dev&per_page=100&page=${page}`);
-    prs.push(...batch);
-    if (batch.length < 100) break;
-  }
+  const prs = await pages('/pulls?state=open&base=dev');
   const queue = await readQueueContext(endpoint => api(endpoint), repo, openIssues, prs);
   fs.writeFileSync(filename, JSON.stringify({
     number: issue, title: parent.title, body: parent.body,

@@ -2,8 +2,9 @@ import { pathToFileURL } from 'node:url';
 
 import { githubClient } from './pi-common/github-api.mjs';
 import { controlPlanePaths } from './pi-common/control-plane-policy.mjs';
+import { closingIssueNumber } from './pi-common/pr-guard.mjs';
 import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, withoutReviewLabels, withReviewVerdict } from './pi-common/pr-labels.mjs';
-import { baseBranch, parseIssueBranch, projectConfig, workflowFile } from './pi-common/project-config.mjs';
+import { baseBranch, projectConfig, workflowFile } from './pi-common/project-config.mjs';
 import { PIPELINE_LABELS } from './pi-common/state-machine.mjs';
 
 const { api, raw, pages, repo, loadPullRequest, loadIssue, replaceLabels, comment, dispatchWorkflow, workflowRuns } = githubClient();
@@ -16,11 +17,7 @@ export function infraRetryEndpoint(run) {
 }
 
 export function linkedIssueNumber(pr, repository) {
-  const number = parseIssueBranch(pr.head?.ref ?? '');
-  if (pr.draft || pr.base?.ref !== baseBranch() ||
-      pr.base?.repo?.full_name !== repository || pr.head?.repo?.full_name !== repository || number === null) return null;
-  if (!Number.isSafeInteger(number) || !new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '')) return null;
-  return number;
+  return pr.draft ? null : closingIssueNumber(pr, repository);
 }
 
 export function issueNumber(pr, repository) {

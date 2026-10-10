@@ -10,7 +10,7 @@
  * NOT FOR: deciding which transition is legal; state-machine.mjs owns that.
  */
 
-import { ISSUE_STATE_LABELS, issueStateLabels } from './state-machine.mjs';
+import { ISSUE_STATE_LABELS, issueStateLabels, validateIssueTransition } from './state-machine.mjs';
 
 export function labelNames(item) {
   return (item?.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
@@ -54,5 +54,26 @@ export function issueTargetAfterRemovals(item, removals) {
 
 export async function replaceIssueState(options) {
   return replaceStateLabels({ ...options, stateLabels: ISSUE_STATE_LABELS });
+}
+
+/**
+ * The plain issue label `load`/`patch` pair for replaceIssueState(), over a
+ * githubClient().api-style `api(path, method, body)`.
+ */
+export function issueStateIo(api) {
+  return {
+    load: number => api(`/issues/${number}`),
+    patch: (number, labels) => api(`/issues/${number}`, 'PATCH', { labels }),
+  };
+}
+
+/**
+ * Fresh read -> state-machine validation of `action` -> compare-and-swap label
+ * replacement. `context` names the stage in concurrency errors.
+ */
+export async function transitionIssueState({ api, number, action, context }) {
+  const expected = await api(`/issues/${number}`);
+  const target = validateIssueTransition(expected, action);
+  return replaceIssueState({ number, expected, target, context, ...issueStateIo(api) });
 }
 

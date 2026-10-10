@@ -2,15 +2,11 @@
 import { pathToFileURL } from 'node:url';
 
 import { githubClient } from './pi-common/github-api.mjs';
-import { baseBranch, checkpointBranch, issueBranch, parseIssueBranch } from './pi-common/project-config.mjs';
+import { closingIssueNumber } from './pi-common/pr-guard.mjs';
+import { checkpointBranch, issueBranch } from './pi-common/project-config.mjs';
 import { ISSUE_STATE_LABELS } from './pi-common/state-machine.mjs';
 
-export function linkedIssueNumber(pr, repository) {
-  const number = parseIssueBranch(pr.head?.ref ?? '');
-  if (pr.base?.ref !== baseBranch() || pr.base?.repo?.full_name !== repository ||
-      pr.head?.repo?.full_name !== repository || number === null) return null;
-  return new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '') ? number : null;
-}
+export { closingIssueNumber as linkedIssueNumber };
 
 export async function finalizeMergedPush(sha, client = githubClient()) {
   const { api, repo, loadIssue, updateIssue, deleteRef } = client;
@@ -21,7 +17,7 @@ export async function finalizeMergedPush(sha, client = githubClient()) {
     return null;
   }
 
-  const issueNumber = linkedIssueNumber(pr, repo);
+  const issueNumber = closingIssueNumber(pr, repo);
   if (!issueNumber) {
     console.log(`#${pr.number}: merged PR is not a valid Pi issue PR; nothing to finalize`);
     return null;
