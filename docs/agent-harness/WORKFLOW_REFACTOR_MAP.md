@@ -237,6 +237,34 @@ logging, tool exposure, validation, authorization and all lifecycle state.
 Dependency direction stays `pi-agent-runtime → runtime-tool-schemas → typebox`;
 builders run only at their original registration sites.
 
+## Slice 9 (#775): registered recovery-tool parameter schemas
+
+Move only the three ordered TypeBox `parameters` declarations for
+`recover_worktree`, `undo_mutation`, and `rollback_last_mutation` into
+the existing `pi-common/runtime-tool-schemas.mjs` as three pure, lazy
+builders. The `recover_worktree` action union retains `delete_untracked`
+before `revert_tracked`; both `expected_files` arrays retain
+`maxItems: 200` and unbounded individual `Type.String()` values.
+
+**At-extraction snapshot:** runtime 5419 → 5411 lines;
+schema module 74 → 99 lines. These are
+historical measurements, not live counters. There is no new file or inventory
+entry; `layers.json` already owns `runtime-tool-schemas.mjs` in `adapter-pi`.
+
+**Characterization:** `tests/ci/pi-implementer-typebox-schema-contract.test.mjs`
+pins the three actually registered schemas against pre-extraction real-TypeBox
+golden declarations. It asserts JSON serialization/field and literal order,
+required fields, exact labels/descriptions, registration order, and
+`Value.Check` boundaries, including empty/200/201 element lists and omitted
+mandatory fields. Existing recovery, mutation-journal and coding-session
+regressions remain responsible for stateful executor behavior.
+
+**Intentional non-extractions:** registration/exposure, callbacks, shared
+journal and recovery state, scope and path authorization, drift evidence,
+terminal receipt invalidation, exception handling, logging, and result
+envelopes. Dependency direction remains
+`pi-agent-runtime → runtime-tool-schemas → typebox` with no eager construction.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,
