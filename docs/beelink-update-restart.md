@@ -13,7 +13,9 @@ checks GitHub Actions runs and self-hosted runner busy state and refuses to
 interrupt work by default. It queries the read-only GitHub API with the
 existing runner manager credential, so GitHub CLI does not need to be installed
 on the host. `--force-busy` explicitly permits interruption.
-The script clones `origin/dev` into a separate user-owned checkout and performs
+The script reads `git.defaultBranch` from the active checkout's `.agent-harness.json`
+(using the already-required `jq`), validates it as a Git branch and clones
+`origin/<configured default branch>` into a separate user-owned checkout. It performs
 an explicit fast-forward pull to catch updates that land during cloning. It
 copies the host autoscaler `.env` without printing its contents, builds all required images
 before stopping services, and preserves the current checkout, configuration,
