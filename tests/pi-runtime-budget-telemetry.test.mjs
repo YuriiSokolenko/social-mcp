@@ -46,7 +46,7 @@ test('#741 prepared planner emits ordered and byte-stable summary/plan/complexit
     reason: 'prepare', plannerUsage: { input: 10, output: 7 },
     plannerDurationMs: 23, plannerEvidenceActions: 2, plannerProviderTurns: 1,
   };
-  const records = plannerTelemetryRecords(prepared, { largeMutationArmed: true });
+  const records = [...plannerTelemetryRecords(prepared, { largeMutationArmed: true })];
   assert.deepEqual(records.map(r => r.level), ['log', 'log', 'log', 'log']);
   assert.equal(records[0].text,
     '[PI][planner] prepared status=prepared duration=23ms evidence_actions=2 turns=1 in=10 out=7 plan_bytes=6');
@@ -65,7 +65,7 @@ test('#741 prepared planner emits ordered and byte-stable summary/plan/complexit
 
 test('#741 fallback planner preserves unknown token counts, warn levels and nullable fields', () => {
   const prepared = { status: 'fallback', failureClass: 'provider_timeout', reason: 'network' };
-  const records = plannerTelemetryRecords(prepared, { preparationState: 'PREPARATION_FALLBACK', evidenceBudget: 0 });
+  const records = [...plannerTelemetryRecords(prepared, { preparationState: 'PREPARATION_FALLBACK', evidenceBudget: 0 })];
   assert.deepEqual(records.map(r => r.level), ['log', 'warn', 'log']);
   assert.equal(records[0].text,
     '[PI][planner] prepared status=fallback duration=unknownms evidence_actions=unknown turns=unknown in=unknown out=unknown plan_bytes=0');
@@ -80,17 +80,17 @@ test('#741 fallback planner preserves unknown token counts, warn levels and null
 
 test('#741 coding telemetry preserves structured payload, readable projection and channel levels', () => {
   const fields = { side: 'fork', agent: 'coder', status: 'ok', durationMs: 3, reason: 'hello\nthere', secret: 'unprojected' };
-  const events = codingSessionTelemetryRecords('completed', fields);
+  const events = [...codingSessionTelemetryRecords('completed', fields)];
   assert.deepEqual(events.map(r => r.level), ['log', 'log']);
   assert.equal(events[0].text, '[PI][coding] phase=completed side=fork agent=coder status=ok durationMs=3 reason=hello there');
   assert.equal(events[1].text, 'PI_CODING_SESSION {"phase":"completed","side":"fork","agent":"coder","status":"ok","durationMs":3,"reason":"hello\\nthere","secret":"unprojected"}');
   for (const phase of ['failed', 'rejected', 'cancelled']) {
-    assert.deepEqual(codingSessionTelemetryRecords(phase, { side: 'fork' }).map(r => r.level), ['warn', 'warn']);
+    assert.deepEqual([...codingSessionTelemetryRecords(phase, { side: 'fork' })].map(r => r.level), ['warn', 'warn']);
   }
   for (const phase of ['blocked', 'ended_without_submit']) {
-    assert.deepEqual(codingSessionTelemetryRecords(phase, { side: 'fork' }).map(r => r.level), ['warn', 'log']);
+    assert.deepEqual([...codingSessionTelemetryRecords(phase, { side: 'fork' })].map(r => r.level), ['warn', 'log']);
   }
-  assert.deepEqual(codingSessionTelemetryRecords('started', {}).map(r => r.level), ['log', 'log']);
+  assert.deepEqual([...codingSessionTelemetryRecords('started', {})].map(r => r.level), ['log', 'log']);
 });
 
 test('#741 readable coding log redacts from summary by allowlist and truncates long values', () => {
