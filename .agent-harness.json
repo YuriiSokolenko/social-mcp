@@ -49,6 +49,10 @@
       "qwen": {
         "id": "Qwen3.8-Flash-Next-NVFP4",
         "label": "Qwen 3.8 Flash Next NVFP4"
+      },
+      "swift": {
+        "id": "swift-1.5-qwen3.8-flash-next",
+        "label": "Swift 1.5 (Qwen 3.8 Flash Next, TensorFold)"
       }
     }
   },

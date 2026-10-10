@@ -3,7 +3,7 @@ import fs from 'node:fs';
 
 import { githubClient } from './github-api.mjs';
 import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED, prLabelNames, withoutReviewLabels, withReviewVerdict } from './pr-labels.mjs';
-import { workflowFile } from './project-config.mjs';
+import { modelConfig, workflowFile } from './project-config.mjs';
 import { PIPELINE_LABELS } from './state-machine.mjs';
 
 
@@ -61,6 +61,10 @@ function requireCommentId(item, context) {
 
 const REVIEW_MARKER_AUTHOR = 'github-actions[bot]';
 
+// Model aliases come from the project catalog (.agent-harness.json model.choices), never a
+// hardcoded list, so adding a model cannot silently fall back to 'default' or drop a run record.
+const isCatalogModel = model => typeof model === 'string' && Object.hasOwn(modelConfig().choices, model);
+
 function isTrustedReviewMarkerComment(item) {
   return item?.user?.login === REVIEW_MARKER_AUTHOR;
 }
@@ -71,7 +75,7 @@ function trustedReviewMarkerComments(comments) {
 
 
 export function findReviewRunRecord(comments, prNumber, runId, runAttempt) {
-  const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):attempt:(\d+):(default|laguna|qwen) -->/g;
+  const markerPattern = /<!-- pi-review:run:(\d+):([^:\s]+):([^:\s]+):attempt:(\d+):([a-z0-9][a-z0-9._-]*) -->/g;
   for (const item of comments) {
     if (!isTrustedReviewMarkerComment(item)) continue;
     const body = String(item.body ?? '');
@@ -95,7 +99,7 @@ export async function recordReviewRun({
   const pr = await loadPullRequest(prNumber);
   if (pr.head.sha !== reviewedHead) return { status: 'stale' };
 
-  const safeModel = ['laguna', 'qwen'].includes(model) ? model : 'default';
+  const safeModel = isCatalogModel(model) ? model : 'default';
   const comments = await pages(`/issues/${prNumber}/comments`);
   const existing = findReviewRunRecord(comments, prNumber, runId, runAttempt);
   if (existing) return { status: 'already-recorded', ...existing };
@@ -326,8 +330,8 @@ export async function recoverReviewFailure({
     if (!record) return { status: 'missing-run-head' };
     effectiveHead = record.reviewedHead;
   }
-  if (!['laguna', 'qwen'].includes(effectiveModel)) {
-    if (!record || !['laguna', 'qwen'].includes(record.model)) {
+  if (!isCatalogModel(effectiveModel)) {
+    if (!record || !isCatalogModel(record.model)) {
       return { status: 'missing-run-model' };
     }
     effectiveModel = record.model;

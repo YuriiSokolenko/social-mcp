@@ -17,6 +17,7 @@ on:
           - default
           - laguna
           - qwen
+          - swift
 permissions:
   actions: write
   contents: read
@@ -76,10 +77,11 @@ jobs:
           if [ "$MODEL" = "default" ]; then
             MODEL="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/.pi/default-model")"
           fi
-          case "$MODEL" in
-            laguna|qwen) ;;
-            *) echo "Unsupported resolved reviewer model: $MODEL" >&2; exit 1 ;;
-          esac
+          # Allowed aliases are the project catalog (.agent-harness.json model.choices).
+          if ! jq -e --arg model "$MODEL" '.model.choices | has($model)' "$GITHUB_WORKSPACE/.agent-harness.json" >/dev/null; then
+            echo "Unsupported resolved reviewer model: $MODEL" >&2
+            exit 1
+          fi
           RECORDED="$(REVIEW_MODEL="$MODEL" node "$GITHUB_WORKSPACE/scripts/pi-common/review-state.mjs" record-run "$PR" "$HEAD_SHA" "$GITHUB_RUN_ID")"
           STATUS="$(jq -r '.status' <<<"$RECORDED")"
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 
-import { defaultModelBaseUrl, TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV, TRUSTED_ACCEPTANCE_TARGETS_ENV, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage } from '../scripts/pi-run-stage.mjs';
+import { defaultModelBaseUrl, TRUSTED_ACCEPTANCE_BASELINE_TARGETS_ENV, TRUSTED_ACCEPTANCE_TARGETS_ENV, buildStageRunSpec, forcePiProviderBaseUrl, isCountedProviderResponse, overrideProviderBaseUrl, resolveModelId, resolveStageBackend, runSelectedStage, verifyModelIsLoaded } from '../scripts/pi-run-stage.mjs';
 import { buildMiniSweInvocation, discardModelPhaseLedger, miniSweMetricRecords } from '../scripts/pi-common/mini-swe-stage-backend.mjs';
 import { readScript } from './helpers/resolved-source.mjs';
 import { buildBootstrapInvocation, buildPiInvocation, runPiStage } from '../scripts/pi-common/pi-stage-backend.mjs';
@@ -1492,4 +1492,36 @@ test('#469 repair handoff recomputes current changed files after a validation-ti
     },
   });
   assert.deepEqual(handoff.changed_files, ['source.py', 'validation_fix.py']);
+});
+
+
+test('explicit swift choice resolves the exact TensorFold model id; default stays qwen', (t) => {
+  const workspace = temporaryDirectory(t, 'pi-default-model-');
+  mkdirSync(join(workspace, '.pi'), { recursive: true });
+  writeFileSync(join(workspace, '.pi', 'default-model'), 'qwen\n');
+  assert.equal(resolveModelId({ GITHUB_WORKSPACE: workspace, PI_MODEL_CHOICE: 'swift' }), 'swift-1.5-qwen3.8-flash-next');
+  assert.equal(resolveModelId({ GITHUB_WORKSPACE: workspace, PI_MODEL_CHOICE: 'default' }), 'Qwen3.8-Flash-Next-NVFP4');
+  assert.throws(() => resolveModelId({ GITHUB_WORKSPACE: workspace, PI_MODEL_CHOICE: 'Swift' }), /Unknown PI_MODEL_CHOICE "Swift"/);
+});
+
+test('model verification accepts a served swift id and fails closed without substituting qwen', async (t) => {
+  const http = await import('node:http');
+  let served = [];
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ object: 'list', data: served.map(id => ({ id, object: 'model', owned_by: 'tensorfold' })) }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+
+  served = ['swift-1.5-qwen3.8-flash-next'];
+  await verifyModelIsLoaded(baseUrl, 'swift-1.5-qwen3.8-flash-next');
+  await assert.rejects(verifyModelIsLoaded(baseUrl, 'Qwen3.8-Flash-Next-NVFP4'),
+    /"Qwen3\.8-Flash-Next-NVFP4" is not loaded .*currently loaded: swift-1\.5-qwen3\.8-flash-next/);
+  served = ['Qwen3.8-Flash-Next-NVFP4'];
+  await assert.rejects(verifyModelIsLoaded(baseUrl, 'swift-1.5-qwen3.8-flash-next'),
+    /"swift-1\.5-qwen3\.8-flash-next" is not loaded/);
+  served = [];
+  await assert.rejects(verifyModelIsLoaded(baseUrl, 'swift-1.5-qwen3.8-flash-next'), /currently loaded: none/);
 });
