@@ -59,7 +59,6 @@ One intentional tightening: post-merge's linkage now also rejects an issue
 branch number that is not a safe integer (20+ digit branch names), as Merge
 Gate already did. No real issue can have such a number.
 
-
 ## Slice 2 (#741): pure provider wire-policy extraction
 
 This slice starts from `dev` commit `a42e0ab9ff98` and changes no workflow YAML,
@@ -71,7 +70,7 @@ agent prompt, registered tool, mutable counter or provider call order.
 | Final serialized `tool_choice` enforcement and zero/named-tool safety | runtime | `provider-wire-policy.mjs`: `requireToolChoiceInPayload`, `withoutProviderTools`, `implementerToolChoiceDecision` |
 | Parsing and retry classification of provider HTTP failures | runtime | `provider-wire-policy.mjs`: `providerErrorStatus`, `retryableProviderErrorStatus` |
 
-**Counts:** runtime 5734 → 5622 lines; one new pure module (119 lines), seven existing named exports preserved at the original runtime entry point. Dependency direction is
+**Counts:** runtime 5734 → 5622 lines; one new pure module (118 lines), seven existing named exports preserved at the original runtime entry point. Dependency direction is
 `pi-agent-runtime → provider-wire-policy → session-state.providerToolNames`;
 there is no reverse dependency or runtime state in the extracted module. Runtime
 still owns on-payload hooks, request phase, available/deferred capabilities,

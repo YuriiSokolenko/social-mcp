@@ -1,10 +1,11 @@
 // Pure outbound provider request and error-status policy for Main and coding sessions.
 // Kept independent of runtime state, hooks, agent registration and provider IO.
+// pi-agent-runtime.mjs re-exports these helpers to preserve its existing public API.
 import { providerToolNames } from './session-state.mjs';
 
 // Laguna (llama-server, openai-completions) reasons by default once tools are present, and pi's
-// "off" level sends no reasoning field for this provider's compat. The runtime therefore owns
-// the provider wire policy: normal/creation requests stay off, while the first request after an
+// "off" level sends no reasoning field for this provider's compat. This pure wire
+// policy keeps normal/creation requests off, while the first request after an
 // authoritative validation failure may opt into bounded reasoning before returning to low overhead.
 export function applyCodingThinkingPolicy(payload, { enableThinking = false } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.messages)) return payload;
@@ -115,4 +116,3 @@ export function providerErrorStatus(message) {
 
   return null;
 }
-
