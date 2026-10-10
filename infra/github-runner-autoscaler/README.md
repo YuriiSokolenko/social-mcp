@@ -515,6 +515,38 @@ Run the focused manager checks without contacting GitHub or Docker:
 bash tests/test_runner_autoscaler.sh
 ```
 
+## Pi model catalog on the host
+
+Pi resolves a model only if its exact id is listed in the host Pi config
+`$PI_HOME_HOST/.pi/agent/models.json` under provider `hp-laguna`. On N150 that
+is `/home/yurasik/github-runners/social-mcp-pi/pi-home/.pi/agent/models.json`,
+owned by UID 1001. It is mounted read-only and copied into every ephemeral
+`pi-agent` worker at startup. The repository's `.agent-harness.json`
+`model.choices` selects an alias; the host file must contain the matching id.
+`scripts/pi-run-stage.mjs` additionally fails before Pi starts if the id is
+not served at `<baseUrl>/models`. All model traffic goes through the N150
+proxy at `4001/v1`.
+
+The default model is `swift` (`swift-1.5-qwen3.8-flash-next`, served by
+TensorFold). To add it to the host config (idempotent, timestamped backup,
+other models and secrets untouched):
+
+```bash
+sudo python3 infra/github-runner-autoscaler/pi-models-add-swift.py \
+  /home/yurasik/github-runners/social-mcp-pi/pi-home/.pi/agent/models.json
+```
+
+New workers pick it up; no manager restart is needed. Entry values:
+`api` inherits the provider's `openai-completions` (Chat Completions,
+including streamed tool calls, was verified through the proxy on
+2026-10-10), `reasoning: true` (responses report `reasoning_tokens`),
+`contextWindow: 262144` (TensorFold `/health` `context_length`), and
+`maxTokens: 32000` (same ceiling as Qwen; stage budgets are applied by the
+runtime, not capped here). To restore Qwen as the default, put `qwen` back
+into `.pi/default-model` and make sure Qwen is the model actually served.
+Restore the host file from its `models.json.bak-*` backup only if the new
+entry itself is wrong.
+
 ## Local Zoekt index for Pi Implementer
 
 The optional indexed search service runs on the N150 host from
