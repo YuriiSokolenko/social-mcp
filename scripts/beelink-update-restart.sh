@@ -260,7 +260,9 @@ fi
 
 # Refresh the separate persistent Zoekt index; updater's own flock prevents overlap.
 if [[ -x "$ZOEKT_ROOT/update-index.sh" ]]; then
-  "$ZOEKT_ROOT/update-index.sh" || die 'Zoekt indexing failed; inspect its update.log'
+  # Run as the owning user: the updater's git fetch writes into a mirror that the cron job and
+  # the Zoekt container read; running it as root leaves root-only refs/objects that break both.
+  as_user "$ZOEKT_ROOT/update-index.sh" || die 'Zoekt indexing failed; inspect its update.log'
 else
   die "Zoekt updater missing at $ZOEKT_ROOT/update-index.sh"
 fi
