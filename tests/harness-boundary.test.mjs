@@ -11,8 +11,30 @@ const layers = ['harness-core', 'adapter-pi', 'adapter-mini-swe'];
 const scripts = [...fs.readdirSync('scripts').filter(n => n.endsWith('.mjs')).map(n => `scripts/${n}`),
   ...fs.readdirSync('scripts/pi-common').filter(n => n.endsWith('.mjs')).map(n => `scripts/pi-common/${n}`)];
 
-const executableCode = source => source.split('\n')
-  .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
+function executableCode(source) {
+  let inBlockComment = false;
+  return source.split('\n').map(line => {
+    let rest = line;
+    for (;;) {
+      if (inBlockComment) {
+        const end = rest.indexOf('*/');
+        if (end < 0) return '';
+        rest = rest.slice(end + 2);
+        inBlockComment = false;
+        continue;
+      }
+      const trimmed = rest.trimStart();
+      if (trimmed.startsWith('//')) return '';
+      if (!trimmed.startsWith('/*')) return rest;
+      const end = trimmed.indexOf('*/', 2);
+      if (end < 0) {
+        inBlockComment = true;
+        return '';
+      }
+      rest = trimmed.slice(end + 2);
+    }
+  }).join('\n');
+}
 
 function defaultBranchPatterns(branch) {
   const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -58,6 +80,15 @@ test('default branch guard catches query/ref literals without matching comments'
     "/* const ref = '/git/refs/heads/dev'; */",
     "const url = '/pulls?state=open&base=development';",
   ]) assert.equal(rules.some(rule => rule.test(executableCode(sample))), false, sample);
+  const blockComment = [
+    '/* ignore this block',
+    " * const url = '/pulls?base=dev';",
+    " */ const url = '/pulls?base=dev';",
+  ].join('\n');
+  assert.equal(rules.some(rule => rule.test(executableCode(blockComment))), true,
+    'executable code after a block comment must not be removed');
+  assert.equal(rules.some(rule => rule.test(executableCode("/* ignore base=dev */"))), false);
+  assert.equal(executableCode("*generator() { return 42; }"), "*generator() { return 42; }");
 });
 
 test('project policy is reachable only through the config module', () => {
@@ -125,7 +156,7 @@ test('harness code imports only harness code and names no product, repository or
       const target = path.resolve(path.dirname(file), specifier);
       assert.ok(target.startsWith(`${scriptsRoot}${path.sep}`), `${file} imports ${specifier} outside the harness scripts`);
     }
-    const live = code.split('\n').filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
+    const live = executableCode(code);
     assert.doesNotMatch(live, PRODUCT_REFERENCE, `${file} names the product package or repository`);
     assert.doesNotMatch(live, PRIVATE_HOST, `${file} hardcodes a private host; read it from .agent-harness.json`);
   }
