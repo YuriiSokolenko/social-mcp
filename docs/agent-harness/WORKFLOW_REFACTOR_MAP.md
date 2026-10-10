@@ -237,6 +237,27 @@ logging, tool exposure, validation, authorization and all lifecycle state.
 Dependency direction stays `pi-agent-runtime → runtime-tool-schemas → typebox`;
 builders run only at their original registration sites.
 
+## Slice 9 (#774): registered recovery tool schemas
+
+Extract only the TypeBox parameter declarations for `recover_worktree`,
+`undo_mutation` and `rollback_last_mutation` into three pure lazy builders
+in the existing `pi-common/runtime-tool-schemas.mjs` module. The
+original registration sites, ordering, labels, descriptions, callbacks,
+authorization, mutation journal and validation/recovery policy stay in runtime.
+
+**At-extraction snapshot:** runtime 5419 → 5411 lines;
+schema module 74 → 99 lines. No new file or
+`layers.json` classification is required.
+
+**Tests:** real-TypeBox characterization of actually registered schemas
+against pre-extraction golden definitions, including serialization and
+property/union ordering, optionality, required fields, labels/descriptions,
+`Value.Check` positive/negative boundaries and registration ordering.
+Existing mutation journal, rollback and worktree recovery tests continue
+to cover the executor behavior. Builders execute at registration, never
+during schema module import; dependency direction stays runtime → schemas
+→ typebox.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,
