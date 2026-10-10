@@ -116,6 +116,34 @@ Two string-rendering functions have moved to `pi-common/runtime-tool-guidance.mj
 
 Existing `pi-main-tool-profile-runtime`, `pi-provider-tool-boundary`, `pi-runtime-steering` and `pi-coding-session` integration tests retain end-to-end coverage. The one raw-source coding guidance assertion now follows the authoritative new source.
 
+## Slice 5 (#741): pure response budget and runtime telemetry
+
+Move log-record construction for the Planner preparation and Coding Session
+into `pi-common/runtime-budget-telemetry.mjs`. Return exact log levels/strings;
+the runtime is still the emitter and retains event registration, sequencing and
+all mutable session/progress state. Extract active response-cap precedence,
+output-ceiling comparison and the turn-start budget record without changing the
+controller's selection or enforcement of budgets.
+
+| Concern | Before | After |
+| --- | --- | --- |
+| Planner `PI_PLAN` / `PI_COMPLEXITY` / `PI_PREPARATION_FALLBACK` records | inline runtime `console.*` formatting | pure `plannerTelemetryRecords`, runtime emits in original order |
+| Coding Session readable and JSON metrics | inline runtime `codingSessionLog` formatting | pure `codingSessionTelemetryRecords`, runtime emits on unchanged log channels |
+| Response cap precedence and ceiling-hit decision | inline in turn hooks | pure `activeResponseCeiling` / `responseHitOutputCeiling` |
+| `PI_BUDGET` turn-start metric field projection | inline turn hook | pure `turnStartBudgetTelemetry`, runtime keeps authoritative live reads |
+
+**Counts:** runtime 5534 → 5497 lines, plus new `scripts/pi-common/runtime-budget-telemetry.mjs`
+(94 lines); zero imports into the pure helper. Mutation authorization,
+large-mutation grants, output budget application, retry guard, provider
+usage ledger and hook order are unchanged.
+
+**Characterization:** `tests/pi-runtime-budget-telemetry.test.mjs` pins
+numeric boundary cases, field/key order, exact log strings, Unicode UTF-8
+byte counts, absent usage as unknown (not zero), warning channels, and
+the runtime's live-state wiring. Existing `pi-progress-controller`,
+`pi-coding-session` and `pi-implementation-planner-bootstrap` suites
+continue to exercise runtime behavior.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,
