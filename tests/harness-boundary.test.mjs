@@ -78,7 +78,6 @@ function shellStatements(source) {
       if (ch === '\\' && i === line.length - 1) { continued = true; break; }
       if (ch === '\\' && i + 1 < line.length) { fragment += ch + line[++i]; continue; }
       if (ch === '#' && (i === 0 || /[\s;|&({]/.test(line[i - 1]))) break;
-      if (ch === '\\' && i + 1 < line.length) { fragment += ch + line[++i]; continue; }
       if (ch === "'" || ch === '"') { quote = ch; fragment += ch; continue; }
       if (ch === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
         const match = line.slice(i).match(/^<<(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/);
@@ -102,7 +101,7 @@ function shellStatements(source) {
 }
 
 function shellBranchViolations(source, branch) {
-  const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\test('every control-plane script is classified in exactly one layer and every entry exists', () => {');
+  const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const end = '(?![\\w./-])';
   const rules = [
     ['remote ref', new RegExp(`\\borigin/${escaped}${end}`)],
