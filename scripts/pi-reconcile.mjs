@@ -27,6 +27,7 @@ const controller = new AbortController();
 const pending = new Map();
 const pageCounts = new Map();
 const successfulMutations = [];
+const dispatchFailures = [];
 let currentStage = 'startup';
 let currentMutation = null;
 const safeNumber = key => /^\d+$/.test(process.env[key] ?? '') ? process.env[key] : 'local';
@@ -44,11 +45,49 @@ function emit(event, fields = {}, warning = false) {
   );
 }
 function errorCategory(error) {
-  if (controller.signal.aborted) return 'deadline_exceeded';
-  if (/timed out after \d+ms|TimeoutError/i.test(error?.message ?? '')) return 'request_timeout';
-  const status = /:\s*(429|5\d\d|4\d\d)\b/.exec(error?.message ?? '');
-  if (status) return 'http_' + status[1];
+  if (controller.signal.aborted || error?.code === 'RECONCILER_DEADLINE') return 'deadline_exceeded';
+  if (error?.code === 'GITHUB_REQUEST_TIMEOUT' || error?.name === 'TimeoutError') return 'request_timeout';
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) {
+    return 'http_' + error.status;
+  }
   return 'transport_or_state_error';
+}
+// Never print an untrusted error.message or stack: GitHub API errors include
+// response bodies, and transport errors may contain URLs or credentials.
+// Emit known local invariant names, safe numeric identifiers and source frames.
+function safeErrorDetails(error) {
+  const rawName = String(error?.name ?? 'Error');
+  const detail = {
+    error_name: /^[a-zA-Z][a-zA-Z0-9]{0,63}$/.test(rawName) ? rawName : 'Error',
+  };
+  if (Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599) {
+    return {
+      ...detail, http_status: error.status,
+      endpoint: typeof error.category === 'string' ? error.category : 'other',
+      method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(error.method) ? error.method : 'unknown',
+    };
+  }
+  const message = String(error?.message ?? '');
+  const concurrent = /^concurrent reconciliation transition on #(\d+):/.exec(message);
+  if (concurrent) return { ...detail, problem: 'concurrent_ownership_change', number: Number(concurrent[1]) };
+  if (message.startsWith('state repair would remain ambiguous')) {
+    return { ...detail, problem: 'ambiguous_state_repair' };
+  }
+  if (message.startsWith('GitHub repository and token are required')) {
+    return { ...detail, problem: 'missing_github_configuration' };
+  }
+  if (message.startsWith('Invalid .agent-harness.json')) {
+    return { ...detail, problem: 'invalid_project_configuration' };
+  }
+  if (error?.code === 'GITHUB_REQUEST_TIMEOUT') {
+    return { ...detail, problem: 'request_timeout' };
+  }
+  const frame = /(?:^|[/(])((?:scripts\/)[A-Za-z0-9_./-]+\.mjs):(\d+):(\d+)/m.exec(String(error?.stack ?? ''));
+  if (frame && !frame[1].includes('..')) {
+    return { ...detail, problem: 'unexpected_error', source: frame[1],
+      line: Number(frame[2]), column: Number(frame[3]) };
+  }
+  return { ...detail, problem: 'unexpected_error' };
 }
 const requestFields = info => ({
   endpoint: info.category, method: info.method,
@@ -141,7 +180,8 @@ async function mutation(kind, number, action, task) {
     successfulMutations.push(safeId);
   } catch (error) {
     emit('mutation_failed', {
-      ...safeId, cause: errorCategory(error), completed_count: successfulMutations.length,
+      ...safeId, cause: errorCategory(error), ...safeErrorDetails(error),
+      completed_count: successfulMutations.length,
       recently_completed: successfulMutations.slice(-8),
     }, true);
     throw error;
@@ -155,10 +195,22 @@ async function replaceStateLabels(number, expected, target, kind) {
   if (kind !== 'issue') throw new Error(`unsupported reconciliation state kind: ${kind}`);
   await replaceIssueState({ number, expected, target, context: 'reconciliation', ...issueStateIo(api) });
 }
-async function tryDispatchWorkflow(workflow, inputs) {
-  // A failed dispatch makes the apply incomplete. Do not claim success.
-  await dispatchWorkflow(workflow, inputs);
-  return true;
+async function bestEffortDispatch(number, action, workflow, inputs) {
+  try {
+    await mutation('pr', number, action, () => dispatchWorkflow(workflow, inputs));
+    return true;
+  } catch (error) {
+    // Preserve prior best-effort semantics for ordinary dispatch failures:
+    // carry on to other PRs, shared Merge Gate and checkpoint GC. A deadline
+    // still terminates immediately. Unlike the old implementation, exit nonzero
+    // after a partial apply rather than reporting a successful reconciliation.
+    if (controller.signal.aborted) throw error;
+    const failure = { kind: 'pr', number, action, cause: errorCategory(error),
+      ...safeErrorDetails(error) };
+    dispatchFailures.push(failure);
+    emit('dispatch_failed', failure, true);
+    return false;
+  }
 }
 async function reconcile() {
 const liveStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
@@ -301,8 +353,8 @@ if (apply && prRecoveryAllowed) {
     const needsFix = labels.has(REVIEW_CHANGES_REQUESTED);
     const workflow = workflowFile(needsFix ? 'repair' : 'reviewer');
     const owner = needsFix ? 'PR Fix' : 'Reviewer';
-    await mutation('pr', pr.number, 'dispatch-' + owner, () =>
-      tryDispatchWorkflow(workflow, { pr_number: String(pr.number) }));
+    const dispatched = await bestEffortDispatch(pr.number, 'dispatch-' + owner,
+      workflow, { pr_number: String(pr.number) });
     report.push({
       type: 'pr',
       number: pr.number,
@@ -311,17 +363,29 @@ if (apply && prRecoveryAllowed) {
       removals: [],
       recovery: {
         add: needsFix ? REVIEW_CHANGES_REQUESTED : 'unreviewed',
-        dispatch: owner,
-        reason: `restart stranded ${owner}`,
+        dispatch: dispatched ? owner : null,
+        reason: dispatched ? `restart stranded ${owner}` : `${owner} recovery dispatch failed`,
       },
     });
   }
   if (mergeGateRecoveryNeeded) {
-    await mutation('pr', 0, 'dispatch-merge-gate', () =>
-      tryDispatchWorkflow(workflowFile('mergeGate'), undefined));
+    const dispatched = await bestEffortDispatch(0, 'dispatch-merge-gate',
+      workflowFile('mergeGate'), undefined);
+    if (!dispatched) {
+      for (const item of report) {
+        if (item.type === 'pr' && item.findings.some(finding => finding.code === 'passed-pr-needs-merge-gate')) {
+          item.recovery = {
+            add: REVIEW_PASSED, dispatch: null, reason: 'Merge Gate recovery dispatch failed',
+          };
+        }
+      }
+    }
   }
 }
-}, () => ({ prs_checked: prs.length, completed_mutations: successfulMutations.length }));
+}, () => ({
+  prs_checked: prs.length, completed_mutations: successfulMutations.length,
+  failed_dispatches: dispatchFailures.length,
+}));
 await phase('checkpoint-gc', async () => {
 if (apply) {
   for (const number of checkpoints) {
@@ -355,10 +419,20 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 }
 try {
   await reconcile();
-  emit('complete', { status: 'ok', completed_mutations: successfulMutations.length });
+  if (dispatchFailures.length) {
+    emit('failed', {
+      status: 'failed', cause: 'partial_dispatch_failure', failed_dispatches: dispatchFailures.length,
+      failures: dispatchFailures.slice(0, 20),
+      completed_mutations: successfulMutations.length,
+    }, true);
+    process.exitCode = 1;
+  } else {
+    emit('complete', { status: 'ok', completed_mutations: successfulMutations.length });
+  }
 } catch (error) {
   emit('failed', {
-    status: 'failed', cause: errorCategory(error),
+    status: 'failed', cause: errorCategory(error), ...safeErrorDetails(error),
+    failed_dispatches: dispatchFailures.length, failures: dispatchFailures.slice(0, 20),
     completed_mutations: successfulMutations.length,
     recently_completed: successfulMutations.slice(-8),
     pending_requests: [...pending.values()].slice(0, 12).map(requestFields),
