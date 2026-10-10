@@ -142,11 +142,11 @@ test('partial issue failure reports completed mutations and a retry is safe', ()
   assert.deepEqual(failed.calls.filter(x => x.method === 'PATCH').map(x => x.endpoint),
     ['/issues/1', '/issues/2']);
   assertRedacted(failed);
-  const recovered = run('retry', { apply: true });
+  const recovered = run('resume', { apply: true });
   assert.equal(recovered.status, 0, recovered.stderr);
-  assert.equal(event(recovered, 'complete').completed_mutations, 2);
-  assert.deepEqual(recovered.calls.filter(x => x.method === 'PATCH').map(x => x.body.labels),
-    [['dispatcher:ready'], ['dispatcher:ready']]);
+  assert.equal(event(recovered, 'complete').completed_mutations, 1);
+  assert.deepEqual(recovered.calls.filter(x => x.method === 'PATCH').map(x => ({ endpoint: x.endpoint, labels: x.body.labels })),
+    [{ endpoint: '/issues/2', labels: ['dispatcher:ready'] }]);
   assertRedacted(recovered);
 });
 
