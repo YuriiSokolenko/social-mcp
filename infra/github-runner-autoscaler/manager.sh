@@ -244,7 +244,8 @@ model_start_capacity() {
   fi
   # Exit 1: endpoint unreachable/HTTP error. Exit 2: response reached but invalid
   # or unrecognized. Either way the caller defers new runners (fail closed).
-  status="$(curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 5 "$MODEL_STATUS_URL")" || return 1
+  # -s without -S: an unreachable endpoint is reported once by the caller, not by curl on every poll.
+  status="$(curl -fs --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 5 "$MODEL_STATUS_URL")" || return 1
   case "$MODEL_STATUS_URL" in
     */slots|*/slots\?*)
       # Busy slots may belong to these jobs; use the larger reservation count.

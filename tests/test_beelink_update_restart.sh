@@ -23,6 +23,8 @@ if grep -Eq 'compose down.*-v|docker (system|volume) prune|docker rm -f' "$SCRIP
   fail 'script must not delete volumes or indiscriminately remove containers'
 fi
 grep -q 'active/queued Actions work' "$SCRIPT" || fail 'busy-work guard must fail closed'
+grep -Fq 'as_user "$ZOEKT_ROOT/update-index.sh"' "$SCRIPT" || fail 'Zoekt index refresh must run as the owning user, not root'
+! grep -Eq '^[[:space:]]*"\$ZOEKT_ROOT/update-index.sh"' "$SCRIPT" || fail 'Zoekt updater must never be invoked directly as root'
 grep -q 'social-mcp.pi-runner=ephemeral' "$SCRIPT" || fail 'only labeled project ephemeral workers may be stopped'
 grep -q -- '--pull never' "$SCRIPT" || fail 'Beszel must not pull mutable external images during this restart'
 grep -Fq -- '--project-name "$RUNNER_COMPOSE_PROJECT"' "$SCRIPT" || fail 'runner Compose must reuse the active deployment project name'
