@@ -147,6 +147,37 @@ the runtime's live-state wiring. Existing `pi-progress-controller`,
 `pi-coding-session` and `pi-implementation-planner-bootstrap` suites
 continue to exercise runtime behavior.
 
+## Slice 6 (#756): pure Coding Repair Policy
+
+Move only the four deterministic repair classifiers from the nested runtime
+scope to `pi-common/coding-repair-policy.mjs`, leaving existing signatures,
+output shapes, normalization order and thresholds unchanged.
+
+| Responsibility | Before | After / owner |
+| --- | --- | --- |
+| Normalize volatile diagnostic text (paths, hex, measured values and whitespace) | runtime-private `normalizeCodingRepairDiagnosticText` | `coding-repair-policy.mjs` |
+| Strict reduction against the best failure signature list | runtime-private `strictFailureSetReduction` | `coding-repair-policy.mjs` (historical array-length plus membership semantics retained) |
+| Largest edit text/line extent across nested mutation input | runtime-private `mutationTextExtent` | `coding-repair-policy.mjs` |
+| Classify creation, whole-file rewrite, targeted or broad edit | runtime-private `codingMutationShape` | `coding-repair-policy.mjs`; 80-line / 12,000-char boundaries unchanged |
+
+**Counts:** runtime 5507 → 5455 lines, new pure module 60 lines. Dependency
+direction: `pi-agent-runtime → coding-repair-policy`; the policy module
+imports nothing and owns no mutable state, filesystem access or registration.
+
+**Intentional non-extractions:** the runtime remains authoritative for
+`codingValidationRepair` and convergence history, mutation counters and
+enforcement, trusted path/realpath/symlink checks, reading imported files,
+repair evidence, retry/abort/checkpoint transitions, tool registration, tool
+execution and provider/event callbacks. Moving classification does not change
+when or why recovery actions are allowed.
+
+**Characterization:** `tests/pi-coding-repair-policy.test.mjs` pins exact
+normalization and diagnostic identity, duplicate/empty failure-set behavior,
+nested extent measurement, mutation shapes and inclusive threshold boundaries.
+Existing `tests/pi-coding-session.test.mjs` continues to exercise #499/#503
+non-convergence and history-reset behavior, and #506 repair evidence,
+localized edit bounds and rewrite enforcement.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,
