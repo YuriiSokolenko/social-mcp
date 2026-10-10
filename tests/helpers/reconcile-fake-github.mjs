@@ -41,7 +41,11 @@ globalThis.fetch = async (url, options = {}) => {
         ? Array.from({ length: 100 }, (_, index) => issue(index + 1))
         : page === 2 ? [issue(101)] : []);
     }
-    return response(['partial', 'retry', 'paused', 'live'].includes(mode) ? orphanIssues : []);
+    if (mode === 'resume') return response([
+      { ...issue(1, ['dispatcher:ready']), updated_at: '2999-01-01T00:00:00Z' },
+      orphanIssues[1],
+    ]);
+    return response(['partial', 'paused', 'live'].includes(mode) ? orphanIssues : []);
   }
   if (endpoint === '/pulls' && method === 'GET') return response([]);
   if (endpoint === '/git/matching-refs/heads/pi/' && method === 'GET') return response([]);
