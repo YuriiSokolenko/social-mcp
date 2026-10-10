@@ -84,9 +84,6 @@ Gate already did. No real issue can have such a number.
 
 ## Intentional duplication / left alone
 
-- **`base=dev` in `pi-architect.mjs`'s open-PR query** is a literal rather than
-  `baseBranch()`. Changing it alters behavior for a non-`dev` configured base,
-  so it is out of scope for a no-behavior-change refactor; raise separately.
 - **`positiveInteger`** in `progress-controller`, `semantic-loop-guard` and
   `zoekt-search` validates different env/option sources with different
   fallback semantics (`zoekt-search` takes a fallback).
