@@ -37,7 +37,7 @@ function emit(event, fields = {}, warning = false) {
     run_attempt: safeNumber('GITHUB_RUN_ATTEMPT'),
     mode: apply ? 'apply' : 'audit',
     automation: ['RUNNING', 'DRAINING', 'PAUSED'].includes(automationMode) ? automationMode : 'unknown',
-    stage: currentStage, elapsed_ms: elapsed(), ...fields,
+    stage: currentStage, elapsed_ms: elapsed(), remaining_ms: Math.max(0, deadlineMs - elapsed()), ...fields,
   };
   (warning ? console.error : console.log)(
     (warning ? 'RECONCILE_WARN ' : 'RECONCILE_PROGRESS ') + JSON.stringify(record),
@@ -60,14 +60,16 @@ function onRequest(info) {
     pending.set(info.id, { ...info, started: performance.now(), warned: false });
     return;
   }
-  const record = pending.get(info.id);
   pending.delete(info.id);
   if (info.event === 'error') {
     emit('request_failed', { ...requestFields(info), duration_ms: info.durationMs, cause: info.cause }, true);
-  } else if (info.durationMs >= slowMs) {
-    emit('slow_request', { ...requestFields(info), duration_ms: info.durationMs, code: info.code }, true);
-  } else if (info.code >= 400) {
-    emit('http_error', { ...requestFields(info), duration_ms: info.durationMs, code: info.code }, true);
+  } else {
+    if (info.code >= 400) {
+      emit('http_error', { ...requestFields(info), duration_ms: info.durationMs, code: info.code }, true);
+    }
+    if (info.durationMs >= slowMs) {
+      emit('slow_request', { ...requestFields(info), duration_ms: info.durationMs, code: info.code }, true);
+    }
   }
 }
 function onPage(info) {
@@ -207,8 +209,6 @@ for (const issue of issues) {
 
   if (!findings.length && !strandedReady) continue;
   const removals = safeRemovals(findings);
-  let recovery = null;
-
   const entry = { type: 'issue', number: issue.number, title: issue.title,
     findings, removals, recovery: null };
   report.push(entry);
@@ -300,8 +300,8 @@ if (apply && prRecoveryAllowed) {
     const needsFix = labels.has(REVIEW_CHANGES_REQUESTED);
     const workflow = workflowFile(needsFix ? 'repair' : 'reviewer');
     const owner = needsFix ? 'PR Fix' : 'Reviewer';
-    const dispatched = await mutation('pr', pr.number, 'dispatch-' + owner, () =>
-      tryDispatchWorkflow(workflow, { pr_number: String(pr.number) })).then(() => true);
+    await mutation('pr', pr.number, 'dispatch-' + owner, () =>
+      tryDispatchWorkflow(workflow, { pr_number: String(pr.number) }));
     report.push({
       type: 'pr',
       number: pr.number,
@@ -310,8 +310,8 @@ if (apply && prRecoveryAllowed) {
       removals: [],
       recovery: {
         add: needsFix ? REVIEW_CHANGES_REQUESTED : 'unreviewed',
-        dispatch: dispatched ? owner : null,
-        reason: dispatched ? `restart stranded ${owner}` : `${owner} recovery dispatch failed`,
+        dispatch: owner,
+        reason: `restart stranded ${owner}`,
       },
     });
   }
@@ -335,16 +335,18 @@ if (apply) {
 }, () => ({ checkpoints_checked: checkpoints.size, completed_mutations: successfulMutations.length }));
 await phase('summary', async () => {
 console.log(`Pipeline reconciler: ${report.length} object(s) need attention; mode=${apply ? 'apply-safe-repairs' : 'audit'}; automation=${automationMode}; issue-recovery=${issueRecoveryAllowed ? 'enabled' : 'deferred'}; pr-recovery=${prRecoveryAllowed ? 'enabled' : 'deferred'}`);
-for (const item of report) {
+for (const item of report.slice(0, 50)) {
   console.log(`${item.type.toUpperCase()} #${item.number}`);
-  for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}${finding.labels ? ` [${finding.labels.join(', ')}]` : ''}`);
+  for (const finding of item.findings) console.log(`  - ${finding.severity}: ${finding.code}`);
   if (apply && item.removals.length) console.log(`  repaired: removed ${item.removals.join(', ')}`);
   if (item.recovery) console.log(`  recovery: ${item.recovery.add}${item.recovery.dispatch ? ` + ${item.recovery.dispatch}` : ''} (${item.recovery.reason})`);
 }
+if (report.length > 50) console.log(`... ${report.length - 50} additional finding(s) omitted; totals above are authoritative`);
 if (process.env.GITHUB_STEP_SUMMARY) {
   const fs = await import('node:fs');
   const lines = ['## Pipeline reconciliation', '', `Mode: **${apply ? 'safe repair' : 'audit'}** · Findings: **${report.length}**`, ''];
-  for (const item of report) lines.push(`- **${item.type} #${item.number}** — ${item.findings.map(x => x.code).join(', ')}${item.removals.length ? `; safe removals: ${item.removals.join(', ')}` : ''}`);
+  for (const item of report.slice(0, 50)) lines.push(`- **${item.type} #${item.number}** — ${item.findings.map(x => x.code).join(', ')}${item.removals.length ? `; safe removals: ${item.removals.join(', ')}` : ''}`);
+  if (report.length > 50) lines.push(`... ${report.length - 50} additional finding(s) omitted.`);
   if (!report.length) lines.push('No inconsistent pipeline state found.');
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
 }
