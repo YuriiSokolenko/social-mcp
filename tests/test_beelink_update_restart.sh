@@ -17,7 +17,8 @@ build_line="$(grep -n 'manager image build failed' "$SCRIPT" | head -1 | cut -d:
 stop_line="$(grep -n 'compose stop control-runner' "$SCRIPT" | head -1 | cut -d: -f1)"
 [[ "$build_line" -lt "$stop_line" ]] || fail 'images must build before services stop'
 grep -q 'latest-images.env' "$SCRIPT" || fail 'tracked image versions must override stale host tags in the staged config'
-grep -q 'pull --ff-only origin dev' "$SCRIPT" || fail 'staging checkout must fast-forward to the latest origin/dev'
+grep -Fq 'pull --ff-only origin "$DEFAULT_BRANCH"' "$SCRIPT" || fail 'staging checkout must fast-forward to the configured default branch'
+grep -Fq '.git.defaultBranch' "$SCRIPT" || fail 'configured default branch must be read from the project config'
 grep -q -- '--force-recreate' "$SCRIPT" || fail 'managed services must be recreated'
 if grep -Eq 'compose down.*-v|docker (system|volume) prune|docker rm -f' "$SCRIPT"; then
   fail 'script must not delete volumes or indiscriminately remove containers'
