@@ -118,8 +118,8 @@ Existing `pi-main-tool-profile-runtime`, `pi-provider-tool-boundary`, `pi-runtim
 
 ## Slice 5 (#741): pure response budget and runtime telemetry
 
-Move log-record construction for the Planner preparation and Coding Session
-into `pi-common/runtime-budget-telemetry.mjs`. Return exact log levels/strings;
+Move lazy, pure log-record iterators for the Planner preparation and Coding Session
+into `pi-common/runtime-budget-telemetry.mjs`. Yield exact log levels/strings in the original emission sequence;
 the runtime is still the emitter and retains event registration, sequencing and
 all mutable session/progress state. Extract active response-cap precedence,
 output-ceiling comparison and the turn-start budget record without changing the
@@ -133,7 +133,7 @@ controller's selection or enforcement of budgets.
 | `PI_BUDGET` turn-start metric field projection | inline turn hook | pure `turnStartBudgetTelemetry`, runtime keeps authoritative live reads |
 
 **Counts:** runtime 5534 → 5497 lines, plus new `scripts/pi-common/runtime-budget-telemetry.mjs`
-(94 lines); zero imports into the pure helper. Mutation authorization,
+(82 lines); zero imports into the pure helper. Mutation authorization,
 large-mutation grants, output budget application, retry guard, provider
 usage ledger and hook order are unchanged.
 
