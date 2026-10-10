@@ -27,6 +27,18 @@ import { PIPELINE_LABELS } from './state-machine.mjs';
  */
 const { loadPullRequest, loadIssue, replaceLabels, pages, repo } = githubClient();
 
+/**
+ * The issue a same-repository `<issue branch prefix>N` PR into the base branch
+ * explicitly closes (`closes|fixes|resolves #N` in its body), otherwise null.
+ * Shared by Merge Gate (open PRs) and post-merge finalization (merged PRs).
+ */
+export function closingIssueNumber(pr, repository) {
+  const number = parseIssueBranch(pr.head?.ref ?? '');
+  if (pr.base?.ref !== baseBranch() || pr.base?.repo?.full_name !== repository ||
+      pr.head?.repo?.full_name !== repository || !Number.isSafeInteger(number)) return null;
+  return new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${number}\\b`, 'i').test(pr.body ?? '') ? number : null;
+}
+
 export async function preparePr(prNumber) {
   if (!Number.isSafeInteger(prNumber) || prNumber < 1) throw new Error('PR number must be a positive integer');
   const pr = await loadPullRequest(prNumber);

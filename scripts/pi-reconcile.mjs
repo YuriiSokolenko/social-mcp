@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { issueTargetAfterRemovals, replaceIssueState } from './pi-common/github-state.mjs';
+import { issueStateIo, issueTargetAfterRemovals, replaceIssueState } from './pi-common/github-state.mjs';
 import { PIPELINE_LABELS, inspectIssueState, issueStateLabels, safeRemovals } from './pi-common/state-machine.mjs';
 import { REVIEW_CHANGES_REQUESTED, REVIEW_PASSED } from './pi-common/pr-labels.mjs';
 import { baseBranch, issueBranchPrefix, parseCheckpointRef, parseIssueBranch, checkpointBranch, workflowFile } from './pi-common/project-config.mjs';
@@ -15,11 +15,7 @@ const { api, pages, repo, dispatchWorkflow, workflowRuns, deleteRef } = githubCl
 
 async function replaceStateLabels(number, expected, target, kind) {
   if (kind !== 'issue') throw new Error(`unsupported reconciliation state kind: ${kind}`);
-  await replaceIssueState({
-    number, expected, target, context: 'reconciliation',
-    load: n => api(`/issues/${n}`),
-    patch: (n, labels) => api(`/issues/${n}`, 'PATCH', { labels }),
-  });
+  await replaceIssueState({ number, expected, target, context: 'reconciliation', ...issueStateIo(api) });
 }
 async function tryDispatchWorkflow(workflow, inputs, context) {
   try {

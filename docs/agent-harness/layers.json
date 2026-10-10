@@ -207,6 +207,7 @@
         "tests/pi-semantic-loop-guard.test.mjs",
         "tests/pi-session-state-runtime.test.mjs",
         "tests/pi-session-state.test.mjs",
+        "tests/pi-shared-workflow-helpers.test.mjs",
         "tests/pi-state-machine.test.mjs",
         "tests/pi-structural-edit.test.mjs",
         "tests/pi-structured-subagent-usage.test.mjs",

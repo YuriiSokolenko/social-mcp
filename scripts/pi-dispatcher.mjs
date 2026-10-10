@@ -4,8 +4,8 @@ import { pathToFileURL } from "node:url";
 import { githubClient } from "./pi-common/github-api.mjs";
 import { baseBranch, parseIssueBranch, workflowFile } from "./pi-common/project-config.mjs";
 import { readQueueContext } from "./pi-common/queue-context.mjs";
-import { replaceIssueState } from "./pi-common/github-state.mjs";
-import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState, validateIssueTransition } from "./pi-common/state-machine.mjs";
+import { transitionIssueState } from "./pi-common/github-state.mjs";
+import { ISSUE_ACTIVE, ISSUE_TERMINAL, PIPELINE_LABELS, inspectIssueState } from "./pi-common/state-machine.mjs";
 import { taskMetadata } from "./pi-common/task-metadata.mjs";
 import { readPiJsonl } from "./pi-common/result-jsonl.mjs";
 
@@ -16,14 +16,8 @@ function usage() {
   throw new Error("usage: pi-dispatcher.mjs prepare <context.json> | apply <pi-jsonl>");
 }
 const labels = issue => new Set(issue.labels.map(label => label.name));
-async function transitionIssue(number, action) {
-  const expected = await api(`/issues/${number}`);
-  const target = validateIssueTransition(expected, action);
-  await replaceIssueState({
-    number, expected, target,
-    load: n => api(`/issues/${n}`),
-    patch: (n, labels) => api(`/issues/${n}`, { method: "PATCH", body: JSON.stringify({ labels }) }),
-  });
+function transitionIssue(number, action) {
+  return transitionIssueState({ api: request, number, action });
 }
 
 const activeLabels = [...ISSUE_ACTIVE].filter(label => label !== PIPELINE_LABELS.architectReady);
