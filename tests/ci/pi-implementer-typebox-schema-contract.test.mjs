@@ -439,3 +439,155 @@ test('registered repository search schemas match original TypeBox and exposure c
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// #775: pre-extraction golden copies of the three *registered* recovery schemas.
+// Do not import any recovery builders here: schema comparison must be independent.
+const EXPECTED_RECOVERY_TOOL_METADATA = {
+  recover_worktree: {
+    label: 'Recover accidental worktree changes',
+    description: 'Delete one untracked file or restore one tracked file to HEAD without a shell or coding session. delete_untracked and revert_tracked work only on paths the runtime can prove changed during this stage (clean/absent in the run-start baseline, not journaled, delete also not in accepted scope); pre-existing, journaled (use undo_mutation) and protected paths are refused with a precise code. Refuses escapes, symlinks, ignored files, .git and .gitignore. A file-set mismatch lists each remaining path under file_set.drift with its exact recovery action. Returns the current changed files and validates them against expected_files immediately; pass the intended final file set. A mismatch is recoverable: clean remaining accidental files, then submit_result.',
+  },
+  undo_mutation: {
+    label: 'Undo a recorded mutation',
+    description: 'Selectively undo one recorded structural_edit/safe_edit/edit/write by mutation_id. The runtime restores exact prior bytes/mode or deletes a file only when that mutation proved it created the file. It compares the current file with the recorded post-fingerprint first and refuses stale/conflicting, symlink, hard-link, out-of-worktree and protected control-plane targets. Pass the intended final file set so cleanup is validated immediately.',
+  },
+  rollback_last_mutation: {
+    label: 'Rollback last mutation',
+    description: 'Fast shortcut for undoing the shared latest structural_edit/safe_edit/edit/write. Persistent journal order is authoritative across parent/coding-session processes and uses compare-before-undo. After bounded-journal degradation, rollback is available only in the process that made the local-only mutation; other processes refuse instead of selecting an older mutation. After resume the barrier is intentionally stale because no process owns its prior-byte snapshot, so this shortcut continues to refuse until a new journaled mutation supersedes the barrier or explicit targeted recovery resolves the state. The local-only path also refuses if later bytes changed.',
+  },
+};
+
+async function checkRegisteredRecoveryContracts(runtimeUrl, metadata) {
+  const assert = (await import('node:assert/strict')).default;
+  const { Type } = await import('typebox');
+  const { Value } = await import('typebox/value');
+  const { default: runtime } = await import(runtimeUrl);
+
+  const expected = {
+    recover_worktree: Type.Object({
+      action: Type.Union([Type.Literal('delete_untracked'), Type.Literal('revert_tracked')]),
+      path: Type.String({ minLength: 1, maxLength: 1000 }),
+      expected_files: Type.Array(Type.String(), { maxItems: 200 }),
+      reason: Type.String({ minLength: 1, maxLength: 500 }),
+    }),
+    undo_mutation: Type.Object({
+      mutation_id: Type.String({ minLength: 1, maxLength: 80 }),
+      expected_files: Type.Array(Type.String(), { maxItems: 200 }),
+      reason: Type.String({ minLength: 1, maxLength: 500 }),
+    }),
+    rollback_last_mutation: Type.Object({
+      reason: Type.String({ minLength: 1, maxLength: 500 }),
+    }),
+  };
+
+  const registered = [];
+  const pi = {
+    registerTool(tool) { registered.push(tool); },
+    on() {}, appendEntry() {},
+    events: { on() {}, emit() {} },
+    getActiveTools() { return []; },
+    setActiveTools() {},
+    getAllTools() { return registered.map(tool => ({ name: tool.name })); },
+    sendUserMessage() {},
+  };
+  runtime(pi);
+  const recoveryNames = registered
+    .map(tool => tool.name)
+    .filter(name => Object.hasOwn(expected, name));
+  assert.deepEqual(recoveryNames,
+    ['recover_worktree', 'undo_mutation', 'rollback_last_mutation'],
+    'recovery tools remain registered once each and in the same order');
+
+  const byName = new Map(registered.map(tool => [tool.name, tool]));
+  for (const [name, golden] of Object.entries(expected)) {
+    const tool = byName.get(name);
+    assert.ok(tool, name + ' must be registered');
+    assert.equal(tool.label, metadata[name].label, name + ' label');
+    assert.equal(tool.description, metadata[name].description, name + ' description');
+    assert.equal(typeof tool.execute, 'function', name + ' registered executor');
+    assert.equal(JSON.stringify(tool.parameters), JSON.stringify(golden),
+      name + ' exact serialized provider contract including key, union and metadata order');
+    assert.deepEqual(Object.keys(tool.parameters.properties), Object.keys(golden.properties),
+      name + ' property order');
+    assert.deepEqual(tool.parameters.required, golden.required,
+      name + ' required field ordering');
+    assert.deepEqual(tool.parameters.required, Object.keys(golden.properties),
+      name + ' all recovery arguments are required');
+  }
+
+  const recover = { action: 'delete_untracked', path: 'src/file.txt', expected_files: [], reason: 'cleanup' };
+  const undo = { mutation_id: 'mut-1', expected_files: [], reason: 'undo' };
+  const rollback = { reason: 'rollback' };
+  const cases = {
+    recover_worktree: [
+      [recover, true],
+      [{ ...recover, action: 'revert_tracked' }, true],
+      [{ ...recover, action: 'delete' }, false],
+      [{ ...recover, path: '' }, false],
+      [{ ...recover, path: 'p'.repeat(1000) }, true],
+      [{ ...recover, path: 'p'.repeat(1001) }, false],
+      [{ ...recover, expected_files: Array(200).fill('file') }, true],
+      [{ ...recover, expected_files: Array(201).fill('file') }, false],
+      [{ ...recover, expected_files: [''] }, true],
+      [{ ...recover, expected_files: ['a', 42] }, false],
+      [{ ...recover, reason: 'r'.repeat(500) }, true],
+      [{ ...recover, reason: '' }, false],
+      [{ ...recover, reason: 'r'.repeat(501) }, false],
+      [{ ...recover, expected_files: 'not-an-array' }, false],
+      [{ path: 'src/file.txt', expected_files: [], reason: 'cleanup' }, false],
+      [{ action: 'delete_untracked', expected_files: [], reason: 'cleanup' }, false],
+      [{ action: 'delete_untracked', path: 'src/file.txt', reason: 'cleanup' }, false],
+      [{ action: 'delete_untracked', path: 'src/file.txt', expected_files: [] }, false],
+    ],
+    undo_mutation: [
+      [undo, true],
+      [{ ...undo, mutation_id: 'x'.repeat(80) }, true],
+      [{ ...undo, mutation_id: '' }, false],
+      [{ ...undo, mutation_id: 'x'.repeat(81) }, false],
+      [{ ...undo, expected_files: Array(200).fill('a') }, true],
+      [{ ...undo, expected_files: Array(201).fill('a') }, false],
+      [{ ...undo, expected_files: [''] }, true],
+      [{ ...undo, expected_files: [null] }, false],
+      [{ ...undo, reason: 'x'.repeat(500) }, true],
+      [{ ...undo, reason: '' }, false],
+      [{ ...undo, reason: 'x'.repeat(501) }, false],
+      [{ expected_files: [], reason: 'undo' }, false],
+      [{ mutation_id: 'mut-1', reason: 'undo' }, false],
+      [{ mutation_id: 'mut-1', expected_files: [] }, false],
+    ],
+    rollback_last_mutation: [
+      [rollback, true],
+      [{ reason: 'x'.repeat(500) }, true],
+      [{ reason: '' }, false],
+      [{ reason: 'x'.repeat(501) }, false],
+      [{}, false],
+      [{ reason: 123 }, false],
+    ],
+  };
+  for (const [name, values] of Object.entries(cases)) {
+    for (const [value, valid] of values) {
+      assert.equal(Value.Check(byName.get(name).parameters, value), valid,
+        name + ' boundary ' + JSON.stringify(value).slice(0, 120));
+    }
+  }
+}
+
+test('registered recovery tool TypeBox contracts remain unchanged (#775)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-recovery-typebox-'));
+  try {
+    const loader = writeTypeboxLoader(dir);
+    const source = [
+      "import { register } from 'node:module';",
+      "import { pathToFileURL } from 'node:url';",
+      'register(pathToFileURL(' + JSON.stringify(loader) + '), import.meta.url);',
+      'await (' + checkRegisteredRecoveryContracts.toString() + ')(' + JSON.stringify(RUNTIME_SCHEMA_URL) + ', ' + JSON.stringify(EXPECTED_RECOVERY_TOOL_METADATA) + ');',
+    ].join('\n');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, PI_STAGE: 'implementer', PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
