@@ -44,8 +44,8 @@ export function githubClient({
           : name.startsWith('/git/matching-refs/') ? 'issue-refs'
             : name.startsWith('/actions/workflows/') ? 'workflow-dispatch'
               : name.startsWith('/git/refs/') ? 'checkpoint-ref'
-                : /^\\/issues\\/\\d+\\/labels$/.test(name) ? 'issue-labels'
-                  : /^\\/issues\\/\\d+$/.test(name) ? 'issue'
+                : name.startsWith('/issues/') && name.endsWith('/labels') ? 'issue-labels'
+                  : name.startsWith('/issues/') ? 'issue'
                     : 'other';
     const page = Number(url.searchParams.get('page'));
     const status = url.searchParams.get('status');
