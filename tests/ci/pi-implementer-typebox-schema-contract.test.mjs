@@ -618,7 +618,7 @@ async function checkRegisteredProgressBudgetContracts(runtimeUrl, metadata) {
   const { Type } = await import('typebox');
   const { Value } = await import('typebox/value');
   const { default: runtime } = await import(runtimeUrl);
-  const { STAGES } = await import(new URL('../../scripts/pi-common/stage-config.mjs', runtimeUrl).href);
+  const { STAGES } = await import(new URL('./pi-common/stage-config.mjs', runtimeUrl).href);
 
   // Real TypeBox golden declarations, never constructed from the extracted builders.
   const golden = {
