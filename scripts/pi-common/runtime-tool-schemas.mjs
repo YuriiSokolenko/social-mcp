@@ -97,3 +97,36 @@ export function rollbackLastMutationParameters() {
     reason: Type.String({ minLength: 1, maxLength: 500 }),
   });
 }
+
+// Pure planning/progress and output-budget parameter contracts. Their conditional
+// registration, dynamic names and executors remain owned by pi-agent-runtime.
+export function declareTaskComplexityParameters() {
+  return Type.Object({
+    complexity: Type.Union([
+      Type.Literal('trivial'),
+      Type.Literal('normal'),
+      Type.Literal('complex'),
+    ]),
+    reason: Type.String({ description: 'One short sentence explaining the classification' }),
+  });
+}
+
+export function productiveProgressBlockerParameters() {
+  return Type.Object({
+    missing: Type.String({ minLength: 1, maxLength: 300 }),
+    reason: Type.String({ minLength: 1, maxLength: 500 }),
+  });
+}
+
+export function largeMutationBudgetParameters() {
+  return Type.Object({
+    reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
+  });
+}
+
+export function setResponseBudgetParameters() {
+  return Type.Object({
+    level: Type.Union([Type.Literal('short'), Type.Literal('normal'), Type.Literal('deep')]),
+    reason: Type.String({ description: 'One short sentence explaining why the next response needs this budget' }),
+  });
+}
