@@ -39,6 +39,9 @@ import {
   runCheckParameters,
   indexedRepoSearchParameters,
   repoSearchParameters,
+  recoverWorktreeParameters,
+  undoMutationParameters,
+  rollbackLastMutationParameters,
 } from './pi-common/runtime-tool-schemas.mjs';
 import {
   appendCheckRecord,
@@ -2834,12 +2837,7 @@ export default function (pi) {
       name: 'recover_worktree',
       label: 'Recover accidental worktree changes',
       description: 'Delete one untracked file or restore one tracked file to HEAD without a shell or coding session. delete_untracked and revert_tracked work only on paths the runtime can prove changed during this stage (clean/absent in the run-start baseline, not journaled, delete also not in accepted scope); pre-existing, journaled (use undo_mutation) and protected paths are refused with a precise code. Refuses escapes, symlinks, ignored files, .git and .gitignore. A file-set mismatch lists each remaining path under file_set.drift with its exact recovery action. Returns the current changed files and validates them against expected_files immediately; pass the intended final file set. A mismatch is recoverable: clean remaining accidental files, then submit_result.',
-      parameters: Type.Object({
-        action: Type.Union([Type.Literal('delete_untracked'), Type.Literal('revert_tracked')]),
-        path: Type.String({ minLength: 1, maxLength: 1000 }),
-        expected_files: Type.Array(Type.String(), { maxItems: 200 }),
-        reason: Type.String({ minLength: 1, maxLength: 500 }),
-      }),
+      parameters: recoverWorktreeParameters(),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         const result = recoverWorktree({
           ...params,
@@ -2857,11 +2855,7 @@ export default function (pi) {
       name: 'undo_mutation',
       label: 'Undo a recorded mutation',
       description: 'Selectively undo one recorded structural_edit/safe_edit/edit/write by mutation_id. The runtime restores exact prior bytes/mode or deletes a file only when that mutation proved it created the file. It compares the current file with the recorded post-fingerprint first and refuses stale/conflicting, symlink, hard-link, out-of-worktree and protected control-plane targets. Pass the intended final file set so cleanup is validated immediately.',
-      parameters: Type.Object({
-        mutation_id: Type.String({ minLength: 1, maxLength: 80 }),
-        expected_files: Type.Array(Type.String(), { maxItems: 200 }),
-        reason: Type.String({ minLength: 1, maxLength: 500 }),
-      }),
+      parameters: undoMutationParameters(),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         let result;
         try {
@@ -2922,9 +2916,7 @@ export default function (pi) {
       name: 'rollback_last_mutation',
       label: 'Rollback last mutation',
       description: 'Fast shortcut for undoing the shared latest structural_edit/safe_edit/edit/write. Persistent journal order is authoritative across parent/coding-session processes and uses compare-before-undo. After bounded-journal degradation, rollback is available only in the process that made the local-only mutation; other processes refuse instead of selecting an older mutation. After resume the barrier is intentionally stale because no process owns its prior-byte snapshot, so this shortcut continues to refuse until a new journaled mutation supersedes the barrier or explicit targeted recovery resolves the state. The local-only path also refuses if later bytes changed.',
-      parameters: Type.Object({
-        reason: Type.String({ minLength: 1, maxLength: 500 }),
-      }),
+      parameters: rollbackLastMutationParameters(),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const journal = mutationJournalState(ctx.cwd, process.env);
         const localOnlyBarrier = journal.local_only_barrier ?? null;
