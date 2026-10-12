@@ -256,7 +256,15 @@
         "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
       }
     },
-    "error": null
+    "error": null,
+    "usage": {
+      "inputTokens": 20000,
+      "outputTokens": 2500,
+      "cacheReadTokens": 85000,
+      "cacheWriteTokens": 0,
+      "totalTokens": 107500,
+      "completeness": "incomplete"
+    }
   },
   "failureResult": {
     "kind": "session-result",
@@ -305,6 +313,14 @@
       "safeMessage": "Session deadline elapsed; durable checkpoint available.",
       "relatedEventId": "evt-770-19",
       "toolExecutionId": null
+    },
+    "usage": {
+      "inputTokens": 20000,
+      "outputTokens": 2600,
+      "cacheReadTokens": 85000,
+      "cacheWriteTokens": 0,
+      "totalTokens": 107600,
+      "completeness": "incomplete"
     }
   },
   "event": {
@@ -323,7 +339,8 @@
       "agentId": "agent-implementer",
       "parentAgentId": null,
       "childAgentId": null,
-      "toolExecutionId": null
+      "toolExecutionId": null,
+      "childSessionId": null
     },
     "transition": {
       "from": "paused",
@@ -382,7 +399,17 @@
         "path": "/evidence/koog/38087632442/issue-770/checkpoints/tool-journal.json",
         "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       }
-    }
+    },
+    "correlationId": "corr-770-checkpoint",
+    "causationId": "evt-770-3",
+    "parentSessionId": null,
+    "activeChildSessionIds": [
+      "child-770-planner"
+    ],
+    "persistedAt": "2026-10-11T02:45:01Z",
+    "writeDurationMs": 1200,
+    "lastEventSeq": 4,
+    "status": "durable"
   },
   "forwardMinorRequest": {
     "kind": "session-request",
