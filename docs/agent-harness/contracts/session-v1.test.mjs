@@ -137,6 +137,10 @@ test('journal correlation, child and tool IDs, checkpoint and results are linkab
   assert.ok(event.sequence > checkpoint.sequence);
   assert.ok(successResult.lastEventSeq >= event.sequence);
   assert.equal(successResult.provenance.fenceGeneration, resumeRequest.resume.fenceGeneration);
+  assert.ok(successResult.usage.totalTokens >= successResult.usage.outputTokens);
+  assert.equal(checkpoint.status, 'durable');
+  assert.equal(checkpoint.lastEventSeq, checkpoint.sequence);
+  assert.equal(checkpoint.activeChildSessionIds.length, 1);
   assert.equal(successResult.provenance.baselineSha, freshRequest.repository.baselineSha);
   const malformed = copy(event);
   malformed.actor.toolExecutionId = 42;
