@@ -1,5 +1,7 @@
 # Agent harness extraction: boundary, target layout and migration plan
 
+> **Koog architecture note (#784, 2026-10-12):** The #710 `move/split/stay` plan below is a **superseded alternative for the Koog extraction goal**, not a migration to execute for `koog-agent-runtime`. The reviewed GitHub/Koog ownership boundary is [KOOG_BOUNDARY.md](KOOG_BOUNDARY.md): GitHub workflows, Issue/PR state, CI, Reconciler, Merge Gate and the N150 autoscaler stay in `social-mcp`; only per-job agent runtime *behavior* is ported to Koog. The `layers.json` inventory and #710/#736/#741 characterization and boundary tests intentionally remain untouched and valid for their historical JavaScript-harness classification. No workflows or running infrastructure have been migrated by #784.
+
 > **Status: step 1 (#710), isolation inside `social-mcp`.** Nothing has moved. This document is the reviewed boundary: what moves to a standalone harness repository, what stays, and what must split. The authoritative per-file list is [`layers.json`](layers.json). The inventory below is rendered from it, and `tests/harness-boundary.test.mjs` keeps the two in sync.
 
 ## How the boundary is enforced
