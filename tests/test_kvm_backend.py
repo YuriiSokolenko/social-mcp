@@ -169,6 +169,7 @@ class KvmBackendTests(unittest.TestCase):
                 if command[1:3] == ["info", "--output=json"]:
                     return info
                 if command[1:2] == ["create"]:
+                    self.assertIn("preallocation=metadata,extended_l2=on", command)
                     Path(command[-2]).write_bytes(b"overlay")
                     return subprocess.CompletedProcess(command, 0, "", "")
                 if command[1:3] == ["-as", "mkisofs"]:

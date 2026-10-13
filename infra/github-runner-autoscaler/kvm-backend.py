@@ -357,7 +357,7 @@ def start_vm(name: str, token: str, cfg: dict[str, object]) -> None:
             raise RuntimeError("unsupported golden image format")
         run([
             str(cfg["qemu_img"]), "create", "-f", "qcow2", "-F", golden_format,
-            "-b", str(cfg["golden"]), "-o", "preallocation=metadata",
+            "-b", str(cfg["golden"]), "-o", "preallocation=metadata,extended_l2=on",
             str(state_dir / "root.qcow2"), f"{cfg['overlay_gib']}G",
         ], timeout=60)
         overlay_info = json.loads(run([str(cfg["qemu_img"]), "info", "--output=json", str(state_dir / "root.qcow2")], capture=True).stdout)
