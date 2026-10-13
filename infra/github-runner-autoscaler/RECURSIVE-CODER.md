@@ -1,6 +1,6 @@
 # Recursive-coder CI pool — issue #793
 
-Status: **KVM backend, manager integration, egress proxy, owner preparation and deployment tooling are implemented; the current unprivileged guest bootstrap passed its exact Bubblewrap probe and sandbox E2E on a real disposable N150 VM; full downstream CI had six integration failures in one run; not deployed**.
+Status (2026-10-14): **The unprivileged KVM guest passes the exact Bubblewrap probe, full downstream Gradle CI, and two repeated integration suites on a real disposable N150 VM. The six failures from an earlier run did not recur; their original JUnit diagnostics were not preserved, so no downstream implementation fix is claimed. The runner pool is not deployed and PR #794 remains Draft.**
 The guest uses unprivileged user namespaces and a guest-only nftables deny-by-default
 egress policy. VM startup, bounded resources, restricted proxy egress, shutdown and
 overlay cleanup have been exercised. Actions runner registration and a live job
@@ -448,42 +448,35 @@ started. Those are lifecycle regression tests, not evidence of a GitHub runner
 session. No production KVM manager was deployed.
 
 The scoped PAT has not been provided. A host-side live API permission check and
-registration-token POST remain owner actions. The new guest bootstrap must be
-validated against the pinned golden image before deploy. Re-run the full guest CI
-and network boundary checklist after that validation; the earlier real-VM result
-does not prove the changed bootstrap. Existing Pi, General, Control and
-`n150-gen-eph-*` container IDs remained unchanged during Beelink validation; no
-KVM guest or validation container remains running.
+registration-token POST remain owner actions. The current unprivileged bootstrap
+has now been validated against the pinned golden image; no real GitHub runner
+registration or Actions job was attempted. Existing Pi, General, Control and
+General ephemeral runner container IDs remained unchanged during Beelink tests;
+no KVM guest or validation container remains running.
 
 ## Owner commands
 
-Use a clean checkout of this Draft PR on Beelink. Keep the separately scoped
+Use the prepared checkout `/home/yurasik/github-runners/social-mcp-pr-794` on
+Beelink. Keep the separately scoped
 fine-grained PAT in the protected `.env` file as
 `RECURSIVE_CODER_GH_ADMIN_TOKEN` (regular file, mode 0600). Grant only the
 recursive-coder repository permissions required for Actions read and runner
 Administration read/write. Never put the PAT or a registration token in shell
 arguments, issue comments or logs.
 
-N150's current direct route reaches GitHub and the Ubuntu package archive, but
-times out fetching `cloud-images.ubuntu.com`. Download the official amd64 image
-on a network-permitted Mac, verify the pinned checksum there, and stage it at
-`/tmp/noble-server-cloudimg-amd64.img` on Beelink. The preparation script checks
-the same checksum and image metadata before installation:
+The owner staged and prepared the official Ubuntu 24.04 amd64 golden image from
+preparation commit `afd5b8f`; it is read-only and matches the pinned SHA-256.
+Verify it before any future deployment:
 
 ```bash
-curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o noble-server-cloudimg-amd64.img
-echo '6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2  noble-server-cloudimg-amd64.img' | shasum -a 256 -c -
-scp noble-server-cloudimg-amd64.img beelink:/tmp/noble-server-cloudimg-amd64.img
-ssh beelink 'sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --dry-run'
-ssh beelink 'sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --prepare'
-ssh beelink 'sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --verify'
+ssh beelink 'sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --verify'
 ```
 
-After a fresh real-VM bootstrap validation and owner review, run the read-only
-preflight and inspect the output:
+After the owner supplies the scoped PAT and reviews the saved validation
+evidence, run the read-only preflight and inspect its output:
 
 ```bash
-bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
 ```
 
 The preparation script creates
@@ -494,15 +487,15 @@ the KVM manager image, verifies the exact device,
 mount and resource settings, and starts only the new Compose service:
 
 ```bash
-sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --deploy /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
-sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --deploy /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
+sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
 ```
 
 Rollback acquires the shared scheduler lock, refuses to interrupt an active VM,
 and removes/restores only the KVM manager and its saved image/configuration:
 
 ```bash
-sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --rollback /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --rollback /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
 ```
 
 To undo host preparation before deployment, the separate rollback refuses to
@@ -511,7 +504,7 @@ preparation transaction installed and preserves the staged source and
 directories:
 
 ```bash
-sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --rollback
+sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --rollback
 ```
 
 After owner deployment, require one trusted Actions job on an `n150-rc-eph-*`
@@ -531,10 +524,9 @@ bash tests/test_recursive_coder_kvm_deploy.sh
 python3 -W error::ResourceWarning -m unittest -v tests/test_kvm_backend.py tests/test_kvm_egress_proxy.py
 python3 -m unittest -v tests.test_recursive_coder_deploy
 pytest --confcutdir=tests/ci -q tests/ci/test_workflow_integrity.py
-shellcheck infra/github-runner-autoscaler/manager.sh infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh tests/test_recursive_coder_kvm_pool.sh tests/test_recursive_coder_kvm_deploy.sh
-shellcheck infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh tests/test_prepare_recursive_coder_kvm.sh
+shellcheck infra/github-runner-autoscaler/manager.sh infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh
 bash tests/test_prepare_recursive_coder_kvm.sh
-docker compose --env-file infra/github-runner-autoscaler/.env.example -f infra/github-runner-autoscaler/compose.yaml --profile recursive-coder-kvm config --quiet
+TOKEN_ENCRYPTION_KEY=validation-only-placeholder-no-auth docker compose --env-file .env.example -f compose.yaml --profile recursive-coder-kvm config --quiet
 ```
 
 The guest-only change to AppArmor's unprivileged-userns restriction follows
@@ -543,3 +535,122 @@ the bootstrap. Review [Bubblewrap's security notes](https://github.com/container
 and [Ubuntu CVE-2026-41163](https://ubuntu.com/security/CVE-2026-41163) when pinning
 the guest package version. Endpoint requirements are listed in the [GitHub
 self-hosted runner reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners).
+
+## Current full KVM validation and failure diagnosis — 2026-10-14
+
+The Beelink run used the isolated worktree prepared from `afd5b8f` and the KVM
+manager image built from the PR implementation. It booted the pinned Ubuntu
+24.04.5 amd64 golden image (SHA-256
+`6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2`) as a
+disposable qcow2 overlay. QEMU used `-machine q35,accel=kvm -cpu host -smp 2
+-m 4096`, `-netdev user,restrict=on,ipv6=off`, and one `guestfwd` to the
+loopback-only egress proxy. The command had no host forwarding, TAP/bridge, host
+filesystem share, Docker socket, or Pi configuration. The manager container was
+capped at 2.25 CPUs and 5 GiB; the guest overlay had a 24 GiB virtual cap and the
+VM lifetime was bounded to 1800 seconds. The full CI command completed in 3m54s;
+both integration repeats completed in 1m44s and 1m41s. The VM powered off and
+the supervisor removed its overlay, seed, state directory, and temporary proxy.
+
+The current run reached the manager's 5 GiB memory cap in live samples and used
+about 2.38 GiB of swap at the last sample. The cgroup reported `oom=0`,
+`oom_kill=0`, and `oom_group_kill=0`. An earlier run of this same current
+unprivileged bootstrap measured QEMU peak RSS at 4,238,032 KiB and peak overlay
+allocation at 3,502,481,408 bytes; those are separate-run peak measurements, not
+claimed as the exact peak for this full-suite run. Host storage remained about
+190 GiB free. The diagnostics bundle includes the exact QEMU command and the
+serial policy/probe results. Its SHA-256 is
+`aa6b2cb60e8a974a7b3f8ae019250a0805a35876499c1fab8a7829ffea2d98e4`.
+
+The guest used Java 21.0.12.1, Git 2.43.0, Gradle 9.8.1, and downstream commit
+`3028a05e602a9572ba41bc1f3daa28d0fdb762c0` (workflow SHA-256
+`786b6fb857c10ac4ed60a94419f66068a0c91868f39021044decde3470bba491`). The exact
+workflow command passed:
+
+```text
+CI=true ./gradlew --no-daemon clean test integrationTest e2eTest installDist --stacktrace
+BUILD SUCCESSFUL in 3m 54s
+exit=0
+```
+
+The preserved full-command JUnit XML has 524 cases: `test` 392, `integrationTest`
+131, and `e2eTest` 1; each tier has zero skips, failures, and errors. The
+required sandbox test appears once in the dedicated `e2eTest` tier and passed
+with zero skips. The downstream legacy `test` task is deliberately unfiltered,
+so its report also contains one pass of that method; `integrationTest` excludes
+it. This is the existing downstream task design, not a retry. Two subsequent
+`./gradlew --no-daemon integrationTest --rerun-tasks --stacktrace` runs each
+passed all 131 integration cases with zero skips/failures. JUnit for both
+repeats is included without stale `test` or `e2eTest` reports.
+
+All six previously reported failures were run individually and then by their
+full `SessionRuntimeTest` and `WorkspaceManagerTest` classes on the same
+downstream commit. Each individual test passed (1/1, zero skips); the classes
+passed (14/14 and 10/10, zero skips). They also passed in the exact clean CI
+command and both repeated integration suites. The previous 15-minute failing
+run did not export its XML. Its retained console only identifies the two
+SessionRuntime assertions (expected terminal statuses at source lines 144 and
+156), the typed-list assertion at `WorkspaceManagerTest.kt:122`, and `Refused`
+exceptions from the `WorkspaceManager.open` helper at line 111 for the
+path-traversal and symlink/submodule cases; it does not record the actual values
+or refusal codes for those failures. The symlink-swap failure likewise has no
+preserved assertion message. Git version, workspace behavior, and filesystem
+security were therefore compared by rerunning on the same commit and current
+bootstrap, not by altering the downstream implementation or tests. The six
+failures did not reproduce, so no downstream runtime fix is justified by the
+available evidence; the original root cause remains unproven because the first
+run's JUnit was lost.
+
+The report-enabled diagnostic run also caught one unrelated transient failure
+in `TaskManagerTest.cancelledAttemptCannotBeOverwrittenByImmediateRetryWhileWorkerIsAlive`
+at line 471 (`expected: <2> but was: <1>`). Its focused class passed in the exact
+full CI run and both subsequent full integration reruns. The JUnit failure and
+stacktrace are preserved in the evidence archive. No implementation change was
+made without recurrence or a demonstrated scheduler defect.
+
+The guest started nftables before running tests. Its `inet runner_egress`
+output chain had `policy drop` and allowed only loopback, established traffic,
+DHCP, and `10.0.2.100:3128`. The exact Bubblewrap workflow probe passed as
+unprivileged UID 1001 (`BWRAP_PROBE_EXIT=0`). GitHub, GitHub API, raw GitHub, and
+Gradle endpoints returned HTTP 200/200/301/200 through the proxy; an unlisted
+host, direct DNS, and direct public egress were blocked. Beelink SSH, the LAN
+gateway, Docker control-plane address, and representative 10/172/192 private
+addresses all returned `ENETUNREACH`. HP Nano was not contacted as a live target:
+**Direct connection attempts blocked; live-target verification unavailable
+because HP Nano is powered off.**
+
+The validation injected no runner registration token and never called the
+GitHub registration API. The separate PAT remains an owner-only input. Backend
+unit tests cover one-job admission, token isolation, timeout, guest exit, and
+abandoned-state cleanup; a real Actions registration/job and cleanup-after-job
+remain untested until the owner supplies the scoped PAT and separately
+authorizes deployment. No host-wide policy or production service was changed.
+PR #794 remains Draft.
+
+The current-run evidence archive is
+[`evidence/recursive-coder-kvm-20261014.tar.gz`](evidence/recursive-coder-kvm-20261014.tar.gz).
+It contains the full Gradle console/stacktrace, 37 JUnit XML files from all
+three tiers, two clean integration reruns, six focused test reports, the two
+class reports, the single TaskManager failure report, and guest
+network/lifecycle results. The downstream workflow artifact change is in Draft PR
+[#67](https://github.com/YuriiSokolenko/recursive-coder/pull/67), which uploads
+`test`, `integrationTest`, and `e2eTest` XML under `if: always()`.
+
+The Beelink regression suite was rerun from the Linux checkout at
+`9c0891cd8fec0562efcf2f89ddb1687eb920a2eb` (the KVM implementation under test is
+unchanged from this PR head). `tests/test_runner_autoscaler.sh`,
+`tests/test_recursive_coder_pool.sh`, `tests/test_recursive_coder_kvm_pool.sh`,
+`tests/test_recursive_coder_kvm_deploy.sh`, and
+`tests/test_prepare_recursive_coder_kvm.sh` all exited 0. The Python unittest
+set passed 25/25; Python AST parsing passed for all 38 Python files under the
+autoscaler and tests directories. Workflow-integrity pytest passed 4/4 using
+pytest 9.1.1, PyYAML 6.0.3, and pytest-asyncio 1.4.0. Compose config rendering
+passed with a nonsecret placeholder for the required encryption key.
+
+The existing container IDs and health states matched the pre-test snapshot. The
+one-off diagnostics image was removed after validation. ShellCheck 0.9.0 ran in
+an isolated container. The broad default scan over implementation and test
+scripts exited 1 with 22 SC2034 warnings and 257 informational findings, mostly
+SC2317 reports for test functions invoked through dynamically sourced manager
+code. No suppressions were added. The three production KVM scripts passed
+`shellcheck --severity=warning` with exit 0. This records the broad scan's real
+status instead of describing it only as advisory.
