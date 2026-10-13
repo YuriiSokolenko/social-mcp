@@ -53,6 +53,16 @@ legacy_snapshot() {
   docker inspect pi-runner-manager general-runner-manager n150-control \
     --format '{{.Name}} {{.Id}} {{.State.StartedAt}}' | sort
 }
+require_manager_coordination() {
+  local manager_env
+  manager_env="$(docker inspect "$service" --format '{{range .Config.Env}}{{println .}}{{end}}')" \
+    || fail 'Cannot validate runner admission coordination; manager remains running'
+  printf '%s\n' "$manager_env" | grep -Fxq 'SCHEDULER_STATE_DIR=/scheduler' \
+    || fail 'Manager lacks shared admission-lock configuration; refusing disruptive rollback'
+  docker exec "$service" grep -Fq 'flock -w "$DOCKER_TIMEOUT_SECONDS" 9' \
+    /usr/local/bin/pi-runner-manager \
+    || fail 'Manager lacks shared admission-lock support; refusing disruptive rollback'
+}
 no_active_workers() {
   local names
   names="$(docker ps -a --filter label=social-mcp.runner-repository=YuriiSokolenko/recursive-coder --format '{{.Names}}')"
@@ -104,6 +114,18 @@ if [ "$mode" = --rollback ]; then
     echo 'Recursive-coder manager is absent; no rollback needed.'
     exit 0
   fi
+  require_manager_coordination
+  scheduler_mount="$(docker volume inspect social-mcp-runner-scheduler --format '{{.Mountpoint}}')" \
+    || fail 'Shared scheduler volume is unavailable; manager remains running'
+  case "$scheduler_mount" in */volumes/social-mcp-runner-scheduler/_data) ;; *) fail 'Unexpected scheduler volume mount path' ;; esac
+  [ -d "$scheduler_mount" ] || fail 'Scheduler volume mount is not available; manager remains running'
+  # The manager holds this same lock across capacity check and docker create.
+  # Nonblocking failure leaves the manager and any active worker untouched.
+  exec 8>"$scheduler_mount/admission.lock"
+  flock -n 8 || fail 'Runner admission is in progress; retry rollback without stopping the manager'
+  # Check before stopping (preserves manager on busy failure), then again after
+  # stop while the shared lock guarantees no manager can start a new worker.
+  no_active_workers
   docker stop "$service" >/dev/null
   no_active_workers
   if [ ! -f "$state/previous/compose.yaml" ]; then
@@ -123,6 +145,16 @@ if [ "$mode" = --rollback ]; then
   rm -rf "$state/current"
   cp -a "$state/previous" "$state/current"
 else
+  # Serialize upgrades against this pool's worker admission as well.
+  if [ "$manager_exists" = true ]; then
+    require_manager_coordination
+    scheduler_mount="$(docker volume inspect social-mcp-runner-scheduler --format '{{.Mountpoint}}')" \
+      || fail 'Shared scheduler volume is unavailable; manager remains running'
+    case "$scheduler_mount" in */volumes/social-mcp-runner-scheduler/_data) ;; *) fail 'Unexpected scheduler volume mount path' ;; esac
+    [ -d "$scheduler_mount" ] || fail 'Scheduler volume mount is not available; manager remains running'
+    exec 8>"$scheduler_mount/admission.lock"
+    flock -n 8 || fail 'Runner admission is in progress; retry deployment without recreating the manager'
+  fi
   # Save exactly the last successful configuration before any image tag changes.
   no_active_workers
   if [ -d "$state/current" ]; then

@@ -89,15 +89,32 @@ GitHub's temporary UI registration token is not a durable manager credential.
 
 Host policy: `kernel.unprivileged_userns_clone=1`,
 `kernel.apparmor_restrict_unprivileged_userns=1`,
-`user.max_user_namespaces=60712`. Host-level bubblewrap succeeded. A short-lived,
-non-disruptive Docker compatibility probe used the already present Ubuntu 24.04
-image, read-only mounted `/usr/bin/bwrap`, UID 1001, no network, all capabilities
-dropped and no-new-privileges, retaining default seccomp/AppArmor. The exact
-workflow probe failed with **“No permissions to create a new namespace”**.
-The probe container was automatically removed; no policy or persistent host
-configuration was changed. This proves a container boundary blocker; it does not
-identify seccomp versus AppArmor as the sole cause. No unconfined or privileged
-comparison was performed.
+`user.max_user_namespaces=60712`. Host-level bubblewrap succeeded. N150 Docker is
+29.9.0 with AppArmor `profile=default` and seccomp `profile=builtin`; a container
+reports `docker-default (enforce)`. The host's existing
+`/etc/apparmor.d/bwrap-userns-restrict` defines a `bwrap` profile with `allow
+userns`, `allow mount`, and a child `unpriv_bwrap` profile. A separate
+`unprivileged_userns` profile also explicitly allows user namespaces.
+
+I ran bounded, auto-removed probes with no network, UID 1001, all capabilities
+dropped, no-new-privileges, 128 MiB memory and 32–64 PIDs. The exact workflow
+probe failed under default `docker-default`/builtin-seccomp. It also failed when
+selecting the existing `apparmor=bwrap` profile with builtin seccomp unchanged.
+A minimal `unshare --user --map-root-user true` probe and the exact bubblewrap
+probe likewise failed when selecting `apparmor=unprivileged_userns`, leaving
+builtin seccomp unchanged. The N150 kernel log has no matching bwrap,
+`userns_create`, or seccomp audit record from these probes. The container reports
+`Operation not permitted`/“No permissions to create a new namespace”.
+
+This narrows the cause: changing from `docker-default` to the host's explicit
+AppArmor profiles that permit user namespaces did not fix it, so the default
+seccomp policy (or another kernel-level restriction still in force) is an
+independent blocker; the observed errno alone cannot identify the exact syscall.
+Docker documents its default seccomp policy as denying namespace `clone` flags
+without the required capability and gating `unshare`; AppArmor is also enforcing,
+and the user-namespace restriction is enabled. I did not use an unconfined
+profile or disable either filter, because that would not be a valid security
+solution. No host policy or persistent host configuration was changed.
 
 Local amd64 Docker builds of both new images passed. Worker smoke confirmed
 Temurin 21, Node 22, Python 3.12 (ssl/sqlite/bz2/lzma/ctypes/venv), runner 2.338.0,
@@ -107,13 +124,14 @@ failed under default local Docker security. This is not N150 E2E proof.
 negative tests were **not executed**: namespace creation fails before that suite
 can safely run. No skipped test is presented as a pass.
 
-Safe next options require separate owner review: investigate a narrowly scoped
-worker-specific seccomp/AppArmor policy with the upstream sandbox requirements,
-or use a dedicated disposable VM with its own kernel and no access to the N150
-control plane. Keep test/skip guards unchanged. A per-container policy must be
-reviewed and proven to preserve negative checks before adoption. Global sysctl
-changes, `apparmor=unconfined`, `seccomp=unconfined`, `--privileged`, and hosted
-fallback are not deployment fixes supplied by this PR.
+Next step requires owner review of a narrowly scoped worker-specific security
+profile that grants only the namespace operations required by Bubblewrap while
+keeping the default deny rules, no host mounts/socket, dropped capabilities,
+network bounds and negative sandbox checks. If that cannot pass the exact probe
+and positive/negative E2E tests, use a dedicated disposable VM with its own
+kernel and no access to the N150 control plane. Keep test/skip guards unchanged.
+Global sysctl changes, `apparmor=unconfined`, `seccomp=unconfined`, `--privileged`,
+and hosted fallback are not deployment fixes supplied by this PR.
 
 ## Owner deployment and rollback
 
@@ -147,11 +165,16 @@ require workers to finish first. Images/volumes remain available for recovery.
 sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder.sh --rollback /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
 ```
 
-Rollback stops only the new manager (preventing admission), refuses to interrupt
-workers, restores previous manager/worker images and configuration when available,
-or removes just the new manager for an initial deployment. If workers are active,
-wait for them to finish and rerun rollback. It does not delete unrelated runners,
-images, networks or volumes. The API preflight is not required during rollback.
+Rollback first verifies that the running manager has the shared scheduler volume
+and lock support. It then acquires the same nonblocking admission lock used around
+worker creation, checks for active workers, stops only the new manager, and checks
+again while still holding the lock. A busy-worker, lock-contention or old-manager
+check fails before stop, leaving the manager running. This closes the start race
+for the new manager; it refuses rollback against an older manager that cannot
+coordinate. Once drained, it restores previous manager/worker images and
+configuration when available, or removes just the new manager for an initial
+deployment. It does not delete unrelated runners, images, networks or volumes.
+The API preflight is not required during rollback.
 
 ## Post-deployment acceptance — pending owner action
 
@@ -175,11 +198,13 @@ docker build --platform linux/amd64 -f infra/github-runner-autoscaler/manager.Do
 ```
 
 The complete shell suite passed in the locally built Linux amd64 worker image;
-the seven deployment/entrypoint regression tests, workflow-integrity tests,
+the ten deployment/entrypoint regression tests, workflow-integrity tests,
 ShellCheck, Ruff and Compose validation also passed. Deployment tests use fake
 Docker/GitHub commands and a temporary state directory: they are regression
 coverage, not evidence of executing the owner deployment on N150. Published
 version/checksum sources: [Node 22](https://nodejs.org/dist/v22.23.3/SHASUMS256.txt),
 [Temurin 21](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.12.1%2B1),
 [Actions runner environment inputs](https://github.com/actions/runner/blob/v2.338.0/src/Runner.Listener/CommandSettings.cs),
-[setup-python self-hosted requirements](https://github.com/actions/setup-python/blob/v5/docs/advanced-usage.md).
+[setup-python self-hosted requirements](https://github.com/actions/setup-python/blob/v5/docs/advanced-usage.md),
+[Docker seccomp defaults](https://docs.docker.com/engine/security/seccomp/),
+and [Docker AppArmor profiles and diagnostics](https://docs.docker.com/engine/security/apparmor/).
