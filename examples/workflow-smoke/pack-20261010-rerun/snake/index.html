@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snake — pack-20261010-rerun</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./main.mjs"></script>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Snake</h1>
+      <p class="lede">
+        Pure engine, canvas rendering, no assets and no dependencies. Serve the repository over
+        HTTP and open this page.
+      </p>
+
+      <section class="panel" aria-labelledby="board-heading">
+        <h2 id="board-heading" class="visually-hidden">Game board</h2>
+        <canvas id="board" width="400" height="400" role="img" aria-label="Snake board"></canvas>
+        <p class="readout">
+          Score <output id="score" for="board">0</output>
+        </p>
+        <p id="status" role="status" aria-live="polite">Press start, then use arrow keys or WASD.</p>
+      </section>
+
+      <section class="controls" aria-labelledby="controls-heading">
+        <h2 id="controls-heading" class="visually-hidden">Game controls</h2>
+        <div class="buttons">
+          <button id="start" type="button">Start</button>
+          <button id="pause" type="button" disabled>Pause</button>
+          <button id="restart" type="button" disabled>Restart</button>
+        </div>
+
+        <fieldset class="pad">
+          <legend>On-screen direction</legend>
+          <div class="pad-grid">
+            <span></span>
+            <button type="button" data-direction="up" aria-label="Move up">▲</button>
+            <span></span>
+            <button type="button" data-direction="left" aria-label="Move left">◀</button>
+            <span></span>
+            <button type="button" data-direction="right" aria-label="Move right">▶</button>
+            <span></span>
+            <button type="button" data-direction="down" aria-label="Move down">▼</button>
+            <span></span>
+          </div>
+        </fieldset>
+      </section>
+
+      <section class="help" aria-labelledby="help-heading">
+        <h2 id="help-heading">How to play</h2>
+        <ul>
+          <li>Arrow keys or <kbd>W</kbd>/<kbd>A</kbd>/<kbd>S</kbd>/<kbd>D</kbd> steer the snake.</li>
+          <li>A reverse into yourself is ignored, so a double tap cannot kill you.</li>
+          <li>Tap the board to start or pause; every control is also a real button.</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>
