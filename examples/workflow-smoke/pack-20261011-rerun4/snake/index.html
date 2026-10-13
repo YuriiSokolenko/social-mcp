@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snake — pack-20261011-rerun4</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page__header">
+        <h1>Snake</h1>
+        <p class="page__hint">
+          Arrow keys or WASD to steer, Space or P to start/pause, R to restart.
+        </p>
+      </header>
+
+      <section class="hud" aria-label="Game status">
+        <p class="hud__item">
+          Score: <span id="score" class="hud__value">0</span>
+        </p>
+        <p class="hud__item">
+          Status: <span id="status" class="hud__value">Ready</span>
+        </p>
+        <p id="message" class="hud__message" role="status" aria-live="polite">
+          Press Start, or an arrow key / WASD, to begin.
+        </p>
+      </section>
+
+      <section class="board">
+        <canvas
+          id="board"
+          role="img"
+          aria-label="Snake game board. The score and status text above describe the game state."
+        ></canvas>
+      </section>
+
+      <section class="controls" aria-label="Game controls">
+        <button id="start" type="button" class="btn">Start</button>
+        <button id="pause" type="button" class="btn" disabled>Pause</button>
+        <button id="restart" type="button" class="btn">Restart</button>
+      </section>
+
+      <section class="dpad" aria-label="Touch controls">
+        <button type="button" class="btn btn--pad dpad__up" data-direction="up" aria-label="Move up">▲</button>
+        <button type="button" class="btn btn--pad dpad__left" data-direction="left" aria-label="Move left">◀</button>
+        <button type="button" class="btn btn--pad dpad__right" data-direction="right" aria-label="Move right">▶</button>
+        <button type="button" class="btn btn--pad dpad__down" data-direction="down" aria-label="Move down">▼</button>
+      </section>
+
+      <noscript>
+        <p class="noscript">This game needs JavaScript enabled.</p>
+      </noscript>
+    </main>
+
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>
