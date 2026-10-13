@@ -1,9 +1,11 @@
 # Recursive-coder CI pool — issue #793
 
-Status: **KVM backend, manager integration, egress proxy, owner preparation and deployment tooling are implemented; current guest bootstrap awaits owner image staging and real-VM validation; not deployed**.
-The guest bootstrap now uses unprivileged user namespaces plus a guest-only nftables
-egress allow rule. That bootstrap revision still needs a fresh real-VM run before
-deployment. The owner alone performs privileged deployment.
+Status: **KVM backend, manager integration, egress proxy, owner preparation and deployment tooling are implemented; the current unprivileged guest bootstrap passed its exact Bubblewrap probe and sandbox E2E on a real disposable N150 VM; full downstream CI had six integration failures in one run; not deployed**.
+The guest uses unprivileged user namespaces and a guest-only nftables deny-by-default
+egress policy. VM startup, bounded resources, restricted proxy egress, shutdown and
+overlay cleanup have been exercised. Actions runner registration and a live job
+remain untested because the owner has not supplied the separately scoped PAT.
+The owner alone performs privileged deployment.
 
 ## Earlier Docker runner prototype (blocked)
 
@@ -169,8 +171,8 @@ permitted` (exit 1). In a disposable overlay only, setting `/usr/bin/bwrap` to
 root-owned mode 4755 made the same exact command pass (exit 0) as UID 1001.
 Neither host AppArmor, seccomp, kernel sysctl nor permanent guest state was changed.
 That setuid workaround is historical evidence only; the current bootstrap keeps
-Bubblewrap unprivileged and enables user namespaces in the disposable guest. The
-current bootstrap still needs a fresh VM validation.
+Bubblewrap unprivileged and enables user namespaces in the disposable guest. This
+historical run predates the current bootstrap validation recorded above.
 
 The command executed verbatim from the workflow was:
 
@@ -250,6 +252,85 @@ Control containers matched. No running QEMU guest remained after teardown. The
 guest overlay, seed media, logs and temporary loopback proxy were removed from
 the Beelink after evidence was recorded.
 
+## Current unprivileged bootstrap validation — 2026-10-13 UTC
+
+The owner staged the read-only golden image on Beelink from preparation commit
+`afd5b8f`. I validated the current PR head `9c0891cd8fec0562efcf2f89ddb1687eb920a2eb`
+in a disposable manager container on N150. The golden qcow2 image was mounted
+read-only and matched SHA-256
+`6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2`. QEMU ran
+with KVM acceleration, 2 vCPUs and 4096 MiB; the overlay had a 24 GiB virtual
+limit and reached 3,502,481,408 allocated bytes (about 3.26 GiB). Peak QEMU RSS
+was 4,238,032 KiB (about 4.04 GiB). The disposable manager container was capped
+at 5 GiB and 2.25 CPUs; its cgroup recorded no OOM or OOM kill. The host had
+12,934 MiB available before the run and 190 GiB root disk free. QEMU's command
+had no `hostfwd`, TAP, bridge, or shared filesystem device. It used
+`user,restrict=on,ipv6=off` with only the loopback egress-proxy guest forward.
+The overlay and seed were removed at shutdown; the golden image was unchanged.
+
+The guest bootstrap started nftables before the probe. The captured ruleset had
+an `inet runner_egress` output chain with `policy drop`, loopback and established
+traffic, DHCP, and only `10.0.2.100:3128` as allowed guest egress. The exact
+workflow Bubblewrap command was run as the unprivileged `runner` user (UID 1001)
+and returned `BWRAP_PROBE_EXIT=0`. No setuid change or host policy change was
+made in this run.
+
+Network checks recorded `NETWORK_POLICY_ASSERTIONS=PASS`. The host-side loopback
+proxy reached `github.com` (HTTP 200), `api.github.com` (200),
+`raw.githubusercontent.com` (301), `downloads.gradle.org` (200), and the two
+Actions upload endpoints (HTTP 404 responses, so DNS/TCP/TLS/HTTP reachability
+was established). It denied `example.com`. Direct guest DNS and direct public
+egress were blocked. TCP probes to Beelink SSH, Penpot, run-check, LAN gateway,
+Docker engine ports, Docker bridge addresses and representative 10/172/192
+private addresses all failed with `errno=101` (`ENETUNREACH`). A guest-local
+loopback HTTP server worked. The proxy log contained only its expected denials
+for the guestfwd loopback peer; no private target was accepted.
+
+Downstream source was cloned without modification from `dev` at commit
+`3028a05e602a9572ba41bc1f3daa28d0fdb762c0`; the workflow hash was
+`786b6fb857c10ac4ed60a94419f66068a0c91868f39021044decde3470bba491`. The exact
+Bubblewrap probe and the exact `ci.yml` Gradle command were used. Gradle 9.8.1
+was downloaded through the allowlist proxy and verified against its published
+SHA-256. One full command
+`./gradlew --no-daemon clean test integrationTest e2eTest installDist --stacktrace`
+returned exit 1 after 15m 4s: Gradle reported 36 integration tests completed,
+6 failed: `SessionRuntimeTest.cancellationEmitsOneTerminalResult`,
+`SessionRuntimeTest.deadlineInterruptsBlockingFakeModel`, and four
+`WorkspaceManagerTest` cases (`typedToolsReadOnlyCommittedPublicFilesWithBoundedResults`,
+`pathTraversalSecretsAndUntrackedPathsAreDenied`,
+`symlinkSwapRaceNeverExposesDataOutsideWorkspace`, and
+`symlinkAndSubmoduleBoundariesFailClosed`). The full command's Gradle console
+reported assertion failures for the first two and the typed-tools case; it did
+not leave JUnit XML for the collector, so the full assertion messages were not
+captured. A focused rerun of
+`SessionRuntimeTest.cancellationEmitsOneTerminalResult` and
+`SessionRuntimeTest.deadlineInterruptsBlockingFakeModel` returned exit 0. A
+separate `./gradlew --no-daemon e2eTest --stacktrace` returned exit 0; the
+required `realSeparatelyExecutedSandboxedTestPassesIfHostSupportsUserNamespaces`
+ran exactly once with 0 skipped and 0 failures. The E2E includes separate
+execution, read-only workspace, writable scratch, blocked network and output
+limit checks. The complete downstream CI suite is therefore **not yet green**;
+rerun it with corrected JUnit report collection before claiming full-suite
+acceptance. The successful full suite documented above used the previous guest
+bootstrap revision and does not replace this current-revision result.
+
+Beelink Linux regression commands all passed at the same PR head: runner
+autoscaler (10 tests), recursive-coder pool, KVM pool, KVM preparation, KVM
+deployment, KVM backend/proxy Python tests (15 tests), and recursive-coder deploy
+Python tests (10 tests). In particular, `flock` was `util-linux 2.41.3`; these
+Linux-only harness scripts were run on Beelink, not macOS.
+
+The before/after Docker snapshots contained the same 11 container IDs, names,
+images and running/health states. No production service was restarted. The
+validation manager was removed, no QEMU process remained, and the temporary VM
+state directory was absent after teardown. No GitHub registration token was
+requested or used: the test-only cloud-init hook skips runner registration, and
+the owner has not provided the separately scoped PAT. The autoscaler and VM
+cleanup code are implemented and unit-tested, but Actions runner registration,
+one-job pickup, GitHub completion/de-registration and `ExecStopPost` cleanup
+have not been exercised against GitHub. Deployment and merge remain owner-only;
+the PR is still Draft.
+
 ## KVM autoscaler implementation
 
 The opt-in `recursive-coder-kvm` Compose profile uses a separate manager container
@@ -316,17 +397,15 @@ The prior real Ubuntu 24.04.5 guest run above verified KVM boot/teardown, the
 exact workflow Bubblewrap command, the positive and negative sandbox E2E tests
 with zero skips, direct/private network blocking, and the full Gradle CI command.
 That run used the guest-local setuid Bubblewrap workaround. The new unprivileged
-user-namespace plus nftables bootstrap has unit coverage but has not yet been
-rebooted in a real guest. The pinned golden image was no longer present on N150,
+user-namespace plus nftables bootstrap was not yet rebooted in a real guest at
+the time this note was written. The pinned golden image was then absent on N150,
 and direct HTTPS from both the SSH host and a disposable Docker container timed
-out while trying to fetch it. No attempt was made to bypass that network boundary.
+out while trying to fetch it. The owner subsequently staged the image; current
+bootstrap results are recorded in the validation section above.
 
-The current bootstrap has **not** been credited with the previous 524-test
-result. It still requires a real boot after preparation, including the exact
-workflow Bubblewrap probe, positive and negative sandbox tests with zero skips,
-loopback/proxy checks, direct/private/DNS blocking, Gradle CI, and shutdown plus
-overlay cleanup. The actual ephemeral Actions service and job also remain
-untested; the separately scoped PAT is still an owner-only gate.
+The current bootstrap is not credited with the previous 524-test result because
+that run used the setuid workaround. The actual ephemeral Actions service and
+job remain untested; the separately scoped PAT is still an owner-only gate.
 
 On Beelink, against the current branch snapshot:
 
