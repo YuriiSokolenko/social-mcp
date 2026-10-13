@@ -284,7 +284,11 @@ egress were blocked. TCP probes to Beelink SSH, Penpot, run-check, LAN gateway,
 Docker engine ports, Docker bridge addresses and representative 10/172/192
 private addresses all failed with `errno=101` (`ENETUNREACH`). A guest-local
 loopback HTTP server worked. The proxy log contained only its expected denials
-for the guestfwd loopback peer; no private target was accepted.
+for the guestfwd loopback peer; no private target was accepted. The HP Nano SSH
+alias resolves to `192.168.8.210`; that exact address was not individually dialed
+from this guest. It is covered by the guest output chain's default-drop rule,
+which admits only the proxy address/port, and the Beelink and gateway probes on
+the same LAN were blocked.
 
 Downstream source was cloned without modification from `dev` at commit
 `3028a05e602a9572ba41bc1f3daa28d0fdb762c0`; the workflow hash was
