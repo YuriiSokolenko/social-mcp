@@ -1,10 +1,11 @@
 # Recursive-coder CI pool — issue #793
 
-Status: **KVM sandbox prototype passes; autoscaler and credential integration remain unimplemented; not deployed**.
-The owner alone performs privileged deployment. Do not enable the Compose profile
-before addressing the blockers and reviewing this document.
+Status: **KVM backend, manager integration, egress proxy and owner deployment tooling are implemented; prior disposable guest CI passed; not deployed**.
+The guest bootstrap now uses unprivileged user namespaces plus a guest-only nftables
+egress allow rule. That bootstrap revision still needs a fresh real-VM run before
+deployment. The owner alone performs privileged deployment.
 
-## Isolation and lifecycle
+## Earlier Docker runner prototype (blocked)
 
 `recursive-coder-runner-manager` is a third independent manager process, with its
 own versioned image and separately scoped `RECURSIVE_CODER_GH_ADMIN_TOKEN`.
@@ -147,7 +148,7 @@ persistent host state. Deployment remains fail-closed. The disposable diagnostic
 image is removed after probes. No `unconfined` option or privileged container was
 used.
 
-## Disposable KVM prototype — validated boundaries, runner integration pending
+## Disposable KVM feasibility run — previous bootstrap revision
 
 On 2026-10-13 I booted Canonical Ubuntu 24.04.5 amd64 on N150 using QEMU 10.2.1
 with `-machine q35,accel=kvm -cpu host -smp 2 -m 4096`. The golden cloud image
@@ -167,8 +168,9 @@ Ubuntu's `unprivileged_userns` AppArmor profile audited/denied `CAP_SETPCAP` and
 permitted` (exit 1). In a disposable overlay only, setting `/usr/bin/bwrap` to
 root-owned mode 4755 made the same exact command pass (exit 0) as UID 1001.
 Neither host AppArmor, seccomp, kernel sysctl nor permanent guest state was changed.
-This is a candidate image setting, not yet approved for a production golden image;
-review whether the setuid helper is acceptable inside the KVM trust boundary.
+That setuid workaround is historical evidence only; the current bootstrap keeps
+Bubblewrap unprivileged and enables user namespaces in the disposable guest. The
+current bootstrap still needs a fresh VM validation.
 
 The command executed verbatim from the workflow was:
 
@@ -248,112 +250,171 @@ Control containers matched. No running QEMU guest remained after teardown. The
 guest overlay, seed media, logs and temporary loopback proxy were removed from
 the Beelink after evidence was recorded.
 
-## KVM autoscaler integration plan and remaining blockers
+## KVM autoscaler implementation
 
-Keep the existing scheduler and all Pi, General and Control managers untouched.
-The opt-in recursive-coder manager should keep repository
-`YuriiSokolenko/recursive-coder`, `MAX_RUNNERS=1`, and runner labels
-`self-hosted,linux,x64,n150,recursive-coder-ci`. A dedicated KVM backend should
-serialize admission with the existing scheduler lock, account for its 4 GiB
-reservation and 2-vCPU allocation, and launch one QEMU process per ephemeral
-runner. Its command line must use the read-only pinned golden image, a fresh 24 GiB
-bounded overlay, `restrict=on`, and only the allowlisted guest-forwarded proxy.
-The VM must have no disk/share mount from the host other than read-only bootstrap
-media, no Docker socket or Pi configuration, and no inbound forwarding. The runner
-must use `--ephemeral`, power off after one job, and have its overlay destroyed
-before the manager can admit another VM. This backend is not yet integrated into
-`manager.sh` or Compose; the current manager still starts Docker workers.
+The opt-in `recursive-coder-kvm` Compose profile uses a separate manager container
+for `YuriiSokolenko/recursive-coder`. It admits one VM, registers one ephemeral
+runner with custom labels `n150,recursive-coder-ci` (GitHub adds
+`self-hosted,linux,x64`), and watches only `ci.yml`. The manager shares the existing
+admission lock, reserves legacy pool capacity, checks host RAM/CPU and free disk,
+and never starts a GitHub-hosted fallback.
 
-The host proxy prototype is rootless and binds only to loopback. A production
-service still needs owner review of endpoint coverage, dynamic artifact hosts,
-logging/timeout behavior, and the guest bootstrap. The repository-scoped PAT and
-short-lived registration-token lifecycle also remain untested. The registration
-token must be supplied only to trusted bootstrap, removed before any job starts,
-and inaccessible to the job user; the runner's own runtime credential files need
-a separate threat-model review inside the guest. No deployment or runner
-registration has been performed. The existing deploy/rollback scripts cover the
-Docker pool only; an idempotent KVM-specific `--dry-run`, verification, deploy and
-rollback path still needs to be implemented and reviewed before deployment.
-The KVM guest passed the exact Bubblewrap probe and downstream positive/negative
-sandbox E2E with zero skips. The Docker pool remains opt-in and disabled. This
-prototype does not register an Actions runner or test a one-job runner lifecycle:
-the autoscaler still starts Docker workers, and KVM-specific owner `--dry-run`,
-verification, deployment and rollback scripts have not been implemented. No
-deployment or real recursive-coder Actions job is claimed. The CI assertion still
-requires exactly one passing sandbox case and treats a skip as failure.
+`kvm-backend.py` validates the pinned read-only Ubuntu 24.04 image, creates one
+qcow2 overlay with a 24 GiB virtual limit, and starts `q35,accel=kvm` with two
+vCPUs and 4 GiB RAM. The guest has no host disk/share, Docker socket, Pi config,
+TAP device or inbound forwarding. QEMU user networking is `restrict=on`; the only
+guest-forwarded service is the loopback egress proxy. The proxy permits the
+GitHub Actions, checkout, package and artifact endpoints needed by CI, resolves
+each destination itself, pins that public address for the connection, and denies
+private/non-global DNS results. The guest bootstrap also installs a default-drop
+nftables output policy allowing only DHCP and the proxy at `10.0.2.100:3128`.
+Runner jobs cannot modify this host-network-namespace firewall as the unprivileged
+`runner` user; Bubblewrap's own network namespace remains disconnected.
 
-## Owner deployment and rollback
+The guest uses Ubuntu's unprivileged Bubblewrap package (mode 0755) and enables
+`kernel.apparmor_restrict_unprivileged_userns=0` only in that disposable guest.
+No host AppArmor, seccomp or sysctl policy changes. The stock `ubuntu` cloud-image
+account is locked and removed from sudo before the runner starts. Bootstrap places
+the short-lived registration token only on a root-owned NoCloud seed, configures
+the runner, shreds the token file, ejects the seed and removes cloud-init userdata
+before enabling the Actions service. The PAT remains in the manager only; it is
+not passed to QEMU or the VM. A QEMU supervisor enforces the lifetime limit and
+deletes the overlay, seed, and logs after exit; manager shutdown also stops active
+VMs.
 
-For the existing Docker pool only, after reviewing/merging, use a clean checkout of `social-mcp:dev` at
-`/home/yurasik/github-runners/social-mcp-autoscaler`. Set the separately scoped
-secret in its `infra/github-runner-autoscaler/.env` (regular file, mode 0600), plus
-resource settings matching the live managers. Never paste credentials into argv,
-issue comments or logs. The script defaults to read-only preflight:
+The KVM manager image has no Docker socket and receives only `/dev/kvm`, the
+read-only golden-image mount, its mode-0700 state directory and the shared
+scheduler volume. The owner script `deploy-recursive-coder-kvm.sh` provides
+read-only `--dry-run`, `--verify`, targeted `--deploy` and `--rollback`. It checks
+legacy service IDs/start times, refuses to coexist with the old Docker
+recursive-coder pool, checks the repository-scoped GitHub permissions, and only
+starts/stops the KVM manager service. It never restarts or prunes existing pools.
 
-```bash
-sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder.sh --dry-run /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+## Current evidence and blockers — 2026-10-13
+
+The prior real Ubuntu 24.04.5 guest run above verified KVM boot/teardown, the
+exact workflow Bubblewrap command, the positive and negative sandbox E2E tests
+with zero skips, direct/private network blocking, and the full Gradle CI command.
+That run used the guest-local setuid Bubblewrap workaround. The new unprivileged
+user-namespace plus nftables bootstrap has unit coverage but has not yet been
+rebooted in a real guest. The pinned golden image was no longer present on N150,
+and direct HTTPS from both the SSH host and a disposable Docker container timed
+out while trying to fetch it. No attempt was made to bypass that network boundary.
+
+On Beelink, against the current branch snapshot:
+
+```text
+python3 -W error::ResourceWarning -m unittest -v tests/test_kvm_backend.py tests/test_kvm_egress_proxy.py
+  14 tests passed; no resource warnings
+bash tests/test_runner_autoscaler.sh
+  exit 0
+bash tests/test_recursive_coder_pool.sh
+  exit 0
+bash tests/test_recursive_coder_kvm_pool.sh
+  exit 0
+python3 -m unittest -v tests.test_recursive_coder_deploy
+  10 tests passed
+pytest --confcutdir=tests/ci -q tests/ci/test_workflow_integrity.py
+  4 tests passed
+shellcheck manager.sh deploy-recursive-coder-kvm.sh and KVM pool/deploy tests
+  exit 0
+docker compose --env-file .env.example -f compose.yaml --profile recursive-coder-kvm config --quiet
+  exit 0
+deploy-recursive-coder-kvm.sh --dry-run with a mode-0600 example env file
+  Read-only KVM preflight passed; no assets or services changed
+KVM manager Docker image build
+  exit 0
+Disposable manager start/stop smoke with a dummy token
+  exit 0; manager-local proxy returned GitHub API HTTP 200
+Live proxy policy smoke
+  api.github.com=200; archive.ubuntu.com=200; example.com=403
 ```
 
-**Do not deploy with the current sandbox blocker.** After a reviewed safe sandbox
-solution and positive proof, the exact owner command is:
+The backend lifecycle test uses fake QEMU and proves token absence from the QEMU
+environment and cleanup after exit, timeout, stop and abandoned-state recovery.
+The runner-manager test uses fake GitHub registration tokens and backend calls;
+no PAT was read, no runner was registered, and no live GitHub Actions job was
+started. Those are lifecycle regression tests, not evidence of a GitHub runner
+session. No production KVM manager was deployed.
+
+The scoped PAT has not been provided. A host-side live API permission check and
+registration-token POST remain owner actions. The new guest bootstrap must be
+validated against the pinned golden image before deploy. Re-run the full guest CI
+and network boundary checklist after that validation; the earlier real-VM result
+does not prove the changed bootstrap. Existing Pi, General, Control and
+`n150-gen-eph-*` container IDs remained unchanged during Beelink validation; no
+KVM guest or validation container remains running.
+
+## Owner commands
+
+Use a clean checkout of this Draft PR on Beelink. Keep the separately scoped
+fine-grained PAT in the protected `.env` file as
+`RECURSIVE_CODER_GH_ADMIN_TOKEN` (regular file, mode 0600). Grant only the
+recursive-coder repository permissions required for Actions read and runner
+Administration read/write. Never put the PAT or a registration token in shell
+arguments, issue comments or logs.
+
+N150's current direct route reaches GitHub and the Ubuntu package archive, but
+times out fetching `cloud-images.ubuntu.com`. If that remains true during owner
+deployment, download this exact pinned image on a network-permitted machine and
+copy it to Beelink before `--deploy`:
 
 ```bash
-sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder.sh --deploy /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o noble-server-cloudimg-amd64.img
+echo '6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2  noble-server-cloudimg-amd64.img' | sha256sum -c -
+scp noble-server-cloudimg-amd64.img beelink:/tmp/noble-server-cloudimg-amd64.img
+ssh beelink 'sudo install -d -o root -g root -m 0755 /var/lib/recursive-coder-kvm/golden && sudo install -o root -g root -m 0444 /tmp/noble-server-cloudimg-amd64.img /var/lib/recursive-coder-kvm/golden/noble-server-cloudimg-amd64.img'
 ```
 
-Deployment checks architecture, Docker/Compose, API permissions, live legacy caps,
-memory and disk. It builds only the two named new images, executes the hardened
-worker probe, and refuses to start the manager if it fails. There is no daemon
-restart/prune, host policy change, CI dispatch or existing service recreation.
-It checks legacy IDs/start times before/after and records root-only last/previous
-configuration, narrowly selected environment keys and immutable image IDs under
-`/var/lib/recursive-coder-ci-deploy`. Repeated deployment is supported; changes
-require workers to finish first. Images/volumes remain available for recovery.
+After a fresh real-VM bootstrap validation and owner review, run the read-only
+preflight and inspect the output:
 
 ```bash
-sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder.sh --rollback /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
 ```
 
-Rollback first verifies that the running manager has the shared scheduler volume
-and lock support. It then acquires the same nonblocking admission lock used around
-worker creation, checks for active workers, stops only the new manager, and checks
-again while still holding the lock. A busy-worker, lock-contention or old-manager
-check fails before stop, leaving the manager running. This closes the start race
-for the new manager; it refuses rollback against an older manager that cannot
-coordinate. Once drained, it restores previous manager/worker images and
-configuration when available, or removes just the new manager for an initial
-deployment. It does not delete unrelated runners, images, networks or volumes.
-The API preflight is not required during rollback.
+The deployment script creates
+`/var/lib/recursive-coder-kvm/{golden,state}` with root ownership and modes 0444
+and 0700 respectively. It downloads the pinned Ubuntu image if absent,
+checks its SHA-256, builds only the KVM manager image, verifies the exact device,
+mount and resource settings, and starts only the new Compose service:
 
-## Post-deployment acceptance — pending owner action
+```bash
+sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --deploy /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+```
 
-After deployment, verify an actual trusted recursive-coder CI run. Record its
-URL, all three job IDs and `runner_name`/`runner_id`/`runner_group_name`. Require
-`runner_name` to begin `n150-rc-eph-`, matching pool labels and one job per worker.
-Confirm architecture/kotlin/contracts all succeed, the sandbox test executes
-exactly once with zero skips in the required suites, and existing negative checks
-pass. Check no jobs use hosted runners and Pi/general/control identities and
-uptime remain healthy. No actual CI run or passing sandbox E2E is claimed here.
+Rollback acquires the shared scheduler lock, refuses to interrupt an active VM,
+and removes/restores only the KVM manager and its saved image/configuration:
 
-## Reproduce validation
+```bash
+sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --rollback /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+```
+
+After owner deployment, require one trusted Actions job on an `n150-rc-eph-*`
+runner. Record the job URL and runner metadata, verify all workflow jobs ran on
+self-hosted labels, require the sandbox test exactly once with zero skips, and
+confirm no hosted fallback was used. Check the Pi, General and Control service
+IDs/start times and ensure the KVM overlay and runner registration are removed
+when the job completes.
+
+## Reproduce on Beelink Linux
 
 ```bash
 bash tests/test_runner_autoscaler.sh
-python3 -m unittest discover -s tests -p test_recursive_coder_deploy.py -v
-shellcheck infra/github-runner-autoscaler/{manager.sh,deploy-recursive-coder.sh,recursive-coder-entrypoint.sh,recursive-coder-probe.sh} tests/test_recursive_coder_pool.sh
-docker compose --env-file infra/github-runner-autoscaler/.env.example -f infra/github-runner-autoscaler/compose.yaml --profile recursive-coder config --quiet
-docker build --platform linux/amd64 -f infra/github-runner-autoscaler/worker-recursive-coder.Dockerfile -t n150/github-recursive-coder-runner-ephemeral:0.1.0 .
-docker build --platform linux/amd64 -f infra/github-runner-autoscaler/manager.Dockerfile -t n150/recursive-coder-runner-manager:0.1.0 .
+bash tests/test_recursive_coder_pool.sh
+bash tests/test_recursive_coder_kvm_pool.sh
+bash tests/test_recursive_coder_kvm_deploy.sh
+python3 -W error::ResourceWarning -m unittest -v tests/test_kvm_backend.py tests/test_kvm_egress_proxy.py
+python3 -m unittest -v tests.test_recursive_coder_deploy
+pytest --confcutdir=tests/ci -q tests/ci/test_workflow_integrity.py
+shellcheck infra/github-runner-autoscaler/manager.sh infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh tests/test_recursive_coder_kvm_pool.sh tests/test_recursive_coder_kvm_deploy.sh
+docker compose --env-file infra/github-runner-autoscaler/.env.example -f infra/github-runner-autoscaler/compose.yaml --profile recursive-coder-kvm config --quiet
 ```
 
-The complete shell suite passed in the locally built Linux amd64 worker image;
-the ten deployment/entrypoint regression tests, workflow-integrity tests,
-ShellCheck, Ruff and Compose validation also passed. Deployment tests use fake
-Docker/GitHub commands and a temporary state directory: they are regression
-coverage, not evidence of executing the owner deployment on N150. Published
-version/checksum sources: [Node 22](https://nodejs.org/dist/v22.23.3/SHASUMS256.txt),
-[Temurin 21](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.12.1%2B1),
-[Actions runner environment inputs](https://github.com/actions/runner/blob/v2.338.0/src/Runner.Listener/CommandSettings.cs),
-[setup-python self-hosted requirements](https://github.com/actions/setup-python/blob/v5/docs/advanced-usage.md),
-[Docker seccomp defaults](https://docs.docker.com/engine/security/seccomp/),
-and [Docker AppArmor profiles and diagnostics](https://docs.docker.com/engine/security/apparmor/).
+The guest-only change to AppArmor's unprivileged-userns restriction follows
+Ubuntu's guest sysctl and Bubblewrap behavior; setuid Bubblewrap was removed from
+the bootstrap. Review [Bubblewrap's security notes](https://github.com/containers/bubblewrap/blob/main/SECURITY.md)
+and [Ubuntu CVE-2026-41163](https://ubuntu.com/security/CVE-2026-41163) when pinning
+the guest package version. Endpoint requirements are listed in the [GitHub
+self-hosted runner reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners).

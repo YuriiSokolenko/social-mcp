@@ -5,6 +5,7 @@ set -euo pipefail
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}"
 
 MAX_RUNNERS="${MAX_RUNNERS:-8}"
+WORKER_BACKEND="${WORKER_BACKEND:-docker}"
 WORKER_NETWORK="${WORKER_NETWORK:-host}"
 WORKER_HARDENED="${WORKER_HARDENED:-false}"
 WORKER_CPUS="${WORKER_CPUS:-2}"
@@ -13,10 +14,28 @@ SCHEDULER_STATE_DIR="${SCHEDULER_STATE_DIR:-}"
 HOST_MAX_EPHEMERAL="${HOST_MAX_EPHEMERAL:-12}"
 HOST_MEMORY_RESERVE_MB="${HOST_MEMORY_RESERVE_MB:-3072}"
 LEGACY_RESERVED_RUNNERS="${LEGACY_RESERVED_RUNNERS:-0}"
+KVM_BACKEND_SCRIPT="${KVM_BACKEND_SCRIPT:-/usr/local/bin/kvm-backend.py}"
+KVM_STATE_DIR="${KVM_STATE_DIR:-/kvm-state}"
+KVM_PROXY_PORT="${KVM_PROXY_PORT:-43128}"
+KVM_START_TIMEOUT_SECONDS="${KVM_START_TIMEOUT_SECONDS:-60}"
+KVM_MIN_HOST_FREE_CPUS="${KVM_MIN_HOST_FREE_CPUS:-2}"
+KVM_GUEST_CPUS="${KVM_GUEST_CPUS:-2}"
+KVM_OVERLAY_MAX_GIB="${KVM_OVERLAY_MAX_GIB:-24}"
+KVM_IDLE_POLLS_BEFORE_STOP="${KVM_IDLE_POLLS_BEFORE_STOP:-4}"
 for setting in MAX_RUNNERS HOST_MAX_EPHEMERAL WORKER_MEMORY_MB HOST_MEMORY_RESERVE_MB; do
   [[ "${!setting}" =~ ^[1-9][0-9]*$ ]] || { echo "$setting must be a positive integer" >&2; exit 1; }
 done
 [[ "$LEGACY_RESERVED_RUNNERS" =~ ^[0-9]+$ ]] || exit 1
+[[ "$WORKER_BACKEND" == docker || "$WORKER_BACKEND" == kvm ]] || { echo 'WORKER_BACKEND must be docker or kvm' >&2; exit 1; }
+if [ "$WORKER_BACKEND" == kvm ]; then
+  [[ "$KVM_START_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$KVM_MIN_HOST_FREE_CPUS" =~ ^[1-9][0-9]*$ \
+    && "$KVM_GUEST_CPUS" =~ ^[1-9][0-9]*$ && "$KVM_OVERLAY_MAX_GIB" =~ ^[1-9][0-9]*$ \
+    && "$KVM_IDLE_POLLS_BEFORE_STOP" =~ ^[2-9][0-9]*$ ]] || {
+      echo 'KVM resource settings must be positive integers' >&2; exit 1;
+    }
+  [ "$GITHUB_REPOSITORY" = YuriiSokolenko/recursive-coder ] || { echo 'KVM backend is restricted to recursive-coder' >&2; exit 1; }
+  [ "$MAX_RUNNERS" = 1 ] || { echo 'KVM backend supports exactly one runner VM' >&2; exit 1; }
+fi
 MODEL_MAX_CONCURRENCY="${MODEL_MAX_CONCURRENCY:-8}"
 POLL_SECONDS="${POLL_SECONDS:-6}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r5}"
@@ -26,6 +45,10 @@ RUN_CHECK_EXECUTOR_PORT="${RUN_CHECK_EXECUTOR_PORT:-17343}"
 RUN_CHECK_STAGE_VOLUME="${RUN_CHECK_STAGE_VOLUME:-social-mcp-run-check-stage}"
 RUNNER_PREFIX="${RUNNER_PREFIX:-n150-pi-eph}"
 RUNNER_LABELS="${RUNNER_LABELS:-n150,pi-agent}"
+if [ "$WORKER_BACKEND" == kvm ]; then
+  [ "$RUNNER_PREFIX" = n150-rc-eph ] || { echo 'KVM backend requires RUNNER_PREFIX=n150-rc-eph' >&2; exit 1; }
+  [ "$RUNNER_LABELS" = n150,recursive-coder-ci ] || { echo 'KVM backend requires labels n150,recursive-coder-ci' >&2; exit 1; }
+fi
 PI_ZOEKT_URL="${PI_ZOEKT_URL:-}"
 PI_ZOEKT_REPOSITORY="${PI_ZOEKT_REPOSITORY:-YuriiSokolenko/social-mcp}"
 PI_ZOEKT_TIMEOUT_MS="${PI_ZOEKT_TIMEOUT_MS:-3000}"
@@ -187,6 +210,10 @@ runner_list() {
 }
 
 pool_containers() {
+  if [ "$WORKER_BACKEND" == kvm ]; then
+    python3 "$KVM_BACKEND_SCRIPT" list
+    return
+  fi
   # New workers carry exact repo/pool identities. Prefix filtering also keeps
   # legacy workers recoverable after a manager upgrade without recreating them.
   local identity=()
@@ -266,7 +293,9 @@ retire_idle_runners() {
     # makes that race much less likely to catch a runner GitHub is about to
     # use, without meaningfully delaying retirement of a genuinely idle one.
     IDLE_STREAK["$name"]=$(( ${IDLE_STREAK["$name"]:-0} + 1 ))
-    if [ "${IDLE_STREAK[$name]}" -lt 2 ]; then
+    local idle_threshold=2
+    [ "$WORKER_BACKEND" != kvm ] || idle_threshold="$KVM_IDLE_POLLS_BEFORE_STOP"
+    if [ "${IDLE_STREAK[$name]}" -lt "$idle_threshold" ]; then
       continue
     fi
 
@@ -277,7 +306,11 @@ retire_idle_runners() {
       end')" || return 1
     [ "$still_idle" == true ] || continue
     log "stopping surplus idle runner $name"
-    run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker stop "$name" >/dev/null || return 1
+    if [ "$WORKER_BACKEND" == kvm ]; then
+      run_with_timeout "$KVM_START_TIMEOUT_SECONDS" python3 "$KVM_BACKEND_SCRIPT" stop --name "$name" || return 1
+    else
+      run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker stop "$name" >/dev/null || return 1
+    fi
     unset 'IDLE_STREAK[$name]'
   done <<< "$names"
 }
@@ -551,13 +584,26 @@ quarantine_general_runners() {
 # Legacy managers remain untouched during the targeted deployment; the new
 # pool reserves their configured maximum rather than assuming they use a lock.
 resource_admission() {
-  local count available
-  count="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}' | wc -l)" || return 1
-  [ "$count" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
+  local count available global_count
   count="$(active_containers)" || return 1
   [ "$count" -lt "$MAX_RUNNERS" ] || return 1
-  if [ "$LEGACY_RESERVED_RUNNERS" -gt 0 ]; then
+  if [ "$WORKER_BACKEND" == kvm ]; then
     [ "$((count + LEGACY_RESERVED_RUNNERS))" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
+    local host_cpus free_disk_mb required_disk_mb
+    host_cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || return 1
+    [[ "$host_cpus" =~ ^[1-9][0-9]*$ ]] || return 1
+    [ "$host_cpus" -ge "$((KVM_GUEST_CPUS + KVM_MIN_HOST_FREE_CPUS))" ] || return 1
+    free_disk_mb="$(df -Pm "$KVM_STATE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')" || return 1
+    [[ "$free_disk_mb" =~ ^[0-9]+$ ]] || return 1
+    required_disk_mb=$((KVM_OVERLAY_MAX_GIB * 1024 + 1024))
+    [ "$free_disk_mb" -ge "$required_disk_mb" ] || return 1
+  else
+    global_count="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}' | wc -l)" || return 1
+    [ "$global_count" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
+    if [ "$LEGACY_RESERVED_RUNNERS" -gt 0 ]; then
+      [ "$((global_count + LEGACY_RESERVED_RUNNERS))" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
+      [ "$((count + LEGACY_RESERVED_RUNNERS))" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
+    fi
   fi
   # /proc/meminfo is host-wide even inside the manager container. Reserve
   # headroom for the persistent control lane and other services; never evict.
@@ -588,6 +634,16 @@ spawn_runner_unlocked() {
   token="$(registration_token)" || return 1
   [ -n "$token" ] && [ "$token" != null ] || return 1
   name="${RUNNER_PREFIX}-$(date +%s)-$RANDOM"
+  if [ "$WORKER_BACKEND" == kvm ]; then
+    log "starting one-job KVM runner $name (labels=${RUNNER_LABELS})"
+    if ! printf '%s\n' "$token" | run_with_timeout "$KVM_START_TIMEOUT_SECONDS" \
+      python3 "$KVM_BACKEND_SCRIPT" start --name "$name"; then
+      unset token
+      return 1
+    fi
+    unset token
+    return 0
+  fi
   run_check_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
   export RUNNER_TOKEN="$token"
@@ -724,6 +780,8 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  RUN_CHECK_EXECUTOR_PID=""
+  KVM_PROXY_PID=""
   if [ "$MOUNT_PI_CONFIG" == true ] && [ "$RUN_CHECK_EXECUTOR_ENABLED" == true ]; then
     env -i \
       PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
@@ -735,7 +793,42 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       RUN_CHECK_HARNESS_ROOT=/opt/social-mcp \
       node /usr/local/lib/run-check-executor.mjs &
     RUN_CHECK_EXECUTOR_PID=$!
-    trap 'kill "$RUN_CHECK_EXECUTOR_PID" 2>/dev/null || true; wait "$RUN_CHECK_EXECUTOR_PID" 2>/dev/null || true' EXIT TERM INT
   fi
+  if [ "$WORKER_BACKEND" == kvm ]; then
+    python3 "$KVM_BACKEND_SCRIPT" recover
+    env -i PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
+      KVM_PROXY_PORT="$KVM_PROXY_PORT" python3 "$KVM_BACKEND_SCRIPT" proxy &
+    KVM_PROXY_PID=$!
+    proxy_ready=false
+    for _ in $(seq 1 50); do
+      if nc -z -w 1 127.0.0.1 "$KVM_PROXY_PORT" 2>/dev/null; then
+        proxy_ready=true
+        break
+      fi
+      kill -0 "$KVM_PROXY_PID" 2>/dev/null || { echo 'KVM egress proxy failed to start' >&2; exit 1; }
+      sleep 0.1
+    done
+    [ "$proxy_ready" = true ] || { echo 'KVM egress proxy did not become ready' >&2; exit 1; }
+  fi
+  shutdown_manager() {
+    if [ -n "$RUN_CHECK_EXECUTOR_PID" ]; then
+      kill "$RUN_CHECK_EXECUTOR_PID" 2>/dev/null || true
+      wait "$RUN_CHECK_EXECUTOR_PID" 2>/dev/null || true
+    fi
+    if [ "$WORKER_BACKEND" == kvm ]; then
+      local active_vm
+      while IFS= read -r active_vm; do
+        [ -n "$active_vm" ] || continue
+        run_with_timeout "$KVM_START_TIMEOUT_SECONDS" \
+          python3 "$KVM_BACKEND_SCRIPT" stop --name "$active_vm" || true
+      done < <(python3 "$KVM_BACKEND_SCRIPT" list 2>/dev/null || true)
+    fi
+    if [ -n "$KVM_PROXY_PID" ]; then
+      kill "$KVM_PROXY_PID" 2>/dev/null || true
+      wait "$KVM_PROXY_PID" 2>/dev/null || true
+    fi
+  }
+  trap shutdown_manager EXIT
+  trap 'exit 0' TERM INT
   main
 fi

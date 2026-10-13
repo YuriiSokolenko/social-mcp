@@ -1,0 +1,185 @@
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).parents[1]
+MODULE_PATH = ROOT / "infra/github-runner-autoscaler/kvm-backend.py"
+SPEC = importlib.util.spec_from_file_location("kvm_backend", MODULE_PATH)
+assert SPEC and SPEC.loader
+kvm = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(kvm)
+
+
+class KvmBackendTests(unittest.TestCase):
+    def test_cloud_init_delivers_only_short_lived_token_and_removes_bootstrap(self):
+        token = "ghs_" + "x" * 36
+        userdata, metadata = kvm.cloud_init("n150-rc-eph-test", token)
+        self.assertNotIn(token, userdata)
+        self.assertIn(kvm.base64.b64encode(token.encode()).decode(), userdata)
+        self.assertIn("permissions: '0600'", userdata)
+        self.assertIn("shred -u /var/lib/runner-bootstrap/token.b64", userdata)
+        self.assertIn("rm -f /run/cloud-init/instance-data-sensitive.json", userdata)
+        self.assertIn("usermod --lock --shell /usr/sbin/nologin ubuntu", userdata)
+        self.assertIn("kernel.apparmor_restrict_unprivileged_userns=0", userdata)
+        self.assertIn("chmod 0755 /usr/bin/bwrap", userdata)
+        self.assertNotIn("chmod 4755 /usr/bin/bwrap", userdata)
+        self.assertIn("nftables", userdata)
+        self.assertIn("policy drop", userdata)
+        self.assertIn("ip daddr 10.0.2.100 tcp dport 3128 accept", userdata)
+        self.assertIn("udp sport 68 udp dport 67 accept", userdata)
+        self.assertIn("--ephemeral --disableupdate --unattended", userdata)
+        self.assertIn(kvm.REPOSITORY, userdata)
+        self.assertEqual("n150-rc-eph-test", json.loads(metadata)["instance-id"])
+
+    def test_qemu_command_has_bounded_kvm_guest_and_no_host_shares_or_forwarding(self):
+        cfg = {
+            "qemu": "/usr/bin/qemu-system-x86_64", "cpus": 2, "memory_mb": 4096,
+            "bridge": "/usr/local/bin/kvm-proxy-bridge",
+        }
+        command = kvm.qemu_command("n150-rc-eph-test", cfg, Path("/kvm-state/n150-rc-eph-test"))
+        joined = " ".join(command)
+        self.assertIn("q35,accel=kvm", joined)
+        self.assertIn("-smp 2 -m 4096", joined)
+        self.assertIn("restrict=on", joined)
+        self.assertIn("guestfwd=tcp:10.0.2.100:3128", joined)
+        self.assertNotIn("hostfwd", joined)
+        self.assertNotIn("virtiofs", joined)
+        self.assertNotIn("9p", joined)
+        self.assertNotIn("docker.sock", joined)
+        self.assertNotIn("tap,", joined)
+
+    def test_guest_resource_policy_rejects_values_above_host_limits(self):
+        with tempfile.TemporaryDirectory(prefix="kvm-policy-test-") as temporary:
+            root = Path(temporary)
+            golden = root / "golden.img"
+            golden.write_bytes(b"fixture")
+            golden.chmod(0o444)
+            state = root / "state"
+            state.mkdir(mode=0o700)
+            cfg = {
+                "golden": golden, "golden_sha256": "0" * 64,
+                "state": state, "qemu": "qemu", "qemu_img": "qemu-img",
+                "xorriso": "xorriso", "cpus": 3, "memory_mb": 4096,
+                "overlay_gib": 24, "lifetime": 1800,
+            }
+            with patch.object(kvm.shutil, "which", return_value="/usr/bin/fake"):
+                with self.assertRaisesRegex(RuntimeError, "two-vCPU/four-GiB"):
+                    kvm.validate_runtime(cfg, require_device=False)
+
+    def test_supervisor_removes_overlay_after_guest_exit_and_timeout(self):
+        with tempfile.TemporaryDirectory(prefix="kvm-supervisor-test-") as temporary:
+            root = Path(temporary)
+            state = root / "n150-rc-eph-test"
+            state.mkdir(mode=0o700)
+            fake_qemu = root / "fake-qemu"
+            fake_qemu.write_text("#!/bin/sh\nexec /bin/true\n")
+            fake_qemu.chmod(0o755)
+            (state / "state.json").write_text(json.dumps({"supervisor_pid": os.getpid(), "qemu_pid": 0}))
+            cfg = {
+                "state": root, "qemu": str(fake_qemu), "bridge": "/tmp/kvm-bridge",
+                "cpus": 2, "memory_mb": 4096,
+                "lifetime": 2,
+            }
+            self.assertEqual(0, kvm.supervise(state.name, cfg))
+            self.assertFalse(state.exists())
+
+            state.mkdir(mode=0o700)
+            fake_qemu.write_text("#!/bin/sh\nexec /bin/sleep 5\n")
+            (state / "state.json").write_text(json.dumps({"supervisor_pid": os.getpid(), "qemu_pid": 0}))
+            cfg["lifetime"] = 0.05
+            self.assertEqual(124, kvm.supervise(state.name, cfg))
+            self.assertFalse(state.exists())
+
+    def test_recover_removes_abandoned_vm_state(self):
+        with tempfile.TemporaryDirectory(prefix="kvm-recover-test-") as temporary:
+            root = Path(temporary)
+            state = root / "n150-rc-eph-abandoned"
+            state.mkdir(mode=0o700)
+            (state / "root.qcow2").write_bytes(b"discard")
+            (state / "state.json").write_text(json.dumps({"supervisor_pid": 2147483647, "qemu_pid": 0}))
+            kvm.recover({"state": root})
+            self.assertFalse(state.exists())
+
+    def test_start_supervise_and_stop_clean_the_overlay_without_logging_token(self):
+        with tempfile.TemporaryDirectory(prefix="kvm-lifecycle-test-") as temporary:
+            root = Path(temporary)
+            state_root = root / "state"
+            state_root.mkdir(mode=0o700)
+            golden = root / "golden.img"
+            golden.write_bytes(b"golden")
+            golden.chmod(0o444)
+            fake_qemu = root / "fake-qemu"
+            env_capture = root / "qemu-env"
+            fake_qemu.write_text(f"#!/bin/sh\nenv > {env_capture}\nexec /bin/sleep 30\n")
+            fake_qemu.chmod(0o755)
+            env = {
+                "KVM_GOLDEN_IMAGE": str(golden),
+                "KVM_GOLDEN_SHA256": "0" * 64,
+                "KVM_STATE_DIR": str(state_root),
+                "KVM_QEMU_BINARY": str(fake_qemu),
+                "KVM_GUEST_CPUS": "2",
+                "KVM_GUEST_MEMORY_MB": "4096",
+                "KVM_OVERLAY_MAX_GIB": "24",
+                "KVM_MAX_LIFETIME_SECONDS": "60",
+                "KVM_XORRISO_BINARY": "/usr/bin/xorriso",
+                "KVM_QEMU_IMG_BINARY": "/usr/bin/qemu-img",
+                "GH_ADMIN_TOKEN": "manager-only-test-token",
+            }
+            info = subprocess.CompletedProcess([], 0, json.dumps({"format": "raw", "virtual-size": 4 * 1024**3}), "")
+
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["info", "--output=json"]:
+                    return info
+                if command[1:2] == ["create"]:
+                    Path(command[-2]).write_bytes(b"overlay")
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                if command[1:3] == ["-as", "mkisofs"]:
+                    Path(command[5]).write_bytes(b"seed")
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                raise AssertionError(command)
+
+            name = "n150-rc-eph-test"
+            state = state_root / name
+            output = io.StringIO()
+            supervisor_pid = None
+            with patch.dict(os.environ, env), patch.object(kvm, "validate_runtime"), \
+                patch.object(kvm, "recover"), patch.object(kvm, "active_names", return_value=[]), \
+                patch.object(kvm, "run", side_effect=fake_run), contextlib.redirect_stdout(output):
+                kvm.start_vm(name, "ghs_" + "z" * 36, kvm.config())
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if state.exists() and (state / "state.json").exists():
+                        metadata = json.loads((state / "state.json").read_text())
+                        supervisor_pid = metadata.get("supervisor_pid")
+                        if metadata.get("qemu_pid"):
+                            if env_capture.exists():
+                                break
+                    time.sleep(0.05)
+                else:
+                    self.fail("supervisor did not start the disposable QEMU process")
+                kvm.stop_vm(name, kvm.config())
+                deadline = time.monotonic() + 5
+                while state.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if supervisor_pid:
+                    try:
+                        os.waitpid(supervisor_pid, 0)
+                    except ChildProcessError:
+                        pass
+            self.assertFalse(state.exists(), "overlay and bootstrap media must be removed")
+            self.assertNotIn("ghs_", output.getvalue())
+            self.assertNotIn("GH_ADMIN_TOKEN", env_capture.read_text())
+
+
+if __name__ == "__main__":
+    unittest.main()

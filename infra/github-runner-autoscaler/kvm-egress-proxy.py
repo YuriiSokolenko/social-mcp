@@ -15,10 +15,14 @@ import socket
 import socketserver
 import sys
 import threading
+import time
 from urllib.parse import urlsplit
 
 MAX_HEADER = 16 * 1024
-MAX_TUNNEL_SECONDS = 300
+MAX_TUNNEL_SECONDS = 1800
+TUNNEL_IDLE_SECONDS = 300
+TUNNEL_BUFFER_BYTES = 256 * 1024
+TUNNEL_CHUNK_BYTES = 64 * 1024
 MAX_CONNECTIONS = 64
 EXACT_HOSTS = frozenset(
     {
@@ -30,8 +34,13 @@ EXACT_HOSTS = frozenset(
         "files.pythonhosted.org",
         "github.com",
         "github-releases.githubusercontent.com",
+        "github-registry-files.githubusercontent.com",
+        "github-cloud.githubusercontent.com",
+        "github-cloud.s3.amazonaws.com",
         "githubusercontent.com",
+        "objects-origin.githubusercontent.com",
         "objects.githubusercontent.com",
+        "actions.githubusercontent.com",
         "pipelines.actions.githubusercontent.com",
         "plugins.gradle.org",
         "plugins-artifacts.gradle.org",
@@ -45,7 +54,11 @@ EXACT_HOSTS = frozenset(
         "nodejs.org",
     }
 )
-ALLOWED_SUFFIXES = (".blob.core.windows.net",)
+ALLOWED_SUFFIXES = (
+    ".blob.core.windows.net",
+    ".actions.githubusercontent.com",
+    ".githubusercontent.com",
+)
 
 
 def allowed_host(host: str) -> bool:
@@ -135,19 +148,68 @@ class ProxyHandler(socketserver.BaseRequestHandler):
     def tunnel(client: socket.socket, upstream: socket.socket) -> None:
         client.setblocking(False)
         upstream.setblocking(False)
-        sockets = [client, upstream]
+        peers = {client: upstream, upstream: client}
+        pending = {client: bytearray(), upstream: bytearray()}
+        read_open = {client: True, upstream: True}
+        write_shutdown = {client: False, upstream: False}
+        started = last_activity = time.monotonic()
         try:
-            while True:
-                readable, _, exceptional = select.select(sockets, [], sockets, MAX_TUNNEL_SECONDS)
-                if exceptional or not readable:
+            while any(read_open.values()) or any(pending.values()):
+                now = time.monotonic()
+                remaining = min(
+                    MAX_TUNNEL_SECONDS - (now - started),
+                    TUNNEL_IDLE_SECONDS - (now - last_activity),
+                )
+                if remaining <= 0:
                     return
-                for source in readable:
-                    data = source.recv(65536)
-                    if not data:
+                readable = [
+                    sock for sock in peers
+                    if read_open[sock] and len(pending[peers[sock]]) < TUNNEL_BUFFER_BYTES
+                ]
+                writable = [sock for sock in peers if pending[sock]]
+                try:
+                    ready_read, ready_write, exceptional = select.select(
+                        readable, writable, list(peers), remaining
+                    )
+                except (OSError, ValueError):
+                    return
+                if exceptional:
+                    return
+                if not ready_read and not ready_write:
+                    return
+                for source in ready_read:
+                    room = TUNNEL_BUFFER_BYTES - len(pending[peers[source]])
+                    try:
+                        data = source.recv(min(TUNNEL_CHUNK_BYTES, room))
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except OSError:
                         return
-                    target = upstream if source is client else client
-                    target.sendall(data)
+                    last_activity = time.monotonic()
+                    if data:
+                        pending[peers[source]].extend(data)
+                    else:
+                        read_open[source] = False
+                for target in ready_write:
+                    try:
+                        written = target.send(pending[target])
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except OSError:
+                        return
+                    if written <= 0:
+                        return
+                    del pending[target][:written]
+                    last_activity = time.monotonic()
+                for source, target in peers.items():
+                    if not read_open[source] and not pending[target] and not write_shutdown[target]:
+                        try:
+                            target.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass
+                        write_shutdown[target] = True
         finally:
+            client.close()
             upstream.close()
 
 
