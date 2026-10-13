@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snake — pack-20261010-rerun3</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="game">
+      <h1 class="visually-hidden">Snake</h1>
+      <p class="pack">workflow-smoke / pack-20261010-rerun3</p>
+
+      <p class="score">Score: <span id="score" aria-live="polite">0</span></p>
+      <p id="status" class="status" role="status" aria-live="polite">Loading…</p>
+
+      <canvas id="board" width="420" height="420" aria-label="Snake board"></canvas>
+
+      <div class="controls">
+        <button id="start" type="button">Start</button>
+        <button id="pause" type="button">Pause</button>
+        <button id="restart" type="button">Restart</button>
+      </div>
+
+      <div class="pad" role="group" aria-label="Touch controls">
+        <button type="button" data-direction="up" aria-label="Move up">↑</button>
+        <div class="pad-row">
+          <button type="button" data-direction="left" aria-label="Move left">←</button>
+          <button type="button" data-direction="down" aria-label="Move down">↓</button>
+          <button type="button" data-direction="right" aria-label="Move right">→</button>
+        </div>
+      </div>
+
+      <p class="hint">Arrows or WASD to steer, Space to start and pause.</p>
+    </main>
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>
