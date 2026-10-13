@@ -18,7 +18,7 @@ KVM_BACKEND_SCRIPT="${KVM_BACKEND_SCRIPT:-/usr/local/bin/kvm-backend.py}"
 KVM_STATE_DIR="${KVM_STATE_DIR:-/kvm-state}"
 KVM_PROXY_PORT="${KVM_PROXY_PORT:-43128}"
 KVM_START_TIMEOUT_SECONDS="${KVM_START_TIMEOUT_SECONDS:-60}"
-KVM_MIN_HOST_FREE_CPUS="${KVM_MIN_HOST_FREE_CPUS:-2}"
+KVM_MIN_HOST_CPU_HEADROOM="${KVM_MIN_HOST_CPU_HEADROOM:-1}"
 KVM_GUEST_CPUS="${KVM_GUEST_CPUS:-2}"
 KVM_OVERLAY_MAX_GIB="${KVM_OVERLAY_MAX_GIB:-24}"
 KVM_IDLE_POLLS_BEFORE_STOP="${KVM_IDLE_POLLS_BEFORE_STOP:-4}"
@@ -28,7 +28,7 @@ done
 [[ "$LEGACY_RESERVED_RUNNERS" =~ ^[0-9]+$ ]] || exit 1
 [[ "$WORKER_BACKEND" == docker || "$WORKER_BACKEND" == kvm ]] || { echo 'WORKER_BACKEND must be docker or kvm' >&2; exit 1; }
 if [ "$WORKER_BACKEND" == kvm ]; then
-  [[ "$KVM_START_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$KVM_MIN_HOST_FREE_CPUS" =~ ^[1-9][0-9]*$ \
+  [[ "$KVM_START_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$KVM_MIN_HOST_CPU_HEADROOM" =~ ^[1-9][0-9]*$ \
     && "$KVM_GUEST_CPUS" =~ ^[1-9][0-9]*$ && "$KVM_OVERLAY_MAX_GIB" =~ ^[1-9][0-9]*$ \
     && "$KVM_IDLE_POLLS_BEFORE_STOP" =~ ^[2-9][0-9]*$ ]] || {
       echo 'KVM resource settings must be positive integers' >&2; exit 1;
@@ -583,16 +583,26 @@ quarantine_general_runners() {
 # Every upgraded manager holds the same advisory lock through inspect + create.
 # Legacy managers remain untouched during the targeted deployment; the new
 # pool reserves their configured maximum rather than assuming they use a lock.
+host_cpu_load_1m() { awk '{print $1}' /proc/loadavg 2>/dev/null; }
+
 resource_admission() {
   local count available global_count
   count="$(active_containers)" || return 1
   [ "$count" -lt "$MAX_RUNNERS" ] || return 1
   if [ "$WORKER_BACKEND" == kvm ]; then
     [ "$((count + LEGACY_RESERVED_RUNNERS))" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
-    local host_cpus free_disk_mb required_disk_mb
+    local host_cpus host_load_1m free_disk_mb required_disk_mb
     host_cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || return 1
     [[ "$host_cpus" =~ ^[1-9][0-9]*$ ]] || return 1
-    [ "$host_cpus" -ge "$((KVM_GUEST_CPUS + KVM_MIN_HOST_FREE_CPUS))" ] || return 1
+    host_load_1m="$(host_cpu_load_1m)" || return 1
+    [[ "$host_load_1m" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    # CPU count is a hardware capacity ceiling, not a free-capacity signal.
+    # Defer when the recent host load plus this VM's vCPUs would consume the
+    # configured headroom. The manager's Compose CPU quota separately bounds
+    # the KVM supervisor and QEMU processes.
+    awk -v hostload="$host_load_1m" -v guest="$KVM_GUEST_CPUS" \
+      -v reserve="$KVM_MIN_HOST_CPU_HEADROOM" -v cpus="$host_cpus" \
+      'BEGIN { exit !(hostload + guest + reserve <= cpus) }' || return 1
     free_disk_mb="$(df -Pm "$KVM_STATE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')" || return 1
     [[ "$free_disk_mb" =~ ^[0-9]+$ ]] || return 1
     required_disk_mb=$((KVM_OVERLAY_MAX_GIB * 1024 + 1024))

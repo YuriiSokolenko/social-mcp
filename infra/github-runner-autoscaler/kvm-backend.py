@@ -137,8 +137,9 @@ runuser -u runner -- /usr/bin/bwrap --die-with-parent --new-session --unshare-al
   --ro-bind /lib /lib --ro-bind /lib64 /lib64 \\
   -- /usr/bin/true
 token="$(base64 -d /var/lib/runner-bootstrap/token.b64)"
-runuser -u runner -- /home/runner/actions-runner/config.sh \\
-  --url {RUNNER_URL} --token "$token" --name {name} --labels {RUNNER_LABELS} \\
+ACTIONS_RUNNER_INPUT_TOKEN="$token" runuser -u runner --preserve-environment -- \\
+  /home/runner/actions-runner/config.sh \\
+  --url {RUNNER_URL} --name {name} --labels {RUNNER_LABELS} \\
   --ephemeral --disableupdate --unattended --work _work
 unset token
 shred -u /var/lib/runner-bootstrap/token.b64
@@ -166,7 +167,9 @@ Environment=https_proxy=http://{GUEST_PROXY}
 Environment="JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=10.0.2.100 -Dhttp.proxyPort=3128 -Dhttps.proxyHost=10.0.2.100 -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=localhost|127.*"
 Environment=NO_PROXY=localhost,127.0.0.1
 ExecStart=/home/runner/actions-runner/run.sh
-ExecStopPost=/usr/sbin/poweroff
+# '+' makes systemd run this post-stop command with full privileges even though
+# the long-lived Actions listener runs as the unprivileged runner account.
+ExecStopPost=+/usr/bin/systemctl --no-block poweroff
 Restart=no
 TimeoutStopSec=20
 
@@ -178,7 +181,8 @@ cat >/etc/nftables.conf <<'NFT'
 flush ruleset
 table inet runner_egress {{
   chain output {{
-    type filter hook output priority -300; policy drop;
+    type filter hook output priority 0; policy drop;
+    oifname "lo" accept
     ct state established,related accept
     ip daddr 10.0.2.100 tcp dport 3128 accept
     udp sport 68 udp dport 67 accept
@@ -188,6 +192,11 @@ NFT
 systemctl enable nftables.service
 systemctl restart nftables.service
 systemctl enable actions-runner.service
+# cloud-final is still running this bootstrap, so do not synchronously start a
+# unit ordered After=cloud-final.service. A transient timer starts it once
+# cloud-init has returned and systemd has completed cloud-final.
+systemd-run --quiet --unit=actions-runner-delayed-start --on-active=10s \\
+  /usr/bin/systemctl start actions-runner.service
 """
     userdata = f"""#cloud-config
 write_files:

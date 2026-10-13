@@ -29,13 +29,14 @@ chmod 0600 "$tmp/owner.env"
 
 export DOCKER_CALLS="$tmp/docker-calls"
 PATH="$tmp/bin:$PATH" bash "$root/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" \
-  --dry-run "$tmp/owner.env" >"$tmp/output"
-grep -Fq 'Read-only KVM preflight passed' "$tmp/output"
-[[ "$(wc -l <"$DOCKER_CALLS" | tr -d ' ')" = 2 ]] || {
-  echo 'dry-run performed an unexpected Docker action' >&2; exit 1;
-}
-grep -Fxq 'info' "$DOCKER_CALLS"
-grep -Fq 'compose --project-name recursive-coder-kvm' "$DOCKER_CALLS"
+  --dry-run "$tmp/owner.env" >"$tmp/output" 2>&1 && {
+    echo 'deployment preflight passed without prepared golden assets' >&2; exit 1;
+  }
+grep -Fq 'Run prepare-recursive-coder-kvm.sh first' "$tmp/output"
+[ ! -e "$DOCKER_CALLS" ] || { echo 'preflight reached Docker before prepared assets' >&2; exit 1; }
+if grep -Fq 'curl -fL' "$root/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh"; then
+  echo 'deployment must not download or stage golden images' >&2; exit 1
+fi
 
 chmod 0644 "$tmp/owner.env"
 if PATH="$tmp/bin:$PATH" bash "$root/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" \

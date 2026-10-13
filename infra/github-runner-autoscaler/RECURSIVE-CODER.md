@@ -1,6 +1,6 @@
 # Recursive-coder CI pool — issue #793
 
-Status: **KVM backend, manager integration, egress proxy and owner deployment tooling are implemented; prior disposable guest CI passed; not deployed**.
+Status: **KVM backend, manager integration, egress proxy, owner preparation and deployment tooling are implemented; current guest bootstrap awaits owner image staging and real-VM validation; not deployed**.
 The guest bootstrap now uses unprivileged user namespaces plus a guest-only nftables
 egress allow rule. That bootstrap revision still needs a fresh real-VM run before
 deployment. The owner alone performs privileged deployment.
@@ -292,6 +292,26 @@ starts/stops the KVM manager service. It never restarts or prunes existing pools
 
 ## Current evidence and blockers — 2026-10-13
 
+The latest review findings are addressed in source: cloud-init schedules the
+Actions service through a transient delayed systemd unit after `cloud-final`
+returns; nftables explicitly allows loopback; runner registration supplies the
+short-lived token through the Actions runner's `ACTIONS_RUNNER_INPUT_TOKEN`
+input variable instead of argv; the runner unit uses a privileged
+`ExecStopPost` poweroff hook, while bootstrap failures power off from the root
+bootstrap; and KVM admission checks host 1-minute load, online CPU count,
+`MemAvailable`, and overlay filesystem headroom. The manager Compose CPU quota
+bounds its QEMU and manager processes. Regression coverage checks generated
+lifecycle rules and exercises high-load admission.
+
+`prepare-recursive-coder-kvm.sh` is a separate owner-run script with
+`--dry-run`, `--prepare`, `--verify`, and `--rollback`. It changes only
+`/var/lib/recursive-coder-kvm`, never installs packages, changes host security
+policy, or controls services. It verifies the pinned SHA-256 and QEMU image
+format before an atomic install, refuses to replace an existing image, records
+whether preparation created the image, and removes only that image on rollback
+after checking that the manager and VM state are absent. Deployment now requires
+the prepared root-owned read-only image and never downloads or modifies it.
+
 The prior real Ubuntu 24.04.5 guest run above verified KVM boot/teardown, the
 exact workflow Bubblewrap command, the positive and negative sandbox E2E tests
 with zero skips, direct/private network blocking, and the full Gradle CI command.
@@ -301,33 +321,40 @@ rebooted in a real guest. The pinned golden image was no longer present on N150,
 and direct HTTPS from both the SSH host and a disposable Docker container timed
 out while trying to fetch it. No attempt was made to bypass that network boundary.
 
+The current bootstrap has **not** been credited with the previous 524-test
+result. It still requires a real boot after preparation, including the exact
+workflow Bubblewrap probe, positive and negative sandbox tests with zero skips,
+loopback/proxy checks, direct/private/DNS blocking, Gradle CI, and shutdown plus
+overlay cleanup. The actual ephemeral Actions service and job also remain
+untested; the separately scoped PAT is still an owner-only gate.
+
 On Beelink, against the current branch snapshot:
 
 ```text
 python3 -W error::ResourceWarning -m unittest -v tests/test_kvm_backend.py tests/test_kvm_egress_proxy.py
-  14 tests passed; no resource warnings
+  15 tests passed; no resource warnings; generated systemd runner unit passed systemd-analyze verify
 bash tests/test_runner_autoscaler.sh
   exit 0
 bash tests/test_recursive_coder_pool.sh
   exit 0
 bash tests/test_recursive_coder_kvm_pool.sh
   exit 0
+bash tests/test_recursive_coder_kvm_deploy.sh
+  exit 0; missing prepared assets fail closed before any Docker action
+bash tests/test_prepare_recursive_coder_kvm.sh
+  exit 0; bad digest rejected, dry-run left no state, install/repeat/verify/rollback passed in an isolated temporary root, mismatched existing image preserved
 python3 -m unittest -v tests.test_recursive_coder_deploy
   10 tests passed
 pytest --confcutdir=tests/ci -q tests/ci/test_workflow_integrity.py
-  4 tests passed
-shellcheck manager.sh deploy-recursive-coder-kvm.sh and KVM pool/deploy tests
-  exit 0
+  not rerun for this snapshot: pytest is not installed on Beelink
+shellcheck manager.sh deploy-recursive-coder-kvm.sh prepare-recursive-coder-kvm.sh and shell tests
+  not rerun for this snapshot: ShellCheck is not installed on Beelink; bash -n passed for all changed shell scripts
 docker compose --env-file .env.example -f compose.yaml --profile recursive-coder-kvm config --quiet
   exit 0
-deploy-recursive-coder-kvm.sh --dry-run with a mode-0600 example env file
-  Read-only KVM preflight passed; no assets or services changed
-KVM manager Docker image build
-  exit 0
-Disposable manager start/stop smoke with a dummy token
-  exit 0; manager-local proxy returned GitHub API HTTP 200
-Live proxy policy smoke
-  api.github.com=200; archive.ubuntu.com=200; example.com=403
+docker build --pull=false -f infra/github-runner-autoscaler/kvm-manager.Dockerfile -t n150/recursive-coder-kvm-manager:codex-pr794-review .
+  exit 0; the uniquely tagged validation image was removed immediately afterward; no container was started
+qemu-img info --output=json -- /bin/true
+  exit 0; Linux qemu-img accepts the image inspection arguments used by preparation
 ```
 
 The backend lifecycle test uses fake QEMU and proves token absence from the QEMU
@@ -355,15 +382,18 @@ Administration read/write. Never put the PAT or a registration token in shell
 arguments, issue comments or logs.
 
 N150's current direct route reaches GitHub and the Ubuntu package archive, but
-times out fetching `cloud-images.ubuntu.com`. If that remains true during owner
-deployment, download this exact pinned image on a network-permitted machine and
-copy it to Beelink before `--deploy`:
+times out fetching `cloud-images.ubuntu.com`. Download the official amd64 image
+on a network-permitted Mac, verify the pinned checksum there, and stage it at
+`/tmp/noble-server-cloudimg-amd64.img` on Beelink. The preparation script checks
+the same checksum and image metadata before installation:
 
 ```bash
 curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o noble-server-cloudimg-amd64.img
-echo '6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2  noble-server-cloudimg-amd64.img' | sha256sum -c -
+echo '6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2  noble-server-cloudimg-amd64.img' | shasum -a 256 -c -
 scp noble-server-cloudimg-amd64.img beelink:/tmp/noble-server-cloudimg-amd64.img
-ssh beelink 'sudo install -d -o root -g root -m 0755 /var/lib/recursive-coder-kvm/golden && sudo install -o root -g root -m 0444 /tmp/noble-server-cloudimg-amd64.img /var/lib/recursive-coder-kvm/golden/noble-server-cloudimg-amd64.img'
+ssh beelink 'sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --dry-run'
+ssh beelink 'sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --prepare'
+ssh beelink 'sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --verify'
 ```
 
 After a fresh real-VM bootstrap validation and owner review, run the read-only
@@ -373,10 +403,11 @@ preflight and inspect the output:
 bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
 ```
 
-The deployment script creates
-`/var/lib/recursive-coder-kvm/{golden,state}` with root ownership and modes 0444
-and 0700 respectively. It downloads the pinned Ubuntu image if absent,
-checks its SHA-256, builds only the KVM manager image, verifies the exact device,
+The preparation script creates
+`/var/lib/recursive-coder-kvm/{golden,state}` with root ownership and modes 0755
+and 0700, and installs the golden image as mode 0444. The separate deployment
+script requires these prepared assets, checks their pinned SHA-256, builds only
+the KVM manager image, verifies the exact device,
 mount and resource settings, and starts only the new Compose service:
 
 ```bash
@@ -389,6 +420,15 @@ and removes/restores only the KVM manager and its saved image/configuration:
 
 ```bash
 sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --rollback /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env
+```
+
+To undo host preparation before deployment, the separate rollback refuses to
+run while a KVM manager or VM state exists. It removes only a golden image this
+preparation transaction installed and preserves the staged source and
+directories:
+
+```bash
+sudo bash /home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --rollback
 ```
 
 After owner deployment, require one trusted Actions job on an `n150-rc-eph-*`
@@ -409,6 +449,8 @@ python3 -W error::ResourceWarning -m unittest -v tests/test_kvm_backend.py tests
 python3 -m unittest -v tests.test_recursive_coder_deploy
 pytest --confcutdir=tests/ci -q tests/ci/test_workflow_integrity.py
 shellcheck infra/github-runner-autoscaler/manager.sh infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh tests/test_recursive_coder_kvm_pool.sh tests/test_recursive_coder_kvm_deploy.sh
+shellcheck infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh tests/test_prepare_recursive_coder_kvm.sh
+bash tests/test_prepare_recursive_coder_kvm.sh
 docker compose --env-file infra/github-runner-autoscaler/.env.example -f infra/github-runner-autoscaler/compose.yaml --profile recursive-coder-kvm config --quiet
 ```
 

@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,8 @@ class KvmBackendTests(unittest.TestCase):
         self.assertIn(kvm.base64.b64encode(token.encode()).decode(), userdata)
         self.assertIn("permissions: '0600'", userdata)
         self.assertIn("shred -u /var/lib/runner-bootstrap/token.b64", userdata)
+        self.assertIn('trap \'code=$?; shred -u /var/lib/runner-bootstrap/token.b64', userdata)
+        self.assertIn('systemctl poweroff --force', userdata)
         self.assertIn("rm -f /run/cloud-init/instance-data-sensitive.json", userdata)
         self.assertIn("usermod --lock --shell /usr/sbin/nologin ubuntu", userdata)
         self.assertIn("kernel.apparmor_restrict_unprivileged_userns=0", userdata)
@@ -38,8 +41,33 @@ class KvmBackendTests(unittest.TestCase):
         self.assertIn("ip daddr 10.0.2.100 tcp dport 3128 accept", userdata)
         self.assertIn("udp sport 68 udp dport 67 accept", userdata)
         self.assertIn("--ephemeral --disableupdate --unattended", userdata)
+        self.assertIn('ACTIONS_RUNNER_INPUT_TOKEN="$token" runuser -u runner --preserve-environment', userdata)
+        self.assertNotIn('--token "$token"', userdata)
+        self.assertIn("systemd-run --quiet --unit=actions-runner-delayed-start --on-active=10s", userdata)
+        self.assertIn("After=network-online.target cloud-final.service", userdata)
+        self.assertIn("ExecStopPost=+/usr/bin/systemctl --no-block poweroff", userdata)
+        self.assertIn('oifname "lo" accept', userdata)
         self.assertIn(kvm.REPOSITORY, userdata)
         self.assertEqual("n150-rc-eph-test", json.loads(metadata)["instance-id"])
+
+    @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze is available on Linux only")
+    def test_generated_runner_service_unit_passes_systemd_verification(self):
+        userdata, _ = kvm.cloud_init("n150-rc-eph-unitcheck", "ghs_" + "z" * 36)
+        lines = userdata.splitlines()
+        start = next(i for i, line in enumerate(lines) if "cat >/etc/systemd/system/actions-runner.service" in line) + 1
+        end = next(i for i in range(start, len(lines)) if lines[i].strip() == "UNIT")
+        unit = "\n".join(line[6:] for line in lines[start:end]) + "\n"
+        # The runner executable exists only in the guest image; /bin/true lets
+        # systemd-analyze validate every unit directive without touching host units.
+        unit = unit.replace("/home/runner/actions-runner/run.sh", "/bin/true")
+        with tempfile.TemporaryDirectory(prefix="kvm-systemd-unit-test-") as temporary:
+            unit_path = Path(temporary) / "actions-runner.service"
+            unit_path.write_text(unit)
+            result = subprocess.run(
+                ["systemd-analyze", "verify", str(unit_path)],
+                check=False, text=True, capture_output=True, timeout=15,
+            )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_qemu_command_has_bounded_kvm_guest_and_no_host_shares_or_forwarding(self):
         cfg = {

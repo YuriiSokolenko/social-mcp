@@ -141,13 +141,17 @@ if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
   fail 'Host user lacks read/write access to /dev/kvm'
 fi
 cpu_count="$(getconf _NPROCESSORS_ONLN)"
-[ "$cpu_count" -ge 4 ] || fail 'Need 2 guest vCPUs plus 2 host-reserved CPUs'
+[ "$cpu_count" -ge 4 ] || fail 'Need an x86_64 host with at least four online CPUs; admission also checks live host load'
 [ "$(awk '/MemAvailable:/ {print int($2/1024)}' /proc/meminfo)" -ge 8192 ] || fail 'Need 5 GiB KVM manager limit plus 3 GiB host reserve'
 if [ "$mode" = --dry-run ]; then
-  [ ! -e "$golden" ] || [ "$(sha256sum "$golden" | awk '{print $1}')" = "$golden_sha" ] \
-    || fail 'Existing golden image has an unexpected SHA-256; refusing replacement'
-  [ ! -e "$state_dir" ] || [ "$(stat -c '%a' "$state_dir")" = 700 ] \
-    || fail 'KVM state directory must have mode 0700'
+  [ -d "$golden_dir" ] && [ "$(stat -c '%u:%g:%a' "$golden_dir")" = '0:0:755' ] \
+    || fail 'Run prepare-recursive-coder-kvm.sh first; the golden directory must be root:root mode 0755'
+  [ -d "$state_dir" ] && [ "$(stat -c '%u:%g:%a' "$state_dir")" = '0:0:700' ] \
+    || fail 'Run prepare-recursive-coder-kvm.sh first; the KVM state directory must be root:root mode 0700'
+  [ -f "$golden" ] && [ ! -L "$golden" ] \
+    && [ "$(sha256sum "$golden" | awk '{print $1}')" = "$golden_sha" ] \
+    && [ "$(stat -c '%u:%g:%a' "$golden")" = '0:0:444' ] \
+    || fail 'Pinned root-owned read-only golden image is missing or invalid; run preparation first'
   [ "$(df -Pm "$disk_probe" | awk 'NR==2 {print $4}')" -ge 25600 ] \
     || fail 'Need at least 25 GiB free for a bounded 24 GiB overlay'
   docker info >/dev/null || fail 'Docker daemon unavailable'
@@ -207,9 +211,6 @@ PY
   exit 0
 fi
 
-install -d -o root -g root -m 0755 "$golden_dir"
-install -d -o root -g root -m 0700 "$state_dir"
-
 if docker inspect recursive-coder-runner-manager >/dev/null 2>&1 \
   && [ "$(docker inspect recursive-coder-runner-manager --format '{{.State.Running}}')" = true ]; then
   fail 'The Docker recursive-coder manager is running; prevent duplicate job capacity before enabling KVM'
@@ -218,28 +219,13 @@ old_workers="$(docker ps -aq --filter label=social-mcp.runner-repository=YuriiSo
 [ -z "$old_workers" ] || fail 'Drain existing Docker recursive-coder workers before enabling the KVM pool'
 
 "${compose[@]}" config --quiet
-[ -f "$golden" ] || {
-  temporary="$golden.part.$$"
-  cleanup_download() {
-    [ -n "${temporary:-}" ] || return 0
-    python3 - "$temporary" <<'PY'
-from pathlib import Path
-import sys
-Path(sys.argv[1]).unlink(missing_ok=True)
-PY
-  }
-  trap cleanup_download EXIT
-  curl -fL --retry 3 --connect-timeout 10 --max-time 900 \
-    https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o "$temporary"
-  echo "$golden_sha  $temporary" | sha256sum -c - || fail 'Ubuntu golden image checksum mismatch'
-  chmod 0444 "$temporary"
-  mv "$temporary" "$golden"
-  temporary=""
-  trap - EXIT
-}
+[ -d "$golden_dir" ] && [ "$(stat -c '%u:%g:%a' "$golden_dir")" = '0:0:755' ] \
+  || fail 'Run prepare-recursive-coder-kvm.sh first; the golden directory must be root:root mode 0755'
+[ -d "$state_dir" ] && [ "$(stat -c '%u:%g:%a' "$state_dir")" = '0:0:700' ] \
+  || fail 'Run prepare-recursive-coder-kvm.sh first; the KVM state directory must be root:root mode 0700'
+[ -f "$golden" ] && [ ! -L "$golden" ] || fail 'Pinned Ubuntu golden image is missing; stage it and run preparation first'
 [ "$(sha256sum "$golden" | awk '{print $1}')" = "$golden_sha" ] || fail 'Golden image checksum mismatch'
-chmod 0444 "$golden"
-chmod 0700 "$state_dir"
+[ "$(stat -c '%u:%g:%a' "$golden")" = '0:0:444' ] || fail 'Golden image must be root:root mode 0444; run preparation first'
 [ "$(df -Pm "$state_dir" | awk 'NR==2 {print $4}')" -ge 25600 ] || fail 'Need at least 25 GiB free for a bounded 24 GiB overlay'
 api_check runners
 api_check runners/registration-token

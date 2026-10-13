@@ -32,7 +32,7 @@ export RUNNER_LABELS=n150,recursive-coder-ci WORKFLOW_FILES=ci.yml
 export MOUNT_PI_CONFIG=false MOUNT_DOCKER_SOCKET=false RUN_CHECK_EXECUTOR_ENABLED=false
 export SCHEDULER_STATE_DIR="$tmp/scheduler" KVM_STATE_DIR="$tmp/state"
 export KVM_BACKEND_SCRIPT="$tmp/backend.py" KVM_START_TIMEOUT_SECONDS=5
-export KVM_GUEST_CPUS=2 KVM_MIN_HOST_FREE_CPUS=2 KVM_OVERLAY_MAX_GIB=1 KVM_IDLE_POLLS_BEFORE_STOP=4
+export KVM_GUEST_CPUS=2 KVM_MIN_HOST_CPU_HEADROOM=1 KVM_OVERLAY_MAX_GIB=1 KVM_IDLE_POLLS_BEFORE_STOP=4
 export HOST_MAX_EPHEMERAL=2 LEGACY_RESERVED_RUNNERS=1 HOST_MEMORY_RESERVE_MB=1 WORKER_MEMORY_MB=1
 export TEST_ACTIVE_NAMES="$tmp/active" TEST_START_NAME="$tmp/start-name" TEST_START_TOKEN="$tmp/start-token"
 export TEST_STOP_NAME="$tmp/stop-name"
@@ -41,9 +41,13 @@ source "$ROOT/infra/github-runner-autoscaler/manager.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 registration_token() { printf '%s\n' 'mock-short-lived-registration-token'; }
 getconf() { printf '4\n'; }
+host_cpu_load_1m() { printf '%s\n' "${TEST_HOST_CPU_LOAD_1M:-0}"; }
 
 active_containers() { echo 0; }
 resource_admission || fail 'KVM resource admission rejected bounded capacity'
+TEST_HOST_CPU_LOAD_1M=1.1
+if resource_admission; then fail 'KVM backend ignored measured host load headroom'; fi
+TEST_HOST_CPU_LOAD_1M=0
 active_containers() { echo 1; }
 if resource_admission; then fail 'KVM backend exceeded the one-VM cap'; fi
 active_containers() { echo 0; }
