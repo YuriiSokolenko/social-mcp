@@ -5,6 +5,18 @@ set -euo pipefail
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-YuriiSokolenko/social-mcp}"
 
 MAX_RUNNERS="${MAX_RUNNERS:-8}"
+WORKER_NETWORK="${WORKER_NETWORK:-host}"
+WORKER_HARDENED="${WORKER_HARDENED:-false}"
+WORKER_CPUS="${WORKER_CPUS:-2}"
+WORKER_MEMORY_MB="${WORKER_MEMORY_MB:-4096}"
+SCHEDULER_STATE_DIR="${SCHEDULER_STATE_DIR:-}"
+HOST_MAX_EPHEMERAL="${HOST_MAX_EPHEMERAL:-12}"
+HOST_MEMORY_RESERVE_MB="${HOST_MEMORY_RESERVE_MB:-3072}"
+LEGACY_RESERVED_RUNNERS="${LEGACY_RESERVED_RUNNERS:-0}"
+for setting in MAX_RUNNERS HOST_MAX_EPHEMERAL WORKER_MEMORY_MB HOST_MEMORY_RESERVE_MB; do
+  [[ "${!setting}" =~ ^[1-9][0-9]*$ ]] || { echo "$setting must be a positive integer" >&2; exit 1; }
+done
+[[ "$LEGACY_RESERVED_RUNNERS" =~ ^[0-9]+$ ]] || exit 1
 MODEL_MAX_CONCURRENCY="${MODEL_MAX_CONCURRENCY:-8}"
 POLL_SECONDS="${POLL_SECONDS:-6}"
 RUNNER_IMAGE="${RUNNER_IMAGE:-n150/github-pi-runner-ephemeral:1.1.0-mini-swe-r5}"
@@ -110,52 +122,94 @@ api_get() {
 }
 
 registration_token() {
-  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X POST "${AUTH[@]}" "${API}/actions/runners/registration-token" | jq -r '.token'
+  curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X POST "${AUTH[@]}" "${API}/actions/runners/registration-token" | jq -er '.token | select(type == "string" and length > 0)'
+}
+
+# Aggregate complete pages; any inconsistent/truncated response defers admission.
+# GitHub search caps run listings at 1,000 results. Fail closed at that boundary.
+api_list() {
+  local url="$1" key="$2" page=1 result got total expected_total='' all='[]'
+  while [ "$page" -le 10 ]; do
+    result="$(api_get "${url}&page=${page}")" || return 1
+    total="$(jq -er --arg key "$key" '
+      if (.[$key] | type) != "array" or (.total_count | type) != "number"
+        or .total_count < 0 or (.total_count | floor) != .total_count
+      then error("invalid paginated response") else .total_count end' <<< "$result")" || return 1
+    if [ -n "$expected_total" ] && [ "$total" -ne "$expected_total" ]; then return 1; fi
+    expected_total="$total"
+    got="$(jq --arg key "$key" '.[$key] | length' <<< "$result")"
+    all="$(jq -nc --argjson all "$all" --argjson result "$result" --arg key "$key" '$all + $result[$key]')" || return 1
+    [ "$(jq length <<< "$all")" -le "$total" ] || return 1
+    if [ "$(jq length <<< "$all")" -eq "$total" ]; then
+      jq -nc --arg key "$key" --argjson all "$all" '{($key): $all}'
+      return 0
+    fi
+    [ "$got" -eq 100 ] || return 1
+    page=$((page + 1))
+  done
+  return 1
 }
 
 queued_jobs() {
-  # One repo-wide request per status instead of one per watched workflow file
-  # (was 2*N GitHub API calls every poll -- with 6-7 watched files per pool
-  # that alone was pushing close to the 5,000/hour token budget at
-  # POLL_SECONDS=10, which is what let POLL_SECONDS come down safely).
-  # total_count here is repo-wide (every workflow, not just ours), so we
-  # filter workflow_runs by path ourselves rather than trusting it directly;
-  # guard against a truncated page (unlikely for queued/pending, but silent
-  # under-counting would be worse than skipping the poll).
-  local total=0 status count
-  for status in queued pending; do
-    count="$(api_get "${API}/actions/runs?status=${status}&per_page=100" | jq -er --arg wf "${WORKFLOW_FILES}" '
+  # Running workflows can still contain queued jobs (three jobs in one run).
+  # Count only jobs whose full selector is satisfiable by this pool. GitHub's
+  # job API exposes the evaluated labels, so expressions need no YAML guessing.
+  local status runs ids id jobs count total=0 seen=' '
+  for status in queued pending in_progress; do
+    runs="$(api_list "${API}/actions/runs?status=${status}&per_page=100" workflow_runs)" || return 1
+    ids="$(jq -er --arg wf "$WORKFLOW_FILES" --arg repo "$GITHUB_REPOSITORY" '
       ($wf | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $watched
-      | if (.workflow_runs | type) != "array" then error("missing workflow_runs")
-        else
-          (.total_count) as $total
-          | (.workflow_runs | length) as $got
-          | if ($total | type) != "number" or $total < 0 or ($total | floor) != $total or $total > $got
-            then error("queued run list truncated or invalid total_count")
-            else [.workflow_runs[] | select((.path // "" | split("/") | last) as $base | ($watched | index($base)) != null)] | length
-            end
-        end
-    ')" || return 1
-    if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
-      log "warning: invalid queued-run count for status=$status"
-      return 1
-    fi
-    total=$((total + count))
+      | [.workflow_runs[]
+        | select((.path // "" | split("/") | last) as $base | ($watched | index($base)) != null)
+        | select(.event != "pull_request" or .head_repository.full_name == $repo)
+        | if (.id | type) != "number" then error("missing run id") else .id end]
+      | map(tostring) | join("\n")' <<< "$runs")" || return 1
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      [[ "$id" =~ ^[0-9]+$ ]] || return 1
+      [[ "$seen" != *" $id "* ]] || continue
+      seen+="$id "
+      jobs="$(api_list "${API}/actions/runs/${id}/jobs?filter=latest&per_page=100" jobs)" || return 1
+      count="$(jq -er --arg labels "self-hosted,linux,x64,${RUNNER_LABELS}" '
+        ($labels | ascii_downcase | split(",")) as $supported
+        | [.jobs[] | select(.status == "queued")
+          | select((.labels | type) == "array" and (.labels | length) > 0)
+          | select(all(.labels[]; type == "string" and (ascii_downcase as $label | $supported | index($label)) != null))
+          | select(any(.labels[]; ascii_downcase == "self-hosted"))] | length' <<< "$jobs")" || return 1
+      total=$((total + count))
+    done <<< "$ids"
   done
   printf '%s\n' "$total"
 }
 
+runner_list() {
+  api_list "${API}/actions/runners?per_page=100" runners
+}
+
+pool_containers() {
+  # New workers carry exact repo/pool identities. Prefix filtering also keeps
+  # legacy workers recoverable after a manager upgrade without recreating them.
+  local identity=()
+  if [ "$WORKER_HARDENED" == true ]; then
+    identity=(--filter "label=social-mcp.runner-repository=$GITHUB_REPOSITORY"
+      --filter "label=social-mcp.runner-pool=$RUNNER_PREFIX")
+  fi
+  run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps "$@" "${identity[@]}" \
+    --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}' \
+    | awk -v prefix="${RUNNER_PREFIX}-" 'index($0, prefix) == 1'
+}
+
 busy_ephemeral_runners() {
-  api_get "${API}/actions/runners?per_page=100"     | jq --arg prefix "${RUNNER_PREFIX}-"       '[.runners[] | select((.name | startswith($prefix)) and .busy == true)] | length'
+  runner_list     | jq --arg prefix "${RUNNER_PREFIX}-"       '[.runners[] | select((.name | startswith($prefix)) and .busy == true)] | length'
 }
 
 cleanup_stale_registrations() {
   local registrations containers id name
   # A runner can briefly be offline while its container is still starting.
-  containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps -a --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
-  registrations="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" \
+  containers="$(pool_containers -a)" || return 1
+  registrations="$(runner_list | jq -er --arg prefix "${RUNNER_PREFIX}-" \
     '.runners | if type != "array" then error("missing runners") else
-      map(select((.name | type) == "string" and (.name | startswith($prefix)) and .status == "offline")) |
+      map(select((.name | type) == "string" and (.name | startswith($prefix)) and .status == "offline" and .busy != true)) |
       map(select((.id | type) == "number") | [.id, .name] | @tsv) | join("\n")
     end')" || return 1
 
@@ -175,7 +229,7 @@ cleanup_stale_registrations() {
 
 active_containers() {
   local names
-  names="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
+  names="$(pool_containers)" || return 1
   printf '%s\n' "$names" | awk -v prefix="${RUNNER_PREFIX}-" 'index($0, prefix) == 1 { count++ } END { print count+0 }'
 }
 
@@ -183,7 +237,7 @@ retire_idle_runners() {
   local names containers name still_idle current_queue
   # An already registered idle runner can accept a job without consulting the
   # model gate. Remove surplus idle runners when no workflows are queued.
-  names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
+  names="$(runner_list | jq -er --arg prefix "${RUNNER_PREFIX}-" '
     .runners | if type != "array" then error("missing runners") else
       map(select((.name | type) == "string" and (.name | startswith($prefix))
         and .status == "online" and .busy == false)) | map(.name) | join("\n")
@@ -199,7 +253,7 @@ retire_idle_runners() {
   fi
 
   [ -n "$names" ] || return 0
-  containers="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}')" || return 1
+  containers="$(pool_containers)" || return 1
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     printf '%s\n' "$containers" | grep -Fxq -- "$name" || continue
@@ -217,7 +271,7 @@ retire_idle_runners() {
     fi
 
     # Check once more immediately before stopping; never stop a known busy runner.
-    still_idle="$(api_get "${API}/actions/runners?per_page=100" | jq -r --arg name "$name" '
+    still_idle="$(runner_list | jq -r --arg name "$name" '
       .runners | if type != "array" then error("missing runners") else
         any(.[]; .name == $name and .status == "online" and .busy == false)
       end')" || return 1
@@ -230,6 +284,10 @@ retire_idle_runners() {
 
 model_start_capacity() {
   local active="$1" status waiting busy metrics available
+  if [ "$MOUNT_PI_CONFIG" != true ] && [ -z "$MODEL_STATUS_URL" ]; then
+    printf '%s unknown %s\n' "$MAX_RUNNERS" "$((MAX_RUNNERS > active ? MAX_RUNNERS - active : 0))"
+    return 0
+  fi
   if [[ ! "$MODEL_MAX_CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
     log "error: MODEL_MAX_CONCURRENCY must be a positive integer"
     return 1
@@ -471,15 +529,17 @@ quarantine_general_runners() {
   local names name id
   # GitHub refuses deletion of busy runners. Stop idle registrations accepting
   # unrelated jobs even if Docker cannot enumerate/stop their containers.
-  names="$(api_get "${API}/actions/runners?per_page=100" | jq -er --arg prefix "${RUNNER_PREFIX}-" '
-    .runners | if type != "array" then error("missing runners") else
+  names="$(runner_list | jq -er --arg prefix "${RUNNER_PREFIX}-" --arg labels "$RUNNER_LABELS" '
+    ($labels | ascii_downcase | split(",") | map(select(. != "n150"))) as $pool_labels
+    | .runners | if type != "array" then error("missing runners") else
       map(select((.name | startswith($prefix)) and .busy == false
-        and any(.labels[]?; (.name | ascii_downcase) == "general"))) |
+        and (([.labels[]?.name | ascii_downcase]) as $actual
+          | all($pool_labels[]; . as $required | $actual | index($required) != null)))) |
       map([.id, .name] | @tsv) | join("\n") end')" || return 1
   [ -n "$names" ] || return 0
   while IFS=$'\t' read -r id name; do
     [[ "$id" =~ ^[0-9]+$ && "$name" == "${RUNNER_PREFIX}-"* ]] || continue
-    log "quarantine: removing idle general runner registration id=$id"
+    log "quarantine: removing idle pool runner registration id=$id"
     curl -fsS "${CURL_TIMEOUT_OPTS[@]}" -K <(auth_header) -X DELETE "${AUTH[@]}" "${API}/actions/runners/${id}" >/dev/null || {
       log "warning: quarantine deletion refused for runner id=$id (possibly newly busy); continuing with remaining idle runners"
       continue
@@ -487,26 +547,66 @@ quarantine_general_runners() {
   done <<< "$names"
 }
 
+# Every upgraded manager holds the same advisory lock through inspect + create.
+# Legacy managers remain untouched during the targeted deployment; the new
+# pool reserves their configured maximum rather than assuming they use a lock.
+resource_admission() {
+  local count available
+  count="$(run_with_timeout "$DOCKER_TIMEOUT_SECONDS" docker ps --filter 'label=social-mcp.pi-runner=ephemeral' --format '{{.Names}}' | wc -l)" || return 1
+  [ "$count" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
+  count="$(active_containers)" || return 1
+  [ "$count" -lt "$MAX_RUNNERS" ] || return 1
+  if [ "$LEGACY_RESERVED_RUNNERS" -gt 0 ]; then
+    [ "$((count + LEGACY_RESERVED_RUNNERS))" -lt "$HOST_MAX_EPHEMERAL" ] || return 1
+  fi
+  # /proc/meminfo is host-wide even inside the manager container. Reserve
+  # headroom for the persistent control lane and other services; never evict.
+  available="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
+  [[ "$available" =~ ^[0-9]+$ ]] || return 1
+  [ "$available" -ge "$((HOST_MEMORY_RESERVE_MB + WORKER_MEMORY_MB))" ]
+}
+
 spawn_runner() {
+  if [ -n "$SCHEDULER_STATE_DIR" ]; then
+    mkdir -p "$SCHEDULER_STATE_DIR" || return 1
+    # FD lifetime is scoped to the subshell, including all failed starts.
+    ( flock -w "$DOCKER_TIMEOUT_SECONDS" 9 || exit 1
+      resource_admission || exit 1
+      spawn_runner_unlocked
+    ) 9>"$SCHEDULER_STATE_DIR/admission.lock"
+  else
+    spawn_runner_unlocked
+  fi
+}
+
+spawn_runner_unlocked() {
   local token name docker_args run_check_token
   general_daemon_health || return 1
   if [ "$MOUNT_PI_CONFIG" == true ]; then
     verify_run_check_sandbox || return 1
   fi
-  token="$(registration_token)"
+  token="$(registration_token)" || return 1
+  [ -n "$token" ] && [ "$token" != null ] || return 1
   name="${RUNNER_PREFIX}-$(date +%s)-$RANDOM"
   run_check_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
+  export RUNNER_TOKEN="$token"
   docker_args=(
     -d --rm
     --name "$name"
     --label social-mcp.pi-runner=ephemeral
-    --network host
+    --label "social-mcp.runner-repository=${GITHUB_REPOSITORY}"
+    --label "social-mcp.runner-pool=${RUNNER_PREFIX}"
+    --network "$WORKER_NETWORK"
     -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
-    -e "RUNNER_TOKEN=$token"
+    -e RUNNER_TOKEN
     -e "RUNNER_NAME=$name"
     -e "RUNNER_LABELS=${RUNNER_LABELS}"
   )
+  if [ "$WORKER_HARDENED" == true ]; then
+    docker_args+=(--cap-drop ALL --security-opt no-new-privileges:true
+      --cpus "$WORKER_CPUS" --memory "${WORKER_MEMORY_MB}m" --memory-swap "${WORKER_MEMORY_MB}m" --pids-limit 512)
+  fi
   if [ "$MOUNT_PI_CONFIG" == true ] && [ "$RUN_CHECK_EXECUTOR_ENABLED" == true ]; then
     docker_args+=(
       -e "PI_RUN_CHECK_EXECUTOR_URL=${RUN_CHECK_EXECUTOR_URL}"
@@ -543,8 +643,10 @@ spawn_runner() {
     # recreate a per-poll metadata hot loop. Pi runners never take this path.
     request_docker_deep_probe
     general_daemon_health || true
+    unset RUNNER_TOKEN
     return 1
   fi
+  unset RUNNER_TOKEN
 }
 
 main() {
