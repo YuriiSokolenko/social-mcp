@@ -1,6 +1,6 @@
 # Recursive-coder CI pool — issue #793
 
-Status: **prepared, not deployed; sandbox and credential blockers remain**.
+Status: **KVM sandbox prototype passes; autoscaler and credential integration remain unimplemented; not deployed**.
 The owner alone performs privileged deployment. Do not enable the Compose profile
 before addressing the blockers and reviewing this document.
 
@@ -147,45 +147,132 @@ persistent host state. Deployment remains fail-closed. The disposable diagnostic
 image is removed after probes. No `unconfined` option or privileged container was
 used.
 
-## Disposable VM alternative — investigation only
+## Disposable KVM prototype — validated boundaries, runner integration pending
 
-If owner review does not approve and validate a worker-specific AppArmor/seccomp
-pair, the concrete fallback is one ephemeral KVM guest per recursive-coder job,
-not a silent change to this Docker design. N150 has QEMU, an accessible `/dev/kvm`,
-four CPUs, and enough currently available memory/disk for one guest. Proposed
-initial reservation: maximum one guest, 2 vCPU, 4 GiB RAM, a read-only golden
-Ubuntu 24.04 image plus a disposable qcow2 overlay capped at 24 GiB, and the
-existing 3 GiB host/control reserve. The current 11-runner legacy reservation
-plus this one guest fits the configured 12-unit admission cap. Delete the overlay
-after the ephemeral runner completes; never reuse a guest filesystem between
-jobs.
+On 2026-10-13 I booted Canonical Ubuntu 24.04.5 amd64 on N150 using QEMU 10.2.1
+with `-machine q35,accel=kvm -cpu host -smp 2 -m 4096`. The golden cloud image
+was read-only, checksum verified (`6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2`),
+and each run used a separate qcow2 overlay with a 24 GiB virtual size. QEMU shut
+down cleanly. The base boot used about 738 MiB RSS; the full CI test run peaked
+around 4.22 GiB QEMU process RSS (guest RAM is capped at 4 GiB; the extra RSS is
+emulator overhead). The completed Gradle overlay occupied 2.32 GB on disk with a
+24 GiB virtual limit. The host still had about 9.6 GiB available during the test.
+The overlays are temporary and must be deleted after each job; the golden image
+remains read-only.
 
-The guest would contain the pinned Actions runner, Java 21, Node 22, Python 3.12,
-and Bubblewrap, and run the exact downstream workflow as UID 1001. It would have
-no Docker socket, Pi configuration, host filesystem share (including virtiofs/9p),
-forwarded inbound port, or durable runner credential. A small host-side launcher
-would create a one-time registration token, pass it through a read-only seed ISO
-or vsock bootstrap, remove it before the job starts, and destroy the guest/overlay
-after one job. Network access must use a dedicated per-guest egress boundary that
-denies N150/LAN/control-plane destinations while allowing required GitHub Actions
-endpoints; that needs an owner-reviewed per-VM firewall or egress-proxy rule and
-is not implemented here.
+The exact Bubblewrap probe from `recursive-coder/.github/workflows/ci.yml` failed
+as the unprivileged `runner` user with the stock Ubuntu package mode 0755:
+Ubuntu's `unprivileged_userns` AppArmor profile audited/denied `CAP_SETPCAP` and
+`CAP_NET_ADMIN`, ending with `bwrap: loopback: Failed RTM_NEWADDR: Operation not
+permitted` (exit 1). In a disposable overlay only, setting `/usr/bin/bwrap` to
+root-owned mode 4755 made the same exact command pass (exit 0) as UID 1001.
+Neither host AppArmor, seccomp, kernel sysctl nor permanent guest state was changed.
+This is a candidate image setting, not yet approved for a production golden image;
+review whether the setuid helper is acceptable inside the KVM trust boundary.
 
-The host does not currently have a validated guest image, VM autoscaler, or
-per-guest egress policy. The resource probe establishes KVM availability only; it
-does not claim guest boot, Bubblewrap isolation, or positive/negative sandbox E2E
-success. Before any architecture switch, owner review must approve the VM boundary,
-network policy, guest image lifecycle, runner-token bootstrap and rollback script.
-This PR keeps the Docker pool opt-in and disabled until either the worker-specific
-Docker profile or this VM plan is implemented and passes the same exact positive
-and negative tests without skips. The downstream E2E test's positive separate
-execution, read-only workspace, writable scratch directory, blocked network and
-output-limit checks have not run inside a worker or guest. Its CI assertion still
+The guest used `-netdev user,restrict=on,ipv4=on,ipv6=off` and one explicit
+`guestfwd` connection to a loopback-only host proxy. There was no `hostfwd`, TAP,
+bridge, shared folder, Docker socket, or other guest network path. The host proxy
+allowlists required GitHub/Ubuntu/Gradle/Java/Python/Node endpoints, resolves names
+on the host, rejects non-global resolved IPs, and connects to the pinned public
+address. The test guest had working virtio networking and a default route. Results:
+
+```text
+n150-host-ssh=BLOCKED errno=111
+lan-gateway=BLOCKED errno=111
+docker-control-plane=BLOCKED errno=111
+rfc1918-10=BLOCKED errno=111
+public-direct=BLOCKED errno=111
+proxy-github=HTTP_200 bytes=200
+proxy-ubuntu=HTTP_200 bytes=200
+proxy-disallowed=BLOCKED error=URLError
+direct-dns-10.0.2.3=BLOCKED error=TimeoutError
+direct-dns-10.0.2.254=BLOCKED error=TimeoutError
+direct-dns-1.1.1.1=BLOCKED error=TimeoutError
+NETWORK_POLICY_ASSERTIONS=PASS
+```
+
+The exact guest commands, host proxy implementation, and unit tests are in
+`kvm-egress-proxy.py` and `tests/test_kvm_egress_proxy.py`. QEMU's `restrict=on`
+and `guestfwd` behavior follows the [QEMU system manual](https://www.qemu.org/docs/master/system/qemu-manpage.html#user-netdev); this prototype has no
+host port forwarding. An unauthenticated GitHub API probe returned HTTP 403 on
+the host network, so registration-token API access is not claimed. The owner has
+not supplied the scoped PAT, and I did not request or access any credential.
+
+The downstream exact probe passed inside the VM. I installed the pinned Gradle
+9.8.1 distribution using its published SHA-256, configured Java's HTTP(S) proxy
+properties, and ran the workflow command from CI:
+
+```text
+./gradlew --no-daemon clean test integrationTest e2eTest installDist --stacktrace
+BUILD SUCCESSFUL in 4m 11s
+GRADLE_FULL_CI_EXIT=0
+```
+
+An XML scan in the same guest found 392 passing `test` cases, 131 passing
+`integrationTest` cases and one passing `e2eTest` case; each tier had zero skips
+and zero failures. The required
+`realSeparatelyExecutedSandboxedTestPassesIfHostSupportsUserNamespaces` appeared
+exactly once in `e2eTest`, passed, and was not skipped. That test exercises
+separate execution, read-only workspace, writable scratch, blocked network and
+output-limit behavior. No downstream test or workflow file was modified.
+
+The first attempt failed because Gradle was not preinstalled by
+`gradle/actions/setup-gradle`; the next attempt initially lacked Java proxy
+properties. Both were corrected in the disposable guest, without changing the
+downstream repository. The guest shut down after the result scan. These results
+validate the KVM sandbox and prototype proxy, not a live Actions runner session.
+
+The autoscaler regression scripts were run on Beelink (Linux), not on macOS:
+
+```text
+bash tests/test_runner_autoscaler.sh                    exit=0; 10 tests passed
+bash tests/test_recursive_coder_pool.sh                 exit=0; pool checks passed
+python3 -m unittest tests.test_kvm_egress_proxy -v       exit=0; 3 tests passed
+```
+
+Before and after these tests, the IDs and names of the existing Pi, General and
+Control containers matched. No running QEMU guest remained after teardown. The
+guest overlay, seed media, logs and temporary loopback proxy were removed from
+the Beelink after evidence was recorded.
+
+## KVM autoscaler integration plan and remaining blockers
+
+Keep the existing scheduler and all Pi, General and Control managers untouched.
+The opt-in recursive-coder manager should keep repository
+`YuriiSokolenko/recursive-coder`, `MAX_RUNNERS=1`, and runner labels
+`self-hosted,linux,x64,n150,recursive-coder-ci`. A dedicated KVM backend should
+serialize admission with the existing scheduler lock, account for its 4 GiB
+reservation and 2-vCPU allocation, and launch one QEMU process per ephemeral
+runner. Its command line must use the read-only pinned golden image, a fresh 24 GiB
+bounded overlay, `restrict=on`, and only the allowlisted guest-forwarded proxy.
+The VM must have no disk/share mount from the host other than read-only bootstrap
+media, no Docker socket or Pi configuration, and no inbound forwarding. The runner
+must use `--ephemeral`, power off after one job, and have its overlay destroyed
+before the manager can admit another VM. This backend is not yet integrated into
+`manager.sh` or Compose; the current manager still starts Docker workers.
+
+The host proxy prototype is rootless and binds only to loopback. A production
+service still needs owner review of endpoint coverage, dynamic artifact hosts,
+logging/timeout behavior, and the guest bootstrap. The repository-scoped PAT and
+short-lived registration-token lifecycle also remain untested. The registration
+token must be supplied only to trusted bootstrap, removed before any job starts,
+and inaccessible to the job user; the runner's own runtime credential files need
+a separate threat-model review inside the guest. No deployment or runner
+registration has been performed. The existing deploy/rollback scripts cover the
+Docker pool only; an idempotent KVM-specific `--dry-run`, verification, deploy and
+rollback path still needs to be implemented and reviewed before deployment.
+The KVM guest passed the exact Bubblewrap probe and downstream positive/negative
+sandbox E2E with zero skips. The Docker pool remains opt-in and disabled. This
+prototype does not register an Actions runner or test a one-job runner lifecycle:
+the autoscaler still starts Docker workers, and KVM-specific owner `--dry-run`,
+verification, deployment and rollback scripts have not been implemented. No
+deployment or real recursive-coder Actions job is claimed. The CI assertion still
 requires exactly one passing sandbox case and treats a skip as failure.
 
 ## Owner deployment and rollback
 
-After reviewing/merging, use a clean checkout of `social-mcp:dev` at
+For the existing Docker pool only, after reviewing/merging, use a clean checkout of `social-mcp:dev` at
 `/home/yurasik/github-runners/social-mcp-autoscaler`. Set the separately scoped
 secret in its `infra/github-runner-autoscaler/.env` (regular file, mode 0600), plus
 resource settings matching the live managers. Never paste credentials into argv,
