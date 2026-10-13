@@ -17,13 +17,17 @@ if grep -E 'apt(-get)? install|docker (restart|stop|rm|prune)|sysctl|apparmor|se
 fi
 
 printf 'untrusted fixture image\n' >"$tmp/wrong.img"
-if KVM_STAGING_IMAGE="$tmp/wrong.img" bash "$script" --dry-run >"$tmp/output" 2>&1; then
+preflight_root="$tmp/preflight-root"
+preflight_script="$tmp/prepare-preflight.sh"
+sed "s|^root=/var/lib/recursive-coder-kvm$|root=$preflight_root|" "$script" >"$preflight_script"
+chmod 0755 "$preflight_script"
+if KVM_STAGING_IMAGE="$tmp/wrong.img" bash "$preflight_script" --dry-run >"$tmp/output" 2>&1; then
   fail 'dry-run accepted an image with the wrong pinned checksum'
 fi
 grep -Fq 'Ubuntu image SHA-256 mismatch' "$tmp/output" || fail 'checksum failure was not clear'
-[ ! -e /var/lib/recursive-coder-kvm ] || fail 'dry-run created host KVM directories'
+[ ! -e "$preflight_root" ] || fail 'dry-run created KVM preparation directories'
 
-if bash "$script" --verify >"$tmp/output" 2>&1; then
+if bash "$preflight_script" --verify >"$tmp/output" 2>&1; then
   fail 'verify unexpectedly passed while the prepared golden image is absent'
 fi
 grep -Fq 'Dedicated KVM directories are not prepared' "$tmp/output" || fail 'missing preparation state was not reported'
