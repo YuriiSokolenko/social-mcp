@@ -170,6 +170,18 @@ Neither host AppArmor, seccomp, kernel sysctl nor permanent guest state was chan
 This is a candidate image setting, not yet approved for a production golden image;
 review whether the setuid helper is acceptable inside the KVM trust boundary.
 
+The command executed verbatim from the workflow was:
+
+```bash
+/usr/bin/bwrap --die-with-parent --new-session --unshare-all \
+  --tmpfs / --proc /proc --dev /dev \
+  --ro-bind /usr /usr --ro-bind /bin /bin \
+  --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
+  -- /usr/bin/true
+```
+
+The source is the downstream [CI workflow](https://github.com/YuriiSokolenko/recursive-coder/blob/dev/.github/workflows/ci.yml#L96-L102).
+
 The guest used `-netdev user,restrict=on,ipv4=on,ipv6=off` and one explicit
 `guestfwd` connection to a loopback-only host proxy. There was no `hostfwd`, TAP,
 bridge, shared folder, Docker socket, or other guest network path. The host proxy
@@ -192,7 +204,7 @@ direct-dns-1.1.1.1=BLOCKED error=TimeoutError
 NETWORK_POLICY_ASSERTIONS=PASS
 ```
 
-The exact guest commands, host proxy implementation, and unit tests are in
+The host proxy implementation and its policy unit tests are in
 `kvm-egress-proxy.py` and `tests/test_kvm_egress_proxy.py`. QEMU's `restrict=on`
 and `guestfwd` behavior follows the [QEMU system manual](https://www.qemu.org/docs/master/system/qemu-manpage.html#user-netdev); this prototype has no
 host port forwarding. An unauthenticated GitHub API probe returned HTTP 403 on
