@@ -7,6 +7,16 @@ java -version
 node -e 'if (process.versions.node.split(".")[0] !== "22") process.exit(1)'
 python3 -c 'import sys, ssl, venv; assert sys.version_info[:2] == (3, 12)'
 git --version
+# Keep the active kernel filters visible in startup logs so a fail-closed bwrap
+# error can be distinguished from a missing binary/runtime before deployment.
+seccomp_mode="$(awk '/^Seccomp:/ {print $2}' /proc/self/status)"
+no_new_privs="$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)"
+apparmor_profile="unavailable"
+if [ -r /proc/self/attr/current ]; then
+  apparmor_profile="$(cat /proc/self/attr/current)"
+fi
+printf 'security profile: apparmor=%s seccomp=%s no_new_privs=%s\n' \
+  "$apparmor_profile" "${seccomp_mode:-unknown}" "${no_new_privs:-unknown}"
 # Exactly the downstream workflow probe. Keep Docker's default seccomp and
 # AppArmor profiles: failure is a deployment blocker, never a reason to relax them.
 /usr/bin/bwrap --die-with-parent --new-session --unshare-all \

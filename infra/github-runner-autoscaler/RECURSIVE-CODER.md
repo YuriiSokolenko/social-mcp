@@ -75,7 +75,7 @@ reservation while those managers still run the old image.
 ## Actual evidence — 2026-10-13
 
 Read-only SSH discovery on N150 found x86_64 Ubuntu kernel `7.0.0-38-generic`,
-Docker `29.9.0`, 15,244 MiB RAM, approximately 13,567 MiB available and 193 GiB
+Docker `29.9.0`, 15,244 MiB RAM, approximately 13,533 MiB available and 193 GiB
 free root disk. Existing Pi/general managers use
 `n150/pi-runner-manager:run-check-docker-0.1.10`; control uses
 `n150/github-control-runner:0.1.8`. No production service was restarted or deployed.
@@ -87,51 +87,101 @@ Read. GET preflight verifies runners/Actions access; explicit owner deployment
 also POSTs a registration token and discards it, proving Administration write.
 GitHub's temporary UI registration token is not a durable manager credential.
 
-Host policy: `kernel.unprivileged_userns_clone=1`,
-`kernel.apparmor_restrict_unprivileged_userns=1`,
-`user.max_user_namespaces=60712`. Host-level bubblewrap succeeded. N150 Docker is
-29.9.0 with AppArmor `profile=default` and seccomp `profile=builtin`; a container
-reports `docker-default (enforce)`. The host's existing
-`/etc/apparmor.d/bwrap-userns-restrict` defines a `bwrap` profile with `allow
-userns`, `allow mount`, and a child `unpriv_bwrap` profile. A separate
-`unprivileged_userns` profile also explicitly allows user namespaces.
+Host policy is `kernel.unprivileged_userns_clone=1`,
+`kernel.apparmor_restrict_unprivileged_userns=1`, and
+`user.max_user_namespaces=60712`. The exact downstream Bubblewrap command passes
+on the host. A plain host `unshare --user --map-root-user true` fails, and its
+kernel audit record shows AppArmor's `unprivileged_userns` profile denying
+`CAP_SYS_ADMIN`; that is a profile decision, not evidence that the kernel lacks
+user-namespace support. `/dev/kvm` is accessible to the SSH user through the
+existing `kvm` group, QEMU is installed, and N150 reports four CPUs, 13,533 MiB
+available RAM and 193 GiB free disk.
+I also started and cleanly quit a 64 MiB, one-vCPU QEMU/KVM `-machine none`
+probe; this verifies device initialization only, not a guest boot.
 
-I ran bounded, auto-removed probes with no network, UID 1001, all capabilities
-dropped, no-new-privileges, 128 MiB memory and 32–64 PIDs. The exact workflow
-probe failed under default `docker-default`/builtin-seccomp. It also failed when
-selecting the existing `apparmor=bwrap` profile with builtin seccomp unchanged.
-A minimal `unshare --user --map-root-user true` probe and the exact bubblewrap
-probe likewise failed when selecting `apparmor=unprivileged_userns`, leaving
-builtin seccomp unchanged. The N150 kernel log has no matching bwrap,
-`userns_create`, or seccomp audit record from these probes. The container reports
-`Operation not permitted`/“No permissions to create a new namespace”.
+Docker reports AppArmor `profile=default` and seccomp `profile=builtin`. The host's
+`/etc/apparmor.d/bwrap-userns-restrict` defines a `bwrap` profile with userns and
+mount permissions, plus `unpriv_bwrap`, which audits/denies capabilities. The
+separate `unprivileged_userns` profile allows userns but audits/denies capability
+use.
+The worker startup probe now logs its active AppArmor label, seccomp mode and
+`NoNewPrivs` value immediately before the exact bwrap invocation; it does not
+change those settings.
 
-This narrows the cause: changing from `docker-default` to the host's explicit
-AppArmor profiles that permit user namespaces did not fix it, so the default
-seccomp policy (or another kernel-level restriction still in force) is an
-independent blocker; the observed errno alone cannot identify the exact syscall.
-Docker documents its default seccomp policy as denying namespace `clone` flags
-without the required capability and gating `unshare`; AppArmor is also enforcing,
-and the user-namespace restriction is enabled. I did not use an unconfined
-profile or disable either filter, because that would not be a valid security
-solution. No host policy or persistent host configuration was changed.
+I built the PR's pinned amd64 worker image on N150 as a disposable probe image and
+ran the exact worker probe with UID 1001, all capabilities dropped,
+`no-new-privileges`, a 4 GiB memory cap, 512 PIDs, and no network. The image was
+not used to start an Actions runner or manager. Results:
 
-Local amd64 Docker builds of both new images passed. Worker smoke confirmed
-Temurin 21, Node 22, Python 3.12 (ssl/sqlite/bz2/lzma/ctypes/venv), runner 2.338.0,
-writable tool cache, no sudo and no socket. The worker's exact bwrap probe also
-failed under default local Docker security. This is not N150 E2E proof.
-`realSeparatelyExecutedSandboxedTestPassesIfHostSupportsUserNamespaces` and its
-negative tests were **not executed**: namespace creation fails before that suite
-can safely run. No skipped test is presented as a pass.
+- The exact probe fails with Docker's default AppArmor and builtin seccomp.
+- Selecting `apparmor=bwrap` or `apparmor=unprivileged_userns` with builtin
+  seccomp unchanged still fails.
+- A temporary profile based on the published Moby default kept its default-deny
+  rules but allowed the `clone`, `unshare`, and mount-related syscalls needed for
+  this diagnostic container (`mount`, `umount2`, `pivot_root`, `mount_setattr`,
+  `open_tree`, `move_mount`). With Docker's default AppArmor profile, the failure
+  changed from namespace creation to `bwrap: Failed to make / slave: Permission
+  denied`; this isolates a later AppArmor mount-propagation denial after
+  namespace creation. With `apparmor=bwrap`, the active label was
+  `bwrap//&unpriv_bwrap`, and N150 logged
+  `apparmor="DENIED" operation="capable" profile="unpriv_bwrap"
+  capability=21 capname="sys_admin"`; that profile selection still failed.
+  Neither diagnostic profile had argument restrictions narrow enough for
+  production, and neither was persisted.
+- The earlier `getattr` denial for an empty/disconnected path under
+  `unprivileged_userns` is not the namespace-creation denial. No seccomp audit
+  event identified a specific syscall; Docker's documented builtin policy gates
+  namespace `clone` flags and `unshare`, so seccomp remains a candidate blocker
+  until a tight argument-filtered profile is tested.
 
-Next step requires owner review of a narrowly scoped worker-specific security
-profile that grants only the namespace operations required by Bubblewrap while
-keeping the default deny rules, no host mounts/socket, dropped capabilities,
-network bounds and negative sandbox checks. If that cannot pass the exact probe
-and positive/negative E2E tests, use a dedicated disposable VM with its own
-kernel and no access to the N150 control plane. Keep test/skip guards unchanged.
-Global sysctl changes, `apparmor=unconfined`, `seccomp=unconfined`, `--privileged`,
-and hosted fallback are not deployment fixes supplied by this PR.
+Conclusion: global kernel settings permit the host Bubblewrap probe. The default
+seccomp rules block the namespace setup path; temporarily allowing namespace and
+mount syscalls moved the failure to an AppArmor-denied mount propagation. The
+existing `bwrap` profile cannot simply be selected for the whole container because
+it applies its `unpriv_bwrap` child profile to the worker and also denies a
+`CAP_SYS_ADMIN` check. A worker-specific profile must combine a tight seccomp
+allowlist with AppArmor rules suitable for the runner's container and Bubblewrap's
+setup; that pair has not been validated. Loading it requires privileged host
+policy installation; I did not run sudo, load a profile, change sysctls, or alter
+persistent host state. Deployment remains fail-closed. The disposable diagnostic
+image is removed after probes. No `unconfined` option or privileged container was
+used.
+
+## Disposable VM alternative — investigation only
+
+If owner review does not approve and validate a worker-specific AppArmor/seccomp
+pair, the concrete fallback is one ephemeral KVM guest per recursive-coder job,
+not a silent change to this Docker design. N150 has QEMU, an accessible `/dev/kvm`,
+four CPUs, and enough currently available memory/disk for one guest. Proposed
+initial reservation: maximum one guest, 2 vCPU, 4 GiB RAM, a read-only golden
+Ubuntu 24.04 image plus a disposable qcow2 overlay capped at 24 GiB, and the
+existing 3 GiB host/control reserve. The current 11-runner legacy reservation
+plus this one guest fits the configured 12-unit admission cap. Delete the overlay
+after the ephemeral runner completes; never reuse a guest filesystem between
+jobs.
+
+The guest would contain the pinned Actions runner, Java 21, Node 22, Python 3.12,
+and Bubblewrap, and run the exact downstream workflow as UID 1001. It would have
+no Docker socket, Pi configuration, host filesystem share (including virtiofs/9p),
+forwarded inbound port, or durable runner credential. A small host-side launcher
+would create a one-time registration token, pass it through a read-only seed ISO
+or vsock bootstrap, remove it before the job starts, and destroy the guest/overlay
+after one job. Network access must use a dedicated per-guest egress boundary that
+denies N150/LAN/control-plane destinations while allowing required GitHub Actions
+endpoints; that needs an owner-reviewed per-VM firewall or egress-proxy rule and
+is not implemented here.
+
+The host does not currently have a validated guest image, VM autoscaler, or
+per-guest egress policy. The resource probe establishes KVM availability only; it
+does not claim guest boot, Bubblewrap isolation, or positive/negative sandbox E2E
+success. Before any architecture switch, owner review must approve the VM boundary,
+network policy, guest image lifecycle, runner-token bootstrap and rollback script.
+This PR keeps the Docker pool opt-in and disabled until either the worker-specific
+Docker profile or this VM plan is implemented and passes the same exact positive
+and negative tests without skips. The downstream E2E test's positive separate
+execution, read-only workspace, writable scratch directory, blocked network and
+output-limit checks have not run inside a worker or guest. Its CI assertion still
+requires exactly one passing sandbox case and treats a skip as failure.
 
 ## Owner deployment and rollback
 
