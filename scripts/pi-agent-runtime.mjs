@@ -42,6 +42,10 @@ import {
   recoverWorktreeParameters,
   undoMutationParameters,
   rollbackLastMutationParameters,
+  declareTaskComplexityParameters,
+  productiveProgressBlockerParameters,
+  largeMutationBudgetParameters,
+  setResponseBudgetParameters,
 } from './pi-common/runtime-tool-schemas.mjs';
 import {
   appendCheckRecord,
@@ -2597,14 +2601,7 @@ export default function (pi) {
       name: 'declare_task_complexity',
       label: 'Declare task complexity',
       description: 'Record the trivial, normal, or complex classification. Complexity is planning metadata only; it does not change tool quotas or response budgets.',
-      parameters: Type.Object({
-        complexity: Type.Union([
-          Type.Literal('trivial'),
-          Type.Literal('normal'),
-          Type.Literal('complex'),
-        ]),
-        reason: Type.String({ description: 'One short sentence explaining the classification' }),
-      }),
+      parameters: declareTaskComplexityParameters(),
       async execute(_toolCallId, params) {
         const result = controller.setComplexity(params.complexity);
         return {
@@ -2625,10 +2622,7 @@ export default function (pi) {
       name: config.productiveProgress.blockerTool,
       label: 'Request one evidence action',
       description: 'Use only when one concrete missing fact prevents the next productive action. This unlocks exactly one evidence-gathering tool call; after that call runtime returns to action-required state.',
-      parameters: Type.Object({
-        missing: Type.String({ minLength: 1, maxLength: 300 }),
-        reason: Type.String({ minLength: 1, maxLength: 500 }),
-      }),
+      parameters: productiveProgressBlockerParameters(),
       async execute(_toolCallId, params) {
         return {
           content: [{
@@ -3059,9 +3053,7 @@ export default function (pi) {
         name: controller.largeMutationBudgetTool,
         label: 'Request large mutation budget',
         description: `LEGACY: prefer begin_coding_session. Grant the next mutation response a ${controller.largeMutationBudgetMaxTokens}-token completion ceiling for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. If the target path still needs accepted scope, call accept_mutation_scope first; that declaration preserves the elevated budget for the following real mutation. The budget collapses after the actual mutation/rollback/submit action or after unrelated use.`,
-        parameters: Type.Object({
-          reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
-        }),
+        parameters: largeMutationBudgetParameters(),
         async execute(_toolCallId, params) {
           return {
             content: [{
@@ -3447,10 +3439,7 @@ export default function (pi) {
       name: 'set_response_budget',
       label: 'Set response budget',
       description: `Set the maximum output for the NEXT model response only: short (${controller.budgets.short}), normal (${controller.budgets.normal}), or deep (${controller.budgets.deep}). Use the smallest sufficient level; automatic budget escalation is driven by hitting the active ceiling.`,
-      parameters: Type.Object({
-        level: Type.Union([Type.Literal('short'), Type.Literal('normal'), Type.Literal('deep')]),
-        reason: Type.String({ description: 'One short sentence explaining why the next response needs this budget' }),
-      }),
+      parameters: setResponseBudgetParameters(),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const maxTokens = controller.setBudget(params.level);
         await applyBudget(params.level, ctx);

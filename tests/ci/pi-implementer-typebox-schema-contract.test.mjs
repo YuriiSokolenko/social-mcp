@@ -591,3 +591,243 @@ test('registered recovery tool TypeBox contracts remain unchanged (#775)', () =>
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// #781: golden declarations copied from the four inline runtime schemas before extraction.
+// Keep these independent of runtime-tool-schemas.mjs to detect provider-contract drift.
+const EXPECTED_PROGRESS_BUDGET_METADATA = {
+  declare_task_complexity: {
+    label: 'Declare task complexity',
+    description: 'Record the trivial, normal, or complex classification. Complexity is planning metadata only; it does not change tool quotas or response budgets.',
+  },
+  need_more_evidence: {
+    label: 'Request one evidence action',
+    description: 'Use only when one concrete missing fact prevents the next productive action. This unlocks exactly one evidence-gathering tool call; after that call runtime returns to action-required state.',
+  },
+  request_large_mutation_budget: {
+    label: 'Request large mutation budget',
+    description: 'LEGACY: prefer begin_coding_session. Grant the next mutation response a 16384-token completion ceiling for one large write/edit/safe_edit/structural_edit payload that would not fit in the normal small action budget. Do not call this for extra reasoning/planning room. If the target path still needs accepted scope, call accept_mutation_scope first; that declaration preserves the elevated budget for the following real mutation. The budget collapses after the actual mutation/rollback/submit action or after unrelated use.',
+  },
+  set_response_budget: {
+    label: 'Set response budget',
+    description: 'Set the maximum output for the NEXT model response only: short (2048), normal (4096), or deep (8192). Use the smallest sufficient level; automatic budget escalation is driven by hitting the active ceiling.',
+  },
+};
+
+async function checkRegisteredProgressBudgetContracts(runtimeUrl, metadata) {
+  const assert = (await import('node:assert/strict')).default;
+  const { Type } = await import('typebox');
+  const { Value } = await import('typebox/value');
+  const { default: runtime } = await import(runtimeUrl);
+  const { STAGES } = await import(new URL('./pi-common/stage-config.mjs', runtimeUrl).href);
+
+  // Real TypeBox golden declarations, never constructed from the extracted builders.
+  const golden = {
+    declare_task_complexity: Type.Object({
+      complexity: Type.Union([
+        Type.Literal('trivial'),
+        Type.Literal('normal'),
+        Type.Literal('complex'),
+      ]),
+      reason: Type.String({ description: 'One short sentence explaining the classification' }),
+    }),
+    need_more_evidence: Type.Object({
+      missing: Type.String({ minLength: 1, maxLength: 300 }),
+      reason: Type.String({ minLength: 1, maxLength: 500 }),
+    }),
+    request_large_mutation_budget: Type.Object({
+      reason: Type.String({ minLength: 1, maxLength: 300, description: 'One short sentence on why the next mutation needs the larger budget' }),
+    }),
+    set_response_budget: Type.Object({
+      level: Type.Union([Type.Literal('short'), Type.Literal('normal'), Type.Literal('deep')]),
+      reason: Type.String({ description: 'One short sentence explaining why the next response needs this budget' }),
+    }),
+  };
+  const names = Object.keys(golden);
+  const originalEnv = Object.fromEntries([
+    'PI_STAGE', 'PI_RESUME_ACTIVE', 'PI_VALIDATION_REPAIR',
+    'PI_REQUIRE_TASK_COMPLEXITY', 'PI_FIXED_RESPONSE_MAX_TOKENS',
+  ].map(key => [key, process.env[key]]));
+  const implementer = STAGES.implementer;
+  const original = {
+    planner: implementer.implementationPlannerAgent,
+    blocker: implementer.productiveProgress.blockerTool,
+    large: implementer.productiveProgress.largeMutationBudgetTool,
+  };
+
+  function register(stage, { planner = original.planner, blocker = original.blocker,
+    large = original.large, requireComplexity = null, fixedMaxTokens = null } = {}) {
+    implementer.implementationPlannerAgent = planner;
+    implementer.productiveProgress.blockerTool = blocker;
+    implementer.productiveProgress.largeMutationBudgetTool = large;
+    process.env.PI_STAGE = stage;
+    process.env.PI_RESUME_ACTIVE = 'false';
+    process.env.PI_VALIDATION_REPAIR = 'false';
+    if (requireComplexity === null) delete process.env.PI_REQUIRE_TASK_COMPLEXITY;
+    else process.env.PI_REQUIRE_TASK_COMPLEXITY = requireComplexity ? '1' : '0';
+    if (fixedMaxTokens === null) delete process.env.PI_FIXED_RESPONSE_MAX_TOKENS;
+    else process.env.PI_FIXED_RESPONSE_MAX_TOKENS = String(fixedMaxTokens);
+    const tools = [];
+    runtime({
+      registerTool(tool) { tools.push(tool); },
+      on() {}, appendEntry() {},
+      events: { on() {}, emit() {} },
+      getActiveTools() { return []; },
+      setActiveTools() {},
+      getAllTools() { return tools.map(tool => ({ name: tool.name })); },
+      sendUserMessage() {},
+    });
+    return tools;
+  }
+
+  function expectOrder(tools, expected, candidates = names) {
+    const registered = tools.map(tool => tool.name);
+    assert.deepEqual(registered.filter(name => candidates.includes(name)), expected,
+      'registered progress/budget tools preserve conditional presence and order');
+    for (const name of expected) {
+      assert.equal(registered.filter(other => other === name).length, 1, name + ' registered once');
+    }
+    return new Map(tools.map(tool => [tool.name, tool]));
+  }
+
+  try {
+    // Even with complexity required, a configured planner suppresses the
+    // legacy declaration. Implementer still registers blocker, grant and ladder.
+    const main = register('implementer', { requireComplexity: true });
+    const mainTools = expectOrder(main, names.slice(1));
+    // Reviewer has direct complexity declaration but no productive-progress
+    // blocker/grant. Its non-fixed budget remains available.
+    const reviewer = register('reviewer');
+    const reviewerTools = expectOrder(reviewer, [names[0], names[3]]);
+    // A fixed-response profile does not register set_response_budget.
+    expectOrder(register('triage'), []);
+    expectOrder(register('implementer', { fixedMaxTokens: 1000 }), names.slice(1, 3));
+
+    // Test all four together: disable only the planner flag in a representative
+    // Implementer config, without editing runtime or its registration logic.
+    const all = register('implementer', { planner: null, requireComplexity: true });
+    const allTools = expectOrder(all, names);
+    for (const [name, schema] of Object.entries(golden)) {
+      const tool = allTools.get(name);
+      assert.ok(tool, name + ' registered');
+      assert.equal(tool.label, metadata[name].label, name + ' label');
+      assert.equal(tool.description, metadata[name].description, name + ' description');
+      assert.equal(typeof tool.execute, 'function', name + ' executor remains registered');
+      assert.equal(JSON.stringify(tool.parameters), JSON.stringify(schema),
+        name + ' exact serialized schema (ordered fields, literals, metadata, required)');
+      assert.deepEqual(Object.keys(tool.parameters.properties), Object.keys(schema.properties),
+        name + ' property order');
+      assert.deepEqual(tool.parameters.required, Object.keys(schema.properties),
+        name + ' required field order');
+    }
+    for (const name of [names[1], names[2], names[3]]) {
+      assert.equal(JSON.stringify(mainTools.get(name).parameters), JSON.stringify(golden[name]),
+        name + ' original Implementer configuration');
+    }
+    for (const name of [names[0], names[3]]) {
+      assert.equal(JSON.stringify(reviewerTools.get(name).parameters), JSON.stringify(golden[name]),
+        name + ' reviewer configuration');
+    }
+
+    // Both progress controls use dynamically configured tool names. The
+    // schemas, metadata and relative registration order must survive renaming.
+    const renamedBlocker = 'inspect_one_missing_fact';
+    const renamedGrant = 'grant_one_large_mutation';
+    const renamed = register('implementer', { planner: null, requireComplexity: true,
+      blocker: renamedBlocker, large: renamedGrant });
+    const renamedTools = expectOrder(renamed,
+      [names[0], renamedBlocker, renamedGrant, names[3]],
+      [...names, renamedBlocker, renamedGrant]);
+    for (const [actual, originalName] of [[renamedBlocker, names[1]], [renamedGrant, names[2]]]) {
+      assert.equal(JSON.stringify(renamedTools.get(actual).parameters), JSON.stringify(golden[originalName]));
+      assert.equal(renamedTools.get(actual).label, metadata[originalName].label);
+      assert.equal(renamedTools.get(actual).description, metadata[originalName].description);
+      assert.equal(typeof renamedTools.get(actual).execute, 'function');
+    }
+    expectOrder(register('implementer', { planner: null, requireComplexity: true,
+      blocker: null, large: null }), [names[0], names[3]]);
+    expectOrder(register('reviewer', { requireComplexity: false }), [names[3]]);
+    expectOrder(register('implementer', { planner: null, requireComplexity: true,
+      fixedMaxTokens: 1000 }), names.slice(0, 3));
+
+    const complexity = { complexity: 'normal', reason: 'because' };
+    const evidence = { missing: 'which path?', reason: 'required to proceed' };
+    const grant = { reason: 'write requires more tokens' };
+    const budget = { level: 'normal', reason: 'more room' };
+    const cases = {
+      declare_task_complexity: [
+        ...['trivial', 'normal', 'complex'].map(value => [{ ...complexity, complexity: value }, true]),
+        [{ ...complexity, reason: '' }, true],
+        [{ ...complexity, reason: 'x'.repeat(10000) }, true],
+        [{ ...complexity, complexity: 'nontrivial' }, false],
+        [{ ...complexity, complexity: '' }, false],
+        [{ ...complexity, complexity: 1 }, false],
+        [{ complexity: 'normal' }, false],
+        [{ reason: 'because' }, false],
+      ],
+      need_more_evidence: [
+        [evidence, true],
+        [{ missing: 'm', reason: 'r' }, true],
+        [{ missing: 'm'.repeat(300), reason: 'r'.repeat(500) }, true],
+        [{ ...evidence, missing: '' }, false],
+        [{ ...evidence, missing: 'm'.repeat(301) }, false],
+        [{ ...evidence, reason: '' }, false],
+        [{ ...evidence, reason: 'r'.repeat(501) }, false],
+        [{ reason: 'r' }, false],
+        [{ missing: 'm' }, false],
+      ],
+      request_large_mutation_budget: [
+        [grant, true],
+        [{ reason: 'r' }, true],
+        [{ reason: 'r'.repeat(300) }, true],
+        [{ reason: '' }, false],
+        [{ reason: 'r'.repeat(301) }, false],
+        [{}, false],
+        [{ reason: 42 }, false],
+      ],
+      set_response_budget: [
+        ...['short', 'normal', 'deep'].map(value => [{ ...budget, level: value }, true]),
+        [{ ...budget, reason: '' }, true],
+        [{ ...budget, reason: 'r'.repeat(10000) }, true],
+        [{ ...budget, level: 'fixed' }, false],
+        [{ ...budget, level: 1000 }, false],
+        [{ level: 'short' }, false],
+        [{ reason: 'why' }, false],
+      ],
+    };
+    for (const [name, values] of Object.entries(cases)) {
+      for (const [value, valid] of values) {
+        assert.equal(Value.Check(allTools.get(name).parameters, value), valid,
+          name + ' real-TypeBox boundary ' + JSON.stringify(value).slice(0, 110));
+      }
+    }
+  } finally {
+    implementer.implementationPlannerAgent = original.planner;
+    implementer.productiveProgress.blockerTool = original.blocker;
+    implementer.productiveProgress.largeMutationBudgetTool = original.large;
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+test('registered progress and budget control TypeBox contracts remain unchanged (#781)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-progress-budget-typebox-'));
+  try {
+    const loader = writeTypeboxLoader(dir);
+    const source = [
+      "import { register } from 'node:module';",
+      "import { pathToFileURL } from 'node:url';",
+      'register(pathToFileURL(' + JSON.stringify(loader) + '), import.meta.url);',
+      'await (' + checkRegisteredProgressBudgetContracts.toString() + ')(' +
+        JSON.stringify(RUNTIME_SCHEMA_URL) + ', ' + JSON.stringify(EXPECTED_PROGRESS_BUDGET_METADATA) + ');',
+    ].join('\n');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, PI_STAGE: 'implementer', PI_RESUME_ACTIVE: 'false', PI_VALIDATION_REPAIR: 'false' },
+    });
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

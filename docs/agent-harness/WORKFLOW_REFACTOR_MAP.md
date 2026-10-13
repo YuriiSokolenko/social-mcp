@@ -265,6 +265,33 @@ terminal receipt invalidation, exception handling, logging, and result
 envelopes. Dependency direction remains
 `pi-agent-runtime → runtime-tool-schemas → typebox` with no eager construction.
 
+## Slice 10 (#781): progress/evidence and output-budget TypeBox schemas
+
+Four existing registered parameter schemas move from `pi-agent-runtime.mjs` into
+the same pure, lazily invoked `pi-common/runtime-tool-schemas.mjs`:
+`declare_task_complexity`, the configured `productiveProgress.blockerTool`,
+the configured `largeMutationBudgetTool`, and `set_response_budget`.
+Their union literal orders, mandatory fields, property descriptions, string
+bounds and unbounded classification/budget reasons are unchanged.
+
+**At-extraction snapshot:** runtime **5411 → 5400** lines; schema module
+**99 → 132** lines (historical measurements, not live counters). The existing
+`adapter-pi` inventory classification in `layers.json` is unchanged.
+
+**Characterization:** pre-extraction real-TypeBox golden tests in
+`tests/ci/pi-implementer-typebox-schema-contract.test.mjs` compare the actually
+registered schemas with independently written TypeBox declarations using exact
+JSON serialization, required/field/literal order, metadata, labels, descriptions
+and executor presence. They validate accepted/rejected boundaries for all four,
+dynamic tool naming, registration order and gates: planner vs direct complexity,
+configured blocker/grant, and fixed vs variable response budget.
+
+**Intentional non-extractions:** tool registration and feature gates, handler
+callbacks, grant decisions, progress counters, steering, watchdog/budget state,
+provider `tool_choice`, coding-session schema and dynamic capability-group
+union. Dependency direction remains
+`pi-agent-runtime → runtime-tool-schemas → typebox`.
+
 ## Remaining candidates (not yet done)
 
 1. **Continue `pi-agent-runtime.mjs` split** — after pure provider wire policy,

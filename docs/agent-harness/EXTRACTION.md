@@ -16,23 +16,27 @@
 | Tracked workflow/harness shell entrypoints in `scripts/` and `infra/` contain no executable hardcoded reference to configured `git.defaultBranch`. | *tracked harness shell entrypoints respect configured git.defaultBranch*; shell lexer and mutation tests in `harness-boundary.test.mjs` |
 | Product code (`src/`), `Dockerfile`, `compose.yaml`, `.dockerignore`, `.env.example` and unclassified product tests reference no harness file. | *product code, image, compose and product tests reference no harness file* |
 
-### Pure Implementer TypeBox tool contracts (#764, #766, #775)
+### Pure Implementer TypeBox tool contracts (#764, #766, #775, #781)
 
 `scripts/pi-common/runtime-tool-schemas.mjs` belongs to **adapter-pi**
-(move with the Pi runtime). It imports only `typebox` and exports nine pure
+(move with the Pi runtime). It imports only `typebox` and exports thirteen pure
 schema builders: four for `accept_mutation_scope`, `structural_edit`,
 `safe_edit` and `run_check` (#764), two for `repo_search` and
-`indexed_repo_search` (#766), and three for `recover_worktree`,
-`undo_mutation` and `rollback_last_mutation` (#775). Runtime passes the
-original `CHECK_KINDS` array to `runCheckParameters` at registration;
-`run-check.mjs` remains authoritative. Search builders retain independent
-ordered `kind` unions. Recovery builders retain the ordered worktree action
-union, required arguments and exactly the existing validation limits. No
-schema builder executes on module import, and no schema module imports
-runtime or any executor.
+`indexed_repo_search` (#766), three for `recover_worktree`,
+`undo_mutation` and `rollback_last_mutation` (#775), and four for
+`declare_task_complexity`, the configurable progress blocker
+(`need_more_evidence` by default), the configurable large-mutation grant
+(`request_large_mutation_budget` by default), and `set_response_budget` (#781).
+Runtime passes the original `CHECK_KINDS` array to `runCheckParameters` at
+registration; `run-check.mjs` remains authoritative. Search builders retain
+independent ordered `kind` unions. Recovery builders retain the ordered
+worktree action union, required arguments and exactly the existing validation
+limits. Progress/budget builders retain union order, metadata, bounds and
+unbounded free-text reasons where present. No schema builder executes on module
+import, and no schema module imports runtime or any executor.
 
 The Pi runtime keeps all registrations, names/labels/descriptions, ordering
-(including the `PI_ZOEKT_URL` gate), execute handlers, endpoint selection,
+(including the `PI_ZOEKT_URL` gate and planner/fixed-budget gates), execute handlers, endpoint selection,
 logging, authorization, mutation state, permits, validation ledger,
 retry/recovery, provider exposure and lifecycle callbacks. Other tool schemas
 and all workflow YAML/product/infra boundaries are intentionally unchanged.
