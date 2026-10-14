@@ -263,8 +263,19 @@ if previous.exists():
 shutil.copytree(root / 'current', previous)
 PY
 fi
-if [ "$had_previous" = true ] && docker image inspect "$image" >/dev/null 2>&1; then
-  docker image inspect "$image" --format '{{.Id}}' >"$state/previous-image-candidate"
+if [ "$had_previous" = true ]; then
+  if [ -f "$state/previous-image-candidate" ]; then
+    # A prior attempt may have built the new tag but failed verification.
+    # Preserve the original rollback image across retries instead of treating
+    # that unverified tag as the known-good image.
+    previous_image="$(cat "$state/previous-image-candidate")"
+    [[ "$previous_image" =~ ^sha256:[0-9a-f]{64}$ ]] \
+      || fail 'Saved previous KVM image candidate is invalid; inspect deployment state before retrying'
+    docker image inspect "$previous_image" >/dev/null \
+      || fail 'Saved previous KVM image is unavailable; inspect deployment state before retrying'
+  elif docker image inspect "$image" >/dev/null 2>&1; then
+    docker image inspect "$image" --format '{{.Id}}' >"$state/previous-image-candidate"
+  fi
 fi
 "${compose[@]}" build "$service"
 "${compose[@]}" up -d --no-deps "$service"

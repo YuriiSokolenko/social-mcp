@@ -11,7 +11,10 @@ fails on an initial install, retrying `--deploy` is safe after confirming no VM
 is active: preflight is repeated, `docker compose up` targets only the dedicated
 KVM service, and `current` is committed only after verification. If an older
 `current` snapshot exists, it is copied to `previous` before updating, preserving
-the rollback path. `--verify` is read-only; `--rollback` removes/restores only
+the rollback path. A retry preserves and validates an existing
+`previous-image-candidate`, so an unverified image built by an interrupted
+attempt cannot replace the known-good rollback image. `--verify` is read-only;
+`--rollback` removes/restores only
 the dedicated KVM manager and refuses while KVM VM state is active.
 
 ### Live manager recovery — owner-operated
