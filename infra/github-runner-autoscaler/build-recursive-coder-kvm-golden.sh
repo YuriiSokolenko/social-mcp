@@ -102,7 +102,7 @@ case "$mode" in
    if [[ "$(docker inspect recursive-coder-kvm-runner-manager --format "{{.State.Running}}")" = true ]]; then
      active="$(docker exec recursive-coder-kvm-runner-manager python3 /usr/local/bin/kvm-backend.py list)" || fail 'cannot inspect active VMs'
      [[ -z "$active" ]] || fail 'wait until the active KVM VM has been cleaned up'
-     docker inspect recursive-coder-kvm-runner-manager --format "{{range .Config.Env}}{{println .}}{{end}}" | grep -Eq '^KVM_GOLDEN_IMAGE=/golden/noble-server-cloudimg-amd64(-prepared-[0-9a-f]{12})?\.img
+     docker inspect recursive-coder-kvm-runner-manager --format "{{range .Config.Env}}{{println .}}{{end}}" | grep -Eq '^KVM_GOLDEN_IMAGE=/golden/noble-server-cloudimg-amd64(-prepared-[0-9a-f]{12})?\.img$' || fail 'manager golden image selection is invalid; refusing to stage'
    fi
  fi
  digest="$(sha "$candidate")"; short="$(printf %s "$digest" | cut -c1-12)"
@@ -128,6 +128,10 @@ case "$mode" in
  echo "PROMOTED_FILENAME=$(basename "$target")"; echo "PROMOTED_SHA256=$digest"; echo 'Stock golden preserved.' ;;
 --build|--build-v2)
  [[ $# = 1 ]] || { usage >&2; exit 2; }
+ if [[ "$mode" = --build-v2 ]] && docker inspect recursive-coder-kvm-runner-manager >/dev/null 2>&1; then
+   active="$(docker exec recursive-coder-kvm-runner-manager python3 /usr/local/bin/kvm-backend.py list)" || fail 'cannot inspect active KVM guests'
+   [[ -z "$active" ]] || fail 'wait until current KVM job has been cleaned up before building v2'
+ fi
  check_base; command -v xorriso >/dev/null || fail 'build requires xorriso; install it through the owner-approved host preparation procedure'; mkdir -p "$out"
  check_space "$out"
  exec 9>"$out/build.lock"; flock -n 9 || fail 'another image build is active'
