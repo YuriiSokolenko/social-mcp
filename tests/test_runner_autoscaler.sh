@@ -365,7 +365,7 @@ if [[ "\$*" == *'/registration-token'* ]]; then
 fi
 case "$api_mode" in
   error) exit 22 ;;
-  healthy) printf '%s\n' '{"runners":[]}' ;;
+  healthy) printf '%s\n' '{"total_count":0,"runners":[]}' ;;
   *) exit 88 ;;
 esac
 CURL
@@ -546,7 +546,9 @@ api_get() {
     *'/actions/runs?status=pending'*)
       if [[ "${PENDING_FAIL:-0}" == 1 ]]; then return 22; fi
       if [[ "${PENDING_RESPONSE+x}" ]]; then printf '%s' "$PENDING_RESPONSE"; else printf '%s' '{"total_count":0,"workflow_runs":[]}'; fi ;;
-    */actions/runners?*) if [[ "${RUNNERS_RESPONSE+x}" ]]; then printf '%s' "$RUNNERS_RESPONSE"; else printf '%s' '{"runners":[]}'; fi ;;
+    *'/actions/runs?status=in_progress'*) printf '%s' '{"total_count":0,"workflow_runs":[]}' ;;
+    *'/jobs?'*) printf '%s' '{"total_count":1,"jobs":[{"status":"queued","labels":["self-hosted","linux","x64","n150","pi-agent"]}]}' ;;
+    */actions/runners?*) if [[ "${RUNNERS_RESPONSE+x}" ]]; then printf '%s' "$RUNNERS_RESPONSE" | jq 'if (.runners | type) == "array" then .total_count = (.total_count // (.runners | length)) else . end'; else printf '%s' '{"total_count":0,"runners":[]}'; fi ;;
     *) fail "unexpected API request: $1" ;;
   esac
 }
@@ -569,9 +571,9 @@ curl() {
 }
 
 WORKFLOW_FILES=first.yml,second.yml
-QUEUED_RESPONSE='{"total_count":2,"workflow_runs":[{"path":".github/workflows/first.yml"},{"path":".github/workflows/second.yml"}]}'
-PENDING_RESPONSE='{"total_count":2,"workflow_runs":[{"path":".github/workflows/first.yml"},{"path":".github/workflows/third.yml"}]}'
-[[ "$(queued_jobs)" == 3 ]] || fail 'queued and pending run counts, filtered to watched workflow files'
+QUEUED_RESPONSE='{"total_count":2,"workflow_runs":[{"id":1,"path":".github/workflows/first.yml"},{"id":2,"path":".github/workflows/second.yml"}]}'
+PENDING_RESPONSE='{"total_count":2,"workflow_runs":[{"id":3,"path":".github/workflows/first.yml"},{"path":".github/workflows/third.yml"}]}'
+[[ "$(queued_jobs)" == 3 ]] || fail 'queued and pending job counts, filtered to watched workflow files'
 
 PENDING_FAIL=1
 assert_failure queued_jobs
@@ -600,7 +602,7 @@ CONTAINER_NAMES=$'n150-pi-eph-10\nother-manager-11'
 
 DELETED_IDS="$(mktemp)"
 trap 'rm -f "$DELETED_IDS"' EXIT
-RUNNERS_RESPONSE='{"runners":[{"id":10,"name":"n150-pi-eph-10","status":"offline"},{"id":11,"name":"other-manager-11","status":"offline"},{"id":12,"name":"n150-pi-eph-12","status":"offline"}]}'
+RUNNERS_RESPONSE='{"total_count":3,"runners":[{"id":10,"name":"n150-pi-eph-10","status":"offline"},{"id":11,"name":"other-manager-11","status":"offline"},{"id":12,"name":"n150-pi-eph-12","status":"offline"}]}'
 cleanup_stale_registrations
 [[ "$(cat "$DELETED_IDS")" == "${API}/actions/runners/12" ]] || fail 'cleanup removed a live or unrelated registration'
 
@@ -608,7 +610,7 @@ RUNNERS_RESPONSE='{"runners":null}'
 assert_failure cleanup_stale_registrations
 [[ "$(grep -c '' "$DELETED_IDS")" == 1 ]] || fail 'invalid runner list caused deletion'
 
-RUNNERS_RESPONSE='{"runners":[{"id":13,"name":"n150-pi-eph-13","status":"offline"}]}'
+RUNNERS_RESPONSE='{"total_count":1,"runners":[{"id":13,"name":"n150-pi-eph-13","status":"offline"}]}'
 DOCKER_FAIL=1
 assert_failure cleanup_stale_registrations
 assert_failure active_containers
@@ -656,7 +658,7 @@ STATUS_RESPONSE='[{"id":0,"is_processing":true},{"id":1,"is_processing":false},{
   active_containers() { printf '4\n'; }
   cleanup_stale_registrations() { :; }
   api_get() {
-    printf '%s' '{"runners":[{"name":"n150-pi-eph-busy","status":"online","busy":true},{"name":"n150-pi-eph-idle","status":"online","busy":false},{"name":"other-manager","status":"online","busy":false}]}'
+    printf '%s' '{"total_count":3,"runners":[{"name":"n150-pi-eph-busy","status":"online","busy":true},{"name":"n150-pi-eph-idle","status":"online","busy":false},{"name":"other-manager","status":"online","busy":false}]}'
   }
   # Stub run_with_timeout itself (its own mechanics are covered by the
   # dedicated tests above) rather than docker -- letting the real
@@ -1208,7 +1210,8 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
 # registrations are preserved even when Docker metadata inspection is broken.
 (
   RUNNER_PREFIX=n150-gen-eph
-  api_get() { printf '%s' '{"runners":[{"id":10,"name":"n150-gen-eph-idle","busy":false,"labels":[{"name":"general"}]},{"id":11,"name":"n150-gen-eph-busy","busy":true,"labels":[{"name":"general"}]},{"id":12,"name":"n150-pi-eph-idle","busy":false,"labels":[{"name":"pi-agent"}]},{"id":13,"name":"n150-gen-eph-model","busy":false,"labels":[{"name":"pi-agent"}]}]}'; }
+  RUNNER_LABELS=n150,general
+  api_get() { printf '%s' '{"total_count":4,"runners":[{"id":10,"name":"n150-gen-eph-idle","busy":false,"labels":[{"name":"general"}]},{"id":11,"name":"n150-gen-eph-busy","busy":true,"labels":[{"name":"general"}]},{"id":12,"name":"n150-pi-eph-idle","busy":false,"labels":[{"name":"pi-agent"}]},{"id":13,"name":"n150-gen-eph-model","busy":false,"labels":[{"name":"pi-agent"}]}]}'; }
   : > "$DELETED_IDS"
   quarantine_general_runners >/dev/null
   [[ "$(cat "$DELETED_IDS")" == "${API}/actions/runners/10" ]] || fail 'quarantine touched a busy runner or another pool'
@@ -1216,7 +1219,8 @@ grep -q -- '^run -d --rm' "$DOCKER_RUN_LOG" || fail 'manager must spawn a Pi run
 # A runner becoming busy between list and DELETE must not stop quarantine.
 (
   RUNNER_PREFIX=n150-gen-eph
-  api_get() { printf '%s' '{"runners":[{"id":20,"name":"n150-gen-eph-race","busy":false,"labels":[{"name":"general"}]},{"id":21,"name":"n150-gen-eph-idle","busy":false,"labels":[{"name":"general"}]}]}'; }
+  RUNNER_LABELS=n150,general
+  api_get() { printf '%s' '{"total_count":2,"runners":[{"id":20,"name":"n150-gen-eph-race","busy":false,"labels":[{"name":"general"}]},{"id":21,"name":"n150-gen-eph-idle","busy":false,"labels":[{"name":"general"}]}]}'; }
   curl() {
     if [[ "${*: -1}" == */20 ]]; then return 22; fi
     printf '%s\n' "${*: -1}" >> "$DELETED_IDS"
@@ -1314,4 +1318,6 @@ RUN
   grep -q 'runner exited status=3' "$INFRA_EVIDENCE_DIR/worker-events.log" || fail 'runner exit status was not recorded'
   unset INFRA_EVIDENCE_DIR
 )
+bash "$(dirname "$0")/test_recursive_coder_pool.sh"
+python3 -m unittest discover -s tests -p test_recursive_coder_deploy.py
 printf 'runner autoscaler checks passed\n'

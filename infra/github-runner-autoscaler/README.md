@@ -1,23 +1,23 @@
 # GitHub runner autoscaler
 
-This directory runs the N150 GitHub Actions runner stack: two independent
-autoscaled pools plus one dedicated persistent control-plane runner. Each
+This directory runs the N150 GitHub Actions runner stack: three independent
+autoscaled pools (the third is opt-in) plus one dedicated persistent control-plane runner. Each
 autoscaled pool has its own manager instance (see `compose.yaml`) so one
 pool's stuck loop can never block the other's:
 
-- **`pi-runner-manager`** (pool label `pi-agent`) watches queued runs of
+- **`pi-runner-manager`** (pool label `pi-agent`) watches matching queued jobs of
   `.github/workflows/pi-issue-agent.yml`, `.github/workflows/pi-pr-review.yml`,
   `.github/workflows/pi-pr-fix.yml`, `.github/workflows/pi-dispatcher.yml`,
   `.github/workflows/pi-architect.yml`, `.github/workflows/pi-triage.yml`, and the
   manual `.github/workflows/verify-run-check-beelink.yml` sandbox check --
   jobs that call the Pi/LLM agent (or its `run_check` sandbox), gated by
   `MODEL_STATUS_URL` capacity (`WORKFLOW_FILES` in `manager.sh` / `.env`).
-- **`general-runner-manager`** (pool label `general`) watches queued runs of
+- **`general-runner-manager`** (pool label `general`) watches matching queued jobs of
   every workflow with a job on the `general` label: `.github/workflows/ci.yml`
   (`test`, `docker`, `harness`, `harness-images`; its `wake-merge-gate` job uses
   the control runner), `pi-auto-merge.yml`, `pi-reconcile.yml`,
   and `pi-usage.yml` -- none of these call the Pi/LLM agent, so this pool has
-  no model gate; `MAX_RUNNERS` is the only cap. **This list must stay in sync
+  no model gate; its pool cap and shared admission bounds apply. **This list must stay in sync
   with `GENERAL_WORKFLOW_FILES`** (`compose.yaml`'s default / the host's
   `.env`): a workflow file moved onto the `general` label but left out of that
   list queues forever with nothing watching it -- check
@@ -40,6 +40,16 @@ request exactly `[self-hosted, n150, control]`. Other self-hosted N150 jobs
 must require a pool-specific label such as `general` or `pi-agent`; a bare
 `self-hosted`/`n150` selector would also match the control runner and is
 blocked by the workflow contract test.
+
+## Isolated recursive-coder pool
+
+The opt-in `recursive-coder-runner-manager` watches only recursive-coder's
+`ci.yml`, registers `n150,recursive-coder-ci` workers, and starts at most one
+hardened amd64 worker. It has no model gate, Pi mounts or worker Docker socket.
+See [RECURSIVE-CODER.md](RECURSIVE-CODER.md) for the permission/sandbox blockers,
+validated evidence, resource admission limits and exact owner deployment/rollback
+commands. **Do not start the profile until sandbox compatibility is proven.**
+The targeted deployment never restarts existing managers or the control lane.
 
 ## Security model
 

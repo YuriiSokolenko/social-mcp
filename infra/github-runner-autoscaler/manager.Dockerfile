@@ -3,7 +3,7 @@ FROM docker:29.9.0-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0
 ARG NODE_VERSION=26.11.1
 ARG NODE_SHA256=8d31c2180212503799c3c93924db216e236de769b4ca1fdfe85a33ebacae510c
 ARG NPM_VERSION=12.2.0
-RUN apk add --no-cache bash curl jq coreutils xz libatomic libgcc libstdc++ \
+RUN apk add --no-cache bash curl jq coreutils util-linux xz libatomic libgcc libstdc++ \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64-musl.tar.xz" -o /tmp/node.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
