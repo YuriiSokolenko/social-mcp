@@ -1,6 +1,6 @@
 # Recursive-coder CI pool — issue #793
 
-Status (2026-10-14): **The unprivileged KVM guest passes the exact Bubblewrap probe, full downstream Gradle CI, and two repeated integration suites on a real disposable N150 VM. The six failures from an earlier run did not recur; their original JUnit diagnostics were not preserved, so no downstream implementation fix is claimed. The runner pool is not deployed and PR #794 remains Draft.**
+Status (2026-10-14): **The unprivileged KVM guest passes the exact Bubblewrap probe, full downstream Gradle CI, and two repeated integration suites on a real disposable N150 VM. Resource review bounded KVM-manager swap and added fail-closed VM-state checks. The six failures from an earlier run did not recur; their original JUnit diagnostics were not preserved, so no downstream implementation fix is claimed. The runner pool is not deployed and PR #794 remains Draft.**
 The guest uses unprivileged user namespaces and a guest-only nftables deny-by-default
 egress policy. VM startup, bounded resources, restricted proxy egress, shutdown and
 overlay cleanup have been exercised. Actions runner registration and a live job
@@ -464,6 +464,52 @@ recursive-coder repository permissions required for Actions read and runner
 Administration read/write. Never put the PAT or a registration token in shell
 arguments, issue comments or logs.
 
+Create the fine-grained PAT for **only** `YuriiSokolenko/recursive-coder`, with
+repository `Administration: Read and write` and `Actions: Read`. Enter it only
+at the hidden terminal prompt on Beelink; never paste it into Codex, chat, a PR,
+or a command argument. The isolated checkout `.env` is not the live social-mcp
+checkout. This writes the KVM PAT plus non-secret deployment settings and an
+explicit inert placeholder for the unused legacy manager variable; it does not
+read or copy any existing runner credential:
+
+```bash
+ssh -t beelink
+```
+
+Then run this in the interactive Beelink shell. Do not enable shell tracing.
+Only the hidden prompt accepts the PAT; the shell writes it using a builtin,
+not an argument to another process:
+
+```bash
+cd /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler
+umask 077
+read -r -s -p 'Fine-grained PAT for recursive-coder: ' token
+printf '\n'
+if [ -z "$token" ]; then
+  unset token
+  echo 'PAT must not be empty; .env was not written' >&2
+else
+  {
+    printf 'RECURSIVE_CODER_GH_ADMIN_TOKEN=%s\n' "$token"
+    printf '%s\n' \
+      'GH_ADMIN_TOKEN=unused-by-kvm-profile' \
+      'KVM_GOLDEN_HOST_DIR=/var/lib/recursive-coder-kvm/golden' \
+      'KVM_STATE_HOST_DIR=/var/lib/recursive-coder-kvm/state' \
+      'HOST_MAX_EPHEMERAL=12' \
+      'HOST_MEMORY_RESERVE_MB=3072' \
+      'LEGACY_RESERVED_RUNNERS=11'
+  } > .env
+  unset token
+  chmod 0600 .env
+fi
+```
+
+Verify later without printing the value:
+
+```bash
+ssh beelink 'cd /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler && stat -c "mode=%a owner=%U:%G file=%n" .env && python3 -c '\''import os,stat; s=os.lstat(".env"); t=open(".env").read(); assert stat.S_ISREG(s.st_mode) and (s.st_mode & 0o777)==0o600 and any(x.startswith("RECURSIVE_CODER_GH_ADMIN_TOKEN=") and len(x.split("=",1)[1])>0 for x in t.splitlines()); print("PAT setting is present and protected; value not displayed")'\'''
+```
+
 The owner staged and prepared the official Ubuntu 24.04 amd64 golden image from
 preparation commit `afd5b8f`; it is read-only and matches the pinned SHA-256.
 Verify it before any future deployment:
@@ -476,8 +522,13 @@ After the owner supplies the scoped PAT and reviews the saved validation
 evidence, run the read-only preflight and inspect its output:
 
 ```bash
-bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
+sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
 ```
+
+Use `sudo` for this read-only check because the prepared golden image and its
+parent path are root-only on Beelink and `/dev/kvm` is restricted to the KVM
+group. The script's `--dry-run` validates but does not write files, query GitHub,
+build images, or start/stop services.
 
 The preparation script creates
 `/var/lib/recursive-coder-kvm/{golden,state}` with root ownership and modes 0755
@@ -489,7 +540,12 @@ mount and resource settings, and starts only the new Compose service:
 ```bash
 sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --deploy /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
 sudo bash /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify /home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
+docker inspect pi-runner-manager general-runner-manager n150-control --format '{{.Name}} {{.Id}} {{.State.Status}} {{.State.StartedAt}}'
 ```
+
+Compare this post-verify snapshot with the one captured before deployment; IDs
+and start times should match. The inspect format omits all container environment
+values and secrets.
 
 Rollback acquires the shared scheduler lock, refuses to interrupt an active VM,
 and removes/restores only the KVM manager and its saved image/configuration:
@@ -528,6 +584,107 @@ shellcheck infra/github-runner-autoscaler/manager.sh infra/github-runner-autosca
 bash tests/test_prepare_recursive_coder_kvm.sh
 TOKEN_ENCRYPTION_KEY=validation-only-placeholder-no-auth docker compose --env-file .env.example -f compose.yaml --profile recursive-coder-kvm config --quiet
 ```
+
+## Final resource and deployment safety review — 2026-10-14
+
+Beelink reports Docker cgroup v2 with the systemd cgroup driver, 4 CPUs, 14 GiB
+RAM, 12 GiB `MemAvailable`, and a 4 GiB `/swap.img` with 208 MiB used at the
+review snapshot. Load averages were `1.08, 0.60, 0.39`. The Pi and General
+manager containers report no explicit Docker memory, swap, or CPU quota; these
+existing pools were not changed. No KVM manager was deployed at the time of this
+inspection. The golden parent `/var/lib/recursive-coder-kvm` is root-owned mode
+0700, so the image and child directories cannot be inspected as the SSH user;
+the owner must run the read-only preparation and deployment preflights with
+`sudo`.
+
+The earlier disposable KVM test manager had a 5 GiB cgroup RAM cap, reached that
+cap in live samples, used approximately 2.38 GiB swap at its final sample, and
+recorded no cgroup OOM events. Its swap cap was not captured in the saved full-CI
+summary, so that run does not prove a bound for swap. Docker documents an unset
+swap limit as allowing a total of twice the memory limit when host swap exists.
+The KVM Compose service now sets `mem_limit: 5120m` and `memswap_limit: 8192m`:
+the latter is total RAM plus swap, permitting at most 3 GiB swap. Deployment
+verification asserts Docker's effective `HostConfig.MemorySwap` equals 8 GiB.
+This keeps 0.62 GiB above the observed 2.38 GiB sample while preventing this
+manager from consuming all 4 GiB of host swap by itself. This is a hard bound,
+not a guarantee that other host workloads can never cause swapping. See the
+[Docker resource constraints reference](https://docs.docker.com/engine/containers/resource_constraints).
+
+KVM admission fails closed unless `MemAvailable` covers the 5 GiB manager RAM
+budget plus a 3 GiB host reserve, the 1-minute load plus two guest vCPUs and one
+CPU headroom fits within four online CPUs, the existing 11 ephemeral slots plus
+the candidate remain below the 12-runner ceiling, and the state filesystem has
+at least 24 GiB plus 1 GiB headroom. The isolated shell regression now simulates
+memory below the admission threshold and asserts refusal; no pressure was
+applied to live services. The Beelink snapshot had enough available memory, but
+its 1-minute load of 1.08 exceeded the current CPU admission threshold of 1.0,
+so a live start at that instant would correctly defer. Existing Docker pools
+retain their prior resource settings.
+
+The 1800-second QEMU lifetime exceeds the downstream workflow's longest
+20-minute job timeout by 10 minutes. The previous full guest validation, from
+VM start through provisioning, test execution and teardown, took about 9
+minutes, and the Gradle command itself took 3m54s. Thus the tested provisioning
+plus current CI path fit inside the budget; a real Actions setup and artifact
+upload remain part of the owner acceptance run. Timeout expiry kills QEMU and
+removes the overlay; the lifetime is still a ceiling, not a promise to preserve
+a job that exceeds it.
+
+The deployment script defaults `.env` to the isolated checkout beside itself,
+never the production checkout. Rollback now refuses when the KVM manager is
+stopped or missing but a per-runner state directory remains, because it cannot
+query active QEMU state without a live manager. If state inspection fails, it
+also fails closed. When the manager is running, rollback holds the shared
+scheduler lock and refuses while any VM is active. Deployment uses only the
+dedicated Compose service with `--no-deps`, validates the read-only pinned image
+and exact Docker device/mount/CPU/RAM/swap policy, and compares Pi/General/
+Control IDs and start times before and after. It contains no Docker daemon
+restart/prune or host-wide security-policy changes.
+
+The downstream workflow at Draft PR #67 includes a same-repository-only guard
+for each job on `pull_request`; fork PRs skip these jobs. All three jobs use only
+`[self-hosted, linux, x64, n150, recursive-coder-ci]`, with no hosted fallback.
+GitHub currently has run `38485469883` queued for PR-head commit
+`c33410613999598ccb630e402cf73fd78c932067`; its three jobs are queued and await
+the dedicated runner. This run is not evidence of live runner acceptance. The
+separate job-filtered JUnit artifact change remains in PR #67 and is not merged.
+
+Credential review found no PAT, registration token, AWS key, private key, or
+bearer credential pattern in the committed diagnostics archive; the scan
+reported zero matches. KVM manager code passes the short-lived registration
+token to the backend over stdin, not argv; the seed is mode 0600, the guest
+bootstrap token file is root-only and shredded before starting the runner, and
+the PAT remains in the trusted manager environment only. The Actions runner's
+own per-runner identity key is generated inside the guest as part of runner
+configuration; it is destroyed with the disposable overlay and is distinct
+from the PAT and registration token. As with any self-hosted runner, workflow
+code on an accepted job can access its job-scoped GitHub token and runner
+process credentials; therefore this pool is restricted to trusted
+same-repository jobs, never fork PR jobs. GitHub warns that public-repository
+fork workflows can execute dangerous code on self-hosted machines and documents
+the runner's key/token lifecycle in its [security guidance](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)
+and [runner authentication design](https://github.com/actions/runner/blob/main/docs/design/auth.md).
+
+Read-only deployment checklist for the owner (never run by Codex):
+
+```bash
+cd /home/yurasik/github-runners/social-mcp-pr-794
+sudo bash infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --verify
+sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run infra/github-runner-autoscaler/.env
+docker inspect pi-runner-manager general-runner-manager n150-control --format '{{.Name}} {{.Id}} {{.State.Status}} {{.State.StartedAt}}'
+```
+
+The remaining workflow is owner-controlled and is not authorized by this
+readiness review: install the PAT as above, inspect existing runner health,
+review the dry-run and explicitly run deployment with `sudo`, then `--verify`.
+If acceptance fails, cancel/wait for the active job and run `--rollback`; the
+script refuses to stop an active VM. After the owner explicitly confirms
+deployment, validate queued run
+[`38485469883`](https://github.com/YuriiSokolenko/recursive-coder/actions/runs/38485469883)
+if it remains available, or have the owner dispatch a trusted same-repository
+CI run. Require all three jobs on the KVM labels, the sandbox E2E with zero
+skips, uploaded JUnit, runner unregister, QEMU/overlay cleanup, and unchanged
+Pi/General/Control health before calling live acceptance complete.
 
 The guest-only change to AppArmor's unprivileged-userns restriction follows
 Ubuntu's guest sysctl and Bubblewrap behavior; setuid Bubblewrap was removed from

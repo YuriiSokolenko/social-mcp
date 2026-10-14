@@ -166,6 +166,9 @@ services:
       DOCKER_TIMEOUT_SECONDS: ${DOCKER_TIMEOUT_SECONDS:-30}
     cpus: 2.25
     mem_limit: 5120m
+    # Docker's memswap_limit is total RAM + swap. Keep the observed ~2.38 GiB
+    # validation swap use possible while bounding this pool to 3 GiB of swap.
+    memswap_limit: 8192m
     pids_limit: 1024
     devices:
       - /dev/kvm:/dev/kvm:rwm

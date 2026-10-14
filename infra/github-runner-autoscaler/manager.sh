@@ -584,6 +584,7 @@ quarantine_general_runners() {
 # Legacy managers remain untouched during the targeted deployment; the new
 # pool reserves their configured maximum rather than assuming they use a lock.
 host_cpu_load_1m() { awk '{print $1}' /proc/loadavg 2>/dev/null; }
+host_mem_available_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null; }
 
 resource_admission() {
   local count available global_count
@@ -617,7 +618,7 @@ resource_admission() {
   fi
   # /proc/meminfo is host-wide even inside the manager container. Reserve
   # headroom for the persistent control lane and other services; never evict.
-  available="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
+  available="$(host_mem_available_mb)" || return 1
   [[ "$available" =~ ^[0-9]+$ ]] || return 1
   [ "$available" -ge "$((HOST_MEMORY_RESERVE_MB + WORKER_MEMORY_MB))" ]
 }

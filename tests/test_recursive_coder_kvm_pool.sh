@@ -42,9 +42,15 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 registration_token() { printf '%s\n' 'mock-short-lived-registration-token'; }
 getconf() { printf '4\n'; }
 host_cpu_load_1m() { printf '%s\n' "${TEST_HOST_CPU_LOAD_1M:-0}"; }
+host_mem_available_mb() { printf '%s\n' "${TEST_HOST_MEM_AVAILABLE_MB:-2}"; }
 
 active_containers() { echo 0; }
 resource_admission || fail 'KVM resource admission rejected bounded capacity'
+TEST_HOST_MEM_AVAILABLE_MB=1
+if resource_admission; then fail 'KVM backend admitted a runner below the host memory reserve'; fi
+TEST_HOST_MEM_AVAILABLE_MB=unknown
+if resource_admission; then fail 'KVM backend admitted a runner with invalid host memory data'; fi
+TEST_HOST_MEM_AVAILABLE_MB=2
 TEST_HOST_CPU_LOAD_1M=1.1
 if resource_admission; then fail 'KVM backend ignored measured host load headroom'; fi
 TEST_HOST_CPU_LOAD_1M=0

@@ -11,7 +11,7 @@ image=n150/recursive-coder-kvm-runner-manager:0.1.0
 state=/var/lib/recursive-coder-kvm-deploy
 golden_sha=6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2
 mode="${1:---dry-run}"
-env_file="${2:-/home/yurasik/github-runners/social-mcp-autoscaler/infra/github-runner-autoscaler/.env}"
+env_file="${2:-$root/infra/github-runner-autoscaler/.env}"
 fail() { echo "ERROR: $*" >&2; exit 1; }
 case "$mode" in --dry-run|--deploy|--verify|--rollback) ;; *) fail 'Usage: deploy-recursive-coder-kvm.sh [--dry-run|--deploy|--verify|--rollback] [absolute protected .env path]' ;; esac
 
@@ -77,13 +77,26 @@ lock_scheduler() {
   flock -n 8 || fail 'Runner admission is in progress; retry when the lock is free'
 }
 no_active_vm() {
-  if docker inspect "$container" >/dev/null 2>&1 \
-    && [ "$(docker inspect "$container" --format '{{.State.Running}}')" = true ]; then
+  local exists=false running=false stale_state
+  docker inspect "$container" >/dev/null 2>&1 && exists=true
+  if [ "$exists" = true ]; then
+    [ "$(docker inspect "$container" --format '{{.State.Running}}')" = true ] && running=true
+  fi
+  if [ "$running" = true ]; then
     local active
     active="$(docker exec "$container" python3 /usr/local/bin/kvm-backend.py list)" \
       || fail 'Cannot inspect KVM workers; manager remains running'
     [ -z "$active" ] || fail 'Wait for the active one-job VM to finish; no job will be interrupted'
+    return 0
   fi
+  # A stopped/missing manager cannot report active QEMU state. Do not assume
+  # that its VM stopped too: require an owner to reconcile any retained VM dir.
+  stale_state=""
+  if [ -d "$state_dir" ]; then
+    stale_state="$(find "$state_dir" -mindepth 1 -maxdepth 1 -type d -name 'n150-rc-eph-*' -print -quit)" \
+      || fail 'Cannot inspect KVM state; refusing deployment/rollback'
+  fi
+  [ -z "$stale_state" ] || fail 'KVM manager is stopped or missing while VM state remains; refusing deployment/rollback until reconciled'
 }
 api_check() {
   python3 - "$env_file" "$1" <<'PY'
@@ -128,6 +141,7 @@ assert h["NanoCpus"] == 2250000000 and len(h["Devices"]) == 1
 assert h["Devices"][0]["PathOnHost"] == "/dev/kvm"
 assert not h.get("PortBindings")
 assert "no-new-privileges:true" in h["SecurityOpt"]
+assert h["MemorySwap"] == 8192 * 1024 * 1024
 assert "WORKER_BACKEND=kvm" in c["Config"]["Env"]
 assert "GITHUB_REPOSITORY=YuriiSokolenko/recursive-coder" in c["Config"]["Env"]
 ' || fail 'KVM container mount, device or resource policy verification failed'

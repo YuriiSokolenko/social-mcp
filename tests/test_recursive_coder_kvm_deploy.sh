@@ -2,6 +2,17 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+compose="$root/infra/github-runner-autoscaler/compose.yaml"
+deploy="$root/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh"
+grep -Fq 'mem_limit: 5120m' "$compose"
+grep -Fq 'memswap_limit: 8192m' "$compose"
+grep -Fq 'assert h["MemorySwap"] == 8192 * 1024 * 1024' "$deploy"
+grep -Fq "find \"\$state_dir\" -mindepth 1 -maxdepth 1 -type d -name 'n150-rc-eph-*'" "$deploy"
+grep -Fq 'env_file="${2:-$root/infra/github-runner-autoscaler/.env}"' "$deploy"
+grep -Fq 'up -d --no-deps "$service"' "$deploy"
+if grep -Eq 'docker (restart|prune)|sysctl|apparmor_parser|seccomp' "$deploy"; then
+  echo 'deployment script must not restart/prune Docker or alter host security policy' >&2; exit 1
+fi
 tmp="$(mktemp -d)"
 cleanup() {
   python3 - "$tmp" <<'PY'
