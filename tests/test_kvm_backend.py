@@ -58,6 +58,11 @@ class KvmBackendTests(unittest.TestCase):
         self.assertIn("prepared.manifest", userdata)
         self.assertIn("toolchain-v2.manifest", userdata)
         self.assertIn("baked_ci_toolchain_verified", userdata)
+        # v2 tools originally inherited root's umask 077; runtime must allow
+        # the ephemeral unprivileged worker to traverse their directories.
+        self.assertIn("chmod -R a+rX /opt/recursive-coder-kvm/python", userdata)
+        self.assertIn("      /opt/recursive-coder-kvm/gradle-9.8.1", userdata)
+        self.assertIn("      /opt/recursive-coder-kvm/node-v22.21.1-linux-x64", userdata)
         self.assertIn("10-baked-ci-tools.conf", userdata)
         self.assertIn("GRADLE_USER_HOME=/opt/recursive-coder-kvm/gradle-home", userdata)
         self.assertIn("GRADLE_OPTS=-Dorg.gradle.workers.max=1 -Dorg.gradle.jvmargs=-Xmx1g", userdata)
