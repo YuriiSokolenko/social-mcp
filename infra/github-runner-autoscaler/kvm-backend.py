@@ -30,6 +30,8 @@ GUEST_PROXY = "10.0.2.100:3128"
 DIAGNOSTIC_RETENTION = 10
 DIAGNOSTIC_MAX_BYTES = 128 * 1024
 DIAGNOSTIC_TAIL_BYTES = 12 * 1024
+DIAGNOSTIC_SERIAL_SCAN_BYTES = 4 * 1024 * 1024
+DIAGNOSTIC_GUEST_BLOCK_BYTES = 32 * 1024
 DIAGNOSTIC_SECRET_RE = re.compile(r"(?i)(authorization\s*[:=]\s*(?:(?:bearer|token)\s+)?|(?:token|password|secret|credential|authorization)[\w.-]*\s*[:=]\s*)[^\s]+")
 DIAGNOSTIC_GH_TOKEN_RE = re.compile(r"(?i)\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b")
 QEMU_ENV_KEYS = (
@@ -175,6 +177,7 @@ set +e
   echo '=== runner service failure records ==='
   journalctl --no-pager -u actions-runner.service -b --since '-30 minutes' 2>/dev/null | grep -Ei 'failed|error|exit|shutdown signal|result|status' | tail -n 80
 }} | sed -E 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/[REDACTED_GITHUB_TOKEN]/g; s/((token|password|secret|authorization)[^ =:]*[=: ]+)[^ ]+/\\1[REDACTED]/Ig' | tail -c 32768 >>/dev/ttyS0 2>/dev/null || true
+echo '=== runner-shutdown-diagnostics-end ===' >>/dev/ttyS0 2>/dev/null || true
 DIAGNOSTICS
 chmod 0755 /usr/local/sbin/runner-shutdown-diagnostics
 cat >/etc/systemd/system/actions-runner.service <<'UNIT'
@@ -324,6 +327,40 @@ def _bounded_tail(path: Path, limit: int = DIAGNOSTIC_TAIL_BYTES) -> str:
         return ""
 
 
+def _extract_serial_evidence(path: Path) -> dict[str, object]:
+    """Read a bounded serial window before cleanup; keep guest diagnosis separate from shutdown spam."""
+    try:
+        with path.open("rb") as source:
+            source.seek(0, os.SEEK_END)
+            source.seek(max(0, source.tell() - DIAGNOSTIC_SERIAL_SCAN_BYTES))
+            window = source.read(DIAGNOSTIC_SERIAL_SCAN_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return {"shutdown_marker_found": False, "shutdown_details": "", "bootstrap_stages": []}
+
+    start_marker = "=== runner-shutdown-diagnostics-v1 ==="
+    end_marker = "=== runner-shutdown-diagnostics-end ==="
+    start = window.rfind(start_marker)
+    detail = ""
+    if start >= 0:
+        end = window.find(end_marker, start + len(start_marker))
+        if end >= 0:
+            end += len(end_marker)
+        else:
+            end = min(len(window), start + DIAGNOSTIC_GUEST_BLOCK_BYTES)
+        detail = _redact_diagnostic_text(window[start:end])[:DIAGNOSTIC_GUEST_BLOCK_BYTES]
+
+    stages = [
+        _redact_diagnostic_text(line.strip())[:256]
+        for line in window.splitlines()
+        if line.startswith("kvm_bootstrap_stage=")
+    ]
+    return {
+        "shutdown_marker_found": start >= 0,
+        "shutdown_details": detail,
+        "bootstrap_stages": stages[-24:],
+    }
+
+
 def _read_cgroup_diagnostics(root: Path = Path("/sys/fs/cgroup")) -> dict[str, str]:
     result: dict[str, str] = {}
     for name in ("memory.current", "memory.peak", "memory.swap.current", "memory.events"):
@@ -359,6 +396,7 @@ def preserve_diagnostics(
             "reason": _redact_diagnostic_text(reason)[:256],
             "qemu_exit_status": qemu_exit_status,
             "host_cgroup": _read_cgroup_diagnostics(cgroup_root),
+            "guest_evidence": _extract_serial_evidence(state_dir / "serial.log"),
             "logs": {name: _bounded_tail(state_dir / name)
                      for name in ("serial.log", "qemu.log", "supervisor.log")},
         }
