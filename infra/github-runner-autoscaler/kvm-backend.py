@@ -116,7 +116,7 @@ cat >/etc/apt/apt.conf.d/90runner-proxy <<'APT'
 Acquire::http::Proxy \"http://{GUEST_PROXY}/\";
 Acquire::https::Proxy \"http://{GUEST_PROXY}/\";
 APT
-stage() {{ printf 'kvm_bootstrap_stage=%s guest_uptime_s=%s\\n' "$1" "$(cut -d' ' -f1 /proc/uptime)" >>/dev/ttyS0 2>/dev/null || true; }}
+stage() {{ printf 'kvm_bootstrap_stage=%s guest_uptime_s=%s\n' "$1" "$(cut -d' ' -f1 /proc/uptime)" >>/dev/ttyS0 2>/dev/null || true; }}
 stage provisioning_start
 # A prepared golden is immutable and digest-pinned by verify_image(). Never bake
 # ephemeral runner registration, identity keys, job workspaces, or credentials.
