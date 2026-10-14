@@ -83,6 +83,29 @@ runuser -u runner -- /usr/bin/bwrap --die-with-parent --new-session --unshare-al
   --tmpfs / --proc /proc --dev /dev --ro-bind /usr /usr --ro-bind /bin /bin \
   --ro-bind /lib /lib --ro-bind /lib64 /lib64 -- /usr/bin/true
 echo BUILDER_BWRAP_PROBE=PASS >>/dev/ttyS0
+# Gradle --no-daemon starts a disposable Gradle process, but Kotlin compiler
+# daemons may outlive it. Stop *only* this guest's temporary runner UID before
+# deleting the warm source tree and removing the account.
+if pgrep -u runner >/dev/null; then
+  echo BUILDER_V2_STOPPING_COMPILER_DAEMONS=START >>/dev/ttyS0
+  pkill -TERM -u runner || true
+  for ((attempt=0; attempt<40; attempt++)); do
+    pgrep -u runner >/dev/null || break
+    sleep 0.25
+  done
+  if pgrep -u runner >/dev/null; then
+    pkill -KILL -u runner || true
+    for ((attempt=0; attempt<20; attempt++)); do
+      pgrep -u runner >/dev/null || break
+      sleep 0.25
+    done
+  fi
+  if pgrep -u runner >/dev/null; then
+    echo BUILDER_V2_STOPPING_COMPILER_DAEMONS=FAIL >>/dev/ttyS0
+    exit 1
+  fi
+  echo BUILDER_V2_STOPPING_COMPILER_DAEMONS=PASS >>/dev/ttyS0
+fi
 # Only artifact/dependency caches remain; discard source, compiler outputs,
 # Gradle daemon locks, runner home, git config, logs and identities.
 rm -rf /tmp/recursive-coder-warm /home/runner
