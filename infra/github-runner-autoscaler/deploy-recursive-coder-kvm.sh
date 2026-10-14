@@ -9,7 +9,7 @@ container=recursive-coder-kvm-runner-manager
 project=recursive-coder-kvm
 image=n150/recursive-coder-kvm-runner-manager:0.1.0
 state=/var/lib/recursive-coder-kvm-deploy
-golden_sha=6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2
+stock_golden_sha=6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2
 mode="${1:---dry-run}"
 env_file="${2:-$root/infra/github-runner-autoscaler/.env}"
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -37,6 +37,12 @@ for line in open(sys.argv[1]):
         break
 PY
 }
+golden_sha="$(value KVM_GOLDEN_SHA256)"
+golden_sha="${golden_sha:-$stock_golden_sha}"
+golden_name="$(value KVM_GOLDEN_FILENAME)"
+golden_name="${golden_name:-noble-server-cloudimg-amd64.img}"
+[[ "$golden_name" =~ ^noble-server-cloudimg-amd64(-prepared-[0-9a-f]{12})?\.img$ ]] || fail 'KVM_GOLDEN_FILENAME must be the stock name or a digest-suffixed prepared image'
+[[ "$golden_sha" =~ ^[0-9a-f]{64}$ ]] || fail 'KVM_GOLDEN_SHA256 must be a lowercase SHA-256 digest'
 golden_dir="$(value KVM_GOLDEN_HOST_DIR)"
 state_dir="$(value KVM_STATE_HOST_DIR)"
 golden_dir="${golden_dir:-/var/lib/recursive-coder-kvm/golden}"
@@ -44,7 +50,7 @@ state_dir="${state_dir:-/var/lib/recursive-coder-kvm/state}"
 [[ "$golden_dir" == /var/lib/recursive-coder-kvm/golden \
   && "$state_dir" == /var/lib/recursive-coder-kvm/state ]] \
   || fail 'KVM image and state directories must use the dedicated /var/lib/recursive-coder-kvm paths'
-golden="$golden_dir/noble-server-cloudimg-amd64.img"
+golden="$golden_dir/$golden_name"
 compose=(docker compose --project-name "$project" --env-file "$env_file" \
   -f "$root/infra/github-runner-autoscaler/compose.yaml" --profile recursive-coder-kvm)
 disk_probe="$state_dir"

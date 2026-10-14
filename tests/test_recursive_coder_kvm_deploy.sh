@@ -13,6 +13,9 @@ grep -Fq 'docker image inspect "$previous_image"' "$deploy"
 grep -Fq "find \"\$state_dir\" -mindepth 1 -maxdepth 1 -type d -name 'n150-rc-eph-*'" "$deploy"
 grep -Fq 'env_file="${2:-$root/infra/github-runner-autoscaler/.env}"' "$deploy"
 grep -Fq 'up -d --no-deps "$service"' "$deploy"
+grep -Fq 'golden="$golden_dir/$golden_name"' "$deploy"
+grep -Fq 'KVM_GOLDEN_FILENAME' "$deploy"
+grep -Fq 'KVM_GOLDEN_SHA256' "$deploy"
 if grep -Eq 'docker (restart|prune)|sysctl|apparmor_parser|seccomp' "$deploy"; then
   echo 'deployment script must not restart/prune Docker or alter host security policy' >&2; exit 1
 fi
@@ -51,6 +54,16 @@ grep -Fq 'Run prepare-recursive-coder-kvm.sh first' "$tmp/output"
 if grep -Fq 'curl -fL' "$root/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh"; then
   echo 'deployment must not download or stage golden images' >&2; exit 1
 fi
+
+cat >>"$tmp/owner.env" <<'ENV'
+KVM_GOLDEN_FILENAME=../../etc/passwd
+ENV
+if PATH="$tmp/bin:$PATH" bash "$deploy" --dry-run "$tmp/owner.env" >"$tmp/path-output" 2>&1; then
+  echo 'path-traversal golden filename was accepted' >&2; exit 1
+fi
+grep -Fq 'KVM_GOLDEN_FILENAME must be' "$tmp/path-output"
+[ ! -e "$DOCKER_CALLS" ] || { echo 'invalid image selection reached Docker' >&2; exit 1; }
+sed -i '/KVM_GOLDEN_FILENAME=/d' "$tmp/owner.env"
 
 chmod 0644 "$tmp/owner.env"
 if PATH="$tmp/bin:$PATH" bash "$root/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" \

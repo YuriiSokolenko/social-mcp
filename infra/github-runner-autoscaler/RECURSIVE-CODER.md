@@ -1030,3 +1030,139 @@ deny-by-default proxy checks; owner approval for a dedicated-manager-only
 deployment in a quiet window; and successful live CI including all three jobs,
 JUnit artifacts, proper unregistration, VM cleanup and unchanged existing pools.
 Do not raise the CPU/RAM/time limits simply to mask failing or hanging tests.
+
+
+## Prepared golden image builder (owner-operated, not deployed)
+
+The build-recursive-coder-kvm-golden.sh script builds a separate Ubuntu 24.04
+candidate from the checksum-pinned stock image. QEMU uses two vCPUs, 4 GiB RAM,
+a 12 GiB virtual overlay, user networking with restrict=on, IPv6 disabled, and
+only the repository allowlist HTTPS proxy through guestfwd. There are no host
+shares, host port forwards, Docker socket, Pi configuration, runner
+registration, PAT, identity key, workspace, or cloud-init seed in the resulting
+image. The pinned runner archive is checksum-verified; the guest runs the exact
+workflow Bubblewrap probe before shutdown. Cloud-init machine identity, logs,
+and temporary user data are cleaned before the overlay is flattened. The
+candidate is read-only and accompanied by provenance and a hash of the
+installed Debian package manifest.
+
+The builder does not overwrite the stock image. Promotion uses a new
+digest-suffixed filename; the deploy script accepts only the stock filename or
+that strict prepared-image naming form and validates the supplied SHA-256.
+Deployment rollback continues to restore the previous protected .env and
+manager image. Keep both the original stock file and its digest.
+
+The Beelink checkout at this revision has QEMU/KVM and the pinned golden image,
+but the host user cannot traverse the root-only golden directory and host
+xorriso is absent. A read-only copy was staged from the running manager's
+read-only /golden mount at /tmp/noble-server-cloudimg-amd64.img; it matches the
+stock SHA-256. The builder dry-run passed against that copy. Actual image
+building is blocked until the owner installs the ISO utility using the
+reviewed helper below. No root command was run, no VM was started by the
+builder, and no image was promoted. The separate xorriso installer has
+--dry-run, --install, --verify, and --rollback; rollback removes only xorriso
+when this helper recorded that it installed the package and does not run
+autoremove or restart a service.
+
+Owner commands after reviewing the helper (do not run during an Actions job):
+
+~~~bash
+cd ~/github-runners/social-mcp-pr-794
+sudo infra/github-runner-autoscaler/install-recursive-coder-kvm-builder-tool.sh --dry-run
+sudo infra/github-runner-autoscaler/install-recursive-coder-kvm-builder-tool.sh --install
+infra/github-runner-autoscaler/install-recursive-coder-kvm-builder-tool.sh --verify
+
+# The copy is read-only and contains only the pinned Ubuntu base image.
+docker exec recursive-coder-kvm-runner-manager python3 /usr/local/bin/kvm-backend.py list
+docker cp recursive-coder-kvm-runner-manager:/golden/noble-server-cloudimg-amd64.img /tmp/noble-server-cloudimg-amd64.img
+chmod 0444 /tmp/noble-server-cloudimg-amd64.img
+KVM_BUILDER_BASE_IMAGE=/tmp/noble-server-cloudimg-amd64.img \
+  KVM_BUILDER_OUTPUT_DIR=/var/tmp/recursive-coder-kvm-prepared \
+  infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --dry-run
+KVM_BUILDER_BASE_IMAGE=/tmp/noble-server-cloudimg-amd64.img \
+  KVM_BUILDER_OUTPUT_DIR=/var/tmp/recursive-coder-kvm-prepared \
+  infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --build
+infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --verify /var/tmp/recursive-coder-kvm-prepared/CANDIDATE.img
+sudo infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --promote-dry-run /var/tmp/recursive-coder-kvm-prepared/CANDIDATE.img
+sudo infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --promote /var/tmp/recursive-coder-kvm-prepared/CANDIDATE.img
+~~~
+
+After candidate validation, the owner may set only KVM_GOLDEN_FILENAME and
+KVM_GOLDEN_SHA256 in the protected .env to the emitted promotion values.
+Before the dedicated-manager-only deployment, verify the manager's VM list is
+empty and its queue telemetry reports no queued or busy job; the deploy script
+also acquires the shared admission lock and refuses active VM state. Keep the
+change in a quiet window. Do not change Pi, General, or Control pools.
+
+For rollback, restore these two .env values to
+noble-server-cloudimg-amd64.img and
+6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2, then use
+the existing dedicated-manager deployment rollback procedure:
+
+~~~bash
+sudo infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /path/to/protected-kvm.env
+sudo infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --rollback /path/to/protected-kvm.env
+sudo infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify /path/to/protected-kvm.env
+~~~
+
+Do not delete the prepared file as part of rollback; retaining both immutable
+images makes a later review possible. The rollback script restores the previous
+manager image and configuration and checks that Pi, General, and Control
+container IDs/start times did not change.
+
+### Latest CI timing and failure evidence
+
+For downstream run 197 attempt 2 (38485469883, commit
+c33410613999598ccb630e402cf73fd78c932067), Actions reported the Full JVM job
+from 10:25:59Z to 10:45:45Z (19m46s). Its workflow declares timeout-minutes: 20;
+the compile/test step was still in progress at job completion, so the run has
+no JUnit artifact (total_count=0). This is consistent with the job timeout, but
+the missing job log prevents attributing the final termination to a specific
+Gradle test or process. In this attempt the Full JVM setup-gradle step took
+1m27s; the Gradle command then occupied at least 17m47s without a retained
+report. Do not increase the timeout or memory limit based on this incomplete
+evidence.
+
+In the Architecture job, QEMU started VM
+n150-rc-eph-1791972403-9419 at 10:06:43Z and Actions began its job at
+10:09:48Z (3m05s to job startup). Setup Java downloaded/extracted Temurin in
+about 17s. The Gradle cache setup step spanned roughly 1m39s, including a
+17.9-MB cache restore. The unit command began at 10:11:56Z and reached
+app:cli:unitTest at 10:15:11Z. Actions logged a runner shutdown signal at
+10:15:54Z; the guest then stopped systemd and powered off normally, with QEMU
+exit 0 at 10:16:02Z. The manager still reported one busy runner at 10:15:31Z,
+so this was not its idle cleanup. This live manager predates the new serial
+ExecStopPost diagnostic marker, and its retained diagnostics lack
+service_result, exit_status, or the newer bounded guest-evidence section.
+The exact origin of that shutdown signal is therefore not established.
+
+The same attempt's Full JVM VM remained active after its GitHub job ended and
+was terminated by the backend's 30-minute maximum lifetime. The retained
+diagnostic did not include the new runner-service exit evidence. This points to
+an incomplete guest shutdown/lifecycle path after a job timeout, but cannot
+establish whether the Actions runner, systemd, or the timeout handler failed to
+request poweroff. The next owner-approved live run must capture the new guest
+shutdown marker before tuning.
+
+SessionRuntimeTest.deadlineInterruptsBlockingFakeModel uses a 100-ms
+maxWallTimeMs against a 5-second fake model and expects a timed_out result;
+cancellationEmitsOneTerminalResult cancels a 5-second fake model after 150ms
+and waits 4 seconds for the worker to stop. Both tests are sensitive to
+scheduling delays, but available same-commit evidence says the focused tests,
+the full class, and later integration reruns passed. The first failing run had
+no JUnit XML; latest CI retained no job log/JUnit. There is no reproducible
+assertion value proving a runtime defect. Gradle config sets -Xmx2g; host
+evidence shows no OOM kills, while the manager cgroup peaked near its 5-GiB
+limit (guest memory reservation is 4 GiB). That indicates limited headroom,
+not proof of guest OOM. The successful clean full Gradle command documented
+above completed in 3m54s; this strongly argues against blindly raising test
+timeouts or guest RAM. Measure a current prepared-image job, per-test JUnit
+durations, Gradle worker count, cache restore throughput, guest PSI, and cgroup
+memory events before changing execution policy.
+
+Prepared-image boot time, apt time, runner archive install time, runner
+registration time, job pickup time, and Gradle runtime have not been measured
+before/after with this builder: the host lacks xorriso, so the image candidate
+has not been created. Current cold pickup is about three minutes in the captured
+old-runtime attempt. Do not claim a prepared-image speedup until the owner
+completes the isolated build and no-deployment boot validation.

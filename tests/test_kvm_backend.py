@@ -186,7 +186,10 @@ class KvmBackendTests(unittest.TestCase):
             incident = json.loads(payload)
             self.assertTrue(incident["guest_evidence"]["shutdown_marker_found"])
             self.assertIn("exit_status=9", incident["guest_evidence"]["shutdown_details"])
-            self.assertIn("kvm_bootstrap_stage=apt_start", incident["guest_evidence"]["bootstrap_stages"])
+            self.assertTrue(any(
+                stage.startswith("kvm_bootstrap_stage=apt_start ")
+                for stage in incident["guest_evidence"]["bootstrap_stages"]
+            ))
             self.assertNotIn("service_result=", incident["logs"]["serial.log"],
                              "A long systemd shutdown should displace the old serial tail")
             self.assertIn("oom_kill 1", payload)
