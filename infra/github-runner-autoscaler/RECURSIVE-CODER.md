@@ -1032,83 +1032,160 @@ JUnit artifacts, proper unregistration, VM cleanup and unchanged existing pools.
 Do not raise the CPU/RAM/time limits simply to mask failing or hanging tests.
 
 
-## Prepared golden image builder (owner-operated, not deployed)
+## Prepared golden image builder (owner-operated, candidate validated, not deployed)
 
-The build-recursive-coder-kvm-golden.sh script builds a separate Ubuntu 24.04
-candidate from the checksum-pinned stock image. QEMU uses two vCPUs, 4 GiB RAM,
-a 12 GiB virtual overlay, user networking with restrict=on, IPv6 disabled, and
-only the repository allowlist HTTPS proxy through guestfwd. There are no host
-shares, host port forwards, Docker socket, Pi configuration, runner
-registration, PAT, identity key, workspace, or cloud-init seed in the resulting
-image. The pinned runner archive is checksum-verified; the guest runs the exact
-workflow Bubblewrap probe before shutdown. Cloud-init machine identity, logs,
-and temporary user data are cleaned before the overlay is flattened. The
-candidate is read-only and accompanied by provenance and a hash of the
-installed Debian package manifest.
+The builder creates a separate Ubuntu 24.04 image from the checksum-pinned stock
+image. It does not replace or modify the stock golden image. The candidate is
+digest-named, read-only, and accompanied by provenance containing the source
+image digest, package-manifest digest, and pinned runner archive version/digest.
 
-The builder does not overwrite the stock image. Promotion uses a new
-digest-suffixed filename; the deploy script accepts only the stock filename or
-that strict prepared-image naming form and validates the supplied SHA-256.
-Deployment rollback continues to restore the previous protected .env and
-manager image. Keep both the original stock file and its digest.
+### Preflight root cause and corrections
 
-The Beelink checkout at this revision has QEMU/KVM and the pinned golden image,
-but the host user cannot traverse the root-only golden directory and host
-xorriso is absent. A read-only copy was staged from the running manager's
-read-only /golden mount at /tmp/noble-server-cloudimg-amd64.img; it matches the
-stock SHA-256. The builder dry-run passed against that copy. Actual image
-building is blocked until the owner installs the ISO utility using the
-reviewed helper below. No root command was run, no VM was started by the
-builder, and no image was promoted. The separate xorriso installer has
---dry-run, --install, --verify, and --rollback; rollback removes only xorriso
-when this helper recorded that it installed the package and does not run
-autoremove or restart a service.
+The reported /tmp/noble-server-cloudimg-amd64.img path was missing when checked
+on Beelink. It had been removed with the temporary files from the earlier
+attempt. A read-only copy was restaged from the running manager's /golden mount.
+The copy was a regular 0444 file, 625,612,288 bytes, with SHA-256
+6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2;
+qemu-img check reported no errors.
 
-Owner commands after reviewing the helper (do not run during an Actions job):
+The old [ ! -w file ] test was also privilege-sensitive: root may report a
+mode-0444 file as writable. The builder now checks that the input is readable,
+regular, not a symlink, and has no write permission bits using stat mode bits.
+It still requires the exact pinned SHA-256 and a successful qcow2 check.
+Regression coverage rejects missing, writable, symlinked, and wrong-digest
+sources, and accepts the staged pinned 0444 image.
+
+The first build attempt stopped before QEMU because this host's QEMU does not
+allow preallocation=metadata on a backing-file overlay without extended_l2.
+The builder now uses a dynamically allocated overlay with a fixed 12 GiB
+virtual size. The source remains a read-only backing file. Serial timing and
+provenance parsers tolerate cloud-init's serial prefixes. Failure diagnostics
+are preserved only after redacting private-key blocks, and cloud-init is
+configured not to print generated SSH host keys.
+
+### Build and candidate evidence
+
+The final Beelink build used xorriso 1.5.6 and QEMU/KVM with 2 vCPUs, 4 GiB
+RAM, a 12 GiB virtual overlay, restricted QEMU user networking, IPv6 disabled,
+and only the HTTPS allowlist proxy exposed through guestfwd. There were no host
+filesystem shares, inbound port forwards, Docker socket, production .env,
+runner token, PAT, workspace, or persistent runner identity.
+
+The final candidate is:
+
+- Filename: noble-server-cloudimg-amd64-prepared-20261014T145346Z.img
+- SHA-256: 18db16acc6085326c9d4a5dc10dbefbe4bf4d37b01031da588a9ecf5c27e10a5
+- Package manifest SHA-256: 6af335299cbbd6f8caa5d5eeabbffb9a1c5a5c3a5392422aa9c0d4dde6dd120d
+- Runner: 2.338.0; SHA-256 af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
+- File size: 3,488,612,352 bytes; virtual disk: 12 GiB; file mode: 0444
+
+The builder emitted BUILDER_BWRAP_PROBE=PASS and BUILDER_IMAGE_READY=PASS.
+The candidate passed --verify and qemu-img check. A separate disposable
+candidate boot with no network interface passed package and runner checksum
+checks, the exact workflow Bubblewrap probe, mount isolation, network namespace
+isolation, and the no-runner-identity scan. It shut down and its overlay and
+seed were deleted.
+
+A second disposable VM ran the downstream CI command with QEMU restrict=on and
+guest nftables default-deny. The only egress allowed was the host allowlist
+proxy and DHCP; the guest had no inbound forwarding and CI ran as an
+unprivileged user without sudo. The proxy allowed the public GitHub API and
+Gradle dependency endpoints. Direct probes to the QEMU host gateway, Docker
+bridge, router/LAN and Beelink private address failed; the proxy denied a
+request to the private Beelink address. This boundary blocks CI from reaching
+the host or private network directly and limits proxy traffic to exact
+allowlisted public hosts with public DNS answers.
+
+The downstream dev checkout was commit 3028a05e602a9572ba41bc1f3daa28d0fdb762c0.
+Its exact sandbox test passed in both test and e2eTest. The full Gradle command
+produced 524 JUnit cases with zero skips, failures, or errors. The successful
+resource-bounded run was:
+
+~~~bash
+./gradlew --no-daemon --max-workers=1 -Dorg.gradle.jvmargs=-Xmx1g clean test integrationTest e2eTest installDist --stacktrace
+~~~
+
+One unmodified-default Gradle run completed successfully in 4m13s. A later
+unmodified-default run was killed by the guest global OOM handler: the 4 GiB
+guest killed Java (about 1.45 GiB resident, 5.28 GiB virtual) while cloud-final
+ran the test command, and Gradle reported DaemonDisappearedException. This is
+measured guest memory pressure, not a sandbox failure. The one-worker, 1 GiB
+Gradle heap run passed in 4m56s with the same 4 GiB VM. No production CPU, RAM,
+timeout, test, or workflow settings were changed.
+
+The final resource-bounded run took 296 seconds from QEMU start through guest
+shutdown. The builder's stock-image VM ran for 125 seconds: 47 seconds from
+QEMU start to bootstrap, 60.4 seconds for apt provisioning, and 14.9 seconds
+to fetch and store the pinned runner archive. In the prepared candidate, the
+offline validation script began at guest uptime 9.64 seconds and the boot,
+checks, and shutdown completed in 14 seconds. The prepared path removes the
+measured apt provisioning and runner download from each runtime boot. Runner
+tar extraction, GitHub registration, runner readiness, job pickup, and artifact
+upload time were not measured; they require a registration token or owner-run
+deployment. Do not claim a measured end-to-end runner startup improvement yet.
+
+The final candidate is stored on Beelink at
+/var/tmp/recursive-coder-kvm-prepared/noble-server-cloudimg-amd64-prepared-20261014T145346Z.img
+with its .provenance.json sidecar. It has not been promoted or deployed. The
+stock golden and protected .env are unchanged. Regressions on Beelink passed:
+seven shell suites (autoscaler, pools, KVM deploy, KVM preparation, builder-tool
+install, and golden builder) and 31 Python KVM/deployment/proxy tests. The
+builder preflight test also passed against the staged pinned image. Regression
+logs and the sanitized serial/JUnit summaries are under
+/var/tmp/recursive-coder-kvm-validation on Beelink.
+
+### Owner-only promotion and deployment
+
+Promotion and production deployment remain owner-operated. Do not proceed
+while any matching GitHub Actions job is queued/running or the KVM VM list is
+non-empty. First verify the currently running dedicated manager and all
+existing pools:
 
 ~~~bash
 cd ~/github-runners/social-mcp-pr-794
-sudo infra/github-runner-autoscaler/install-recursive-coder-kvm-builder-tool.sh --dry-run
-sudo infra/github-runner-autoscaler/install-recursive-coder-kvm-builder-tool.sh --install
-infra/github-runner-autoscaler/install-recursive-coder-kvm-builder-tool.sh --verify
-
-# The copy is read-only and contains only the pinned Ubuntu base image.
 docker exec recursive-coder-kvm-runner-manager python3 /usr/local/bin/kvm-backend.py list
-docker cp recursive-coder-kvm-runner-manager:/golden/noble-server-cloudimg-amd64.img /tmp/noble-server-cloudimg-amd64.img
-chmod 0444 /tmp/noble-server-cloudimg-amd64.img
-KVM_BUILDER_BASE_IMAGE=/tmp/noble-server-cloudimg-amd64.img \
-  KVM_BUILDER_OUTPUT_DIR=/var/tmp/recursive-coder-kvm-prepared \
-  infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --dry-run
-KVM_BUILDER_BASE_IMAGE=/tmp/noble-server-cloudimg-amd64.img \
-  KVM_BUILDER_OUTPUT_DIR=/var/tmp/recursive-coder-kvm-prepared \
-  infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --build
-infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --verify /var/tmp/recursive-coder-kvm-prepared/CANDIDATE.img
-sudo infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --promote-dry-run /var/tmp/recursive-coder-kvm-prepared/CANDIDATE.img
-sudo infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --promote /var/tmp/recursive-coder-kvm-prepared/CANDIDATE.img
+docker logs --since 5m recursive-coder-kvm-runner-manager 2>&1 | grep 'queued='
+# Also confirm no matching run is queued or in progress in the GitHub Actions UI.
+infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --verify /var/tmp/recursive-coder-kvm-prepared/noble-server-cloudimg-amd64-prepared-20261014T145346Z.img
+sudo infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --promote-dry-run /var/tmp/recursive-coder-kvm-prepared/noble-server-cloudimg-amd64-prepared-20261014T145346Z.img
+sudo infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --promote /var/tmp/recursive-coder-kvm-prepared/noble-server-cloudimg-amd64-prepared-20261014T145346Z.img
 ~~~
 
-After candidate validation, the owner may set only KVM_GOLDEN_FILENAME and
-KVM_GOLDEN_SHA256 in the protected .env to the emitted promotion values.
-Before the dedicated-manager-only deployment, verify the manager's VM list is
-empty and its queue telemetry reports no queued or busy job; the deploy script
-also acquires the shared admission lock and refuses active VM state. Keep the
-change in a quiet window. Do not change Pi, General, or Control pools.
+If promotion prints the expected digest-named filename, the owner may update
+only KVM_GOLDEN_FILENAME and KVM_GOLDEN_SHA256 in the protected KVM .env:
 
-For rollback, restore these two .env values to
-noble-server-cloudimg-amd64.img and
-6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2, then use
-the existing dedicated-manager deployment rollback procedure:
+~~~text
+KVM_GOLDEN_FILENAME=noble-server-cloudimg-amd64-prepared-18db16acc608.img
+KVM_GOLDEN_SHA256=18db16acc6085326c9d4a5dc10dbefbe4bf4d37b01031da588a9ecf5c27e10a5
+~~~
+
+Then use the existing dedicated-manager-only deployment procedure. Recheck
+the Actions queue and VM list immediately before deployment:
 
 ~~~bash
-sudo infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run /path/to/protected-kvm.env
-sudo infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --rollback /path/to/protected-kvm.env
-sudo infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify /path/to/protected-kvm.env
+REPO=/home/yurasik/github-runners/social-mcp-pr-794
+ENV_FILE="$REPO/infra/github-runner-autoscaler/.env"
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --dry-run "$ENV_FILE"
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --deploy "$ENV_FILE"
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --verify "$ENV_FILE"
 ~~~
 
-Do not delete the prepared file as part of rollback; retaining both immutable
-images makes a later review possible. The rollback script restores the previous
-manager image and configuration and checks that Pi, General, and Control
-container IDs/start times did not change.
+After deployment, require a trusted same-repository job to complete, inspect
+its JUnit artifact and runner diagnostics, confirm automatic VM cleanup, and
+verify Pi, General, and Control pools retain their container IDs and health.
+For rollback, restore KVM_GOLDEN_FILENAME=noble-server-cloudimg-amd64.img and
+KVM_GOLDEN_SHA256=6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2,
+then use the dedicated-manager rollback procedure:
+
+~~~bash
+REPO=/home/yurasik/github-runners/social-mcp-pr-794
+ENV_FILE="$REPO/infra/github-runner-autoscaler/.env"
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --rollback "$ENV_FILE"
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --verify "$ENV_FILE"
+~~~
+
+Keep both immutable images. PR #794 remains Draft. Codex did not promote,
+deploy, merge, or change any production service.
 
 ### Latest CI timing and failure evidence
 
@@ -1160,9 +1237,25 @@ timeouts or guest RAM. Measure a current prepared-image job, per-test JUnit
 durations, Gradle worker count, cache restore throughput, guest PSI, and cgroup
 memory events before changing execution policy.
 
-Prepared-image boot time, apt time, runner archive install time, runner
-registration time, job pickup time, and Gradle runtime have not been measured
-before/after with this builder: the host lacks xorriso, so the image candidate
-has not been created. Current cold pickup is about three minutes in the captured
-old-runtime attempt. Do not claim a prepared-image speedup until the owner
-completes the isolated build and no-deployment boot validation.
+## Prepared-image results and memory finding - 2026-10-14
+
+The builder and candidate validation results are recorded in the preceding
+section. They replace the earlier note that xorriso was missing and no
+candidate had been created.
+
+On the final candidate, the downstream workflow passed with a test-only
+resource profile: one Gradle worker and a 1 GiB daemon heap. It produced 524
+JUnit cases with zero skips/errors, including the exact sandbox test in both
+test and e2eTest. A run with the repository's default 2 GiB Gradle heap also
+passed once, but another run on a 4 GiB guest triggered a confirmed global
+guest OOM: the kernel killed the Java process while cloud-final was executing
+Gradle. The captured event reports about 1.45 GiB resident and 5.28 GiB
+virtual memory for that Java process. Repeating with one worker and a 1 GiB
+heap passed in 4m56s. This supports testing those Gradle flags in a future
+workflow change; it does not justify increasing production VM RAM or timeout.
+This PR does not modify the downstream workflow.
+
+Registration, GitHub runner readiness, job pickup, and artifact upload timing
+remain unmeasured because doing so requires a runner registration token or
+owner-authorized live deployment. The prepared image is not promoted, the
+manager is not redeployed, and PR #794 remains Draft.

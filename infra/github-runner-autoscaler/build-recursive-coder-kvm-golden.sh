@@ -8,7 +8,24 @@ out="${KVM_BUILDER_OUTPUT_DIR:-/var/tmp/recursive-coder-kvm-prepared}"
 golden=/var/lib/recursive-coder-kvm/golden
 mode="${1:---dry-run}"; candidate="${2:-}"
 tmp= proxy_pid= qemu_pid= promote_image_tmp= promote_prov_tmp=
-fail(){ echo "ERROR: $*" >&2; exit 1; }
+fail(){
+  echo "ERROR: $*" >&2
+  if [[ -n "${serial:-}" && -f "${serial:-}" && -d "$out" ]]; then
+    diagnostic="$out/failed-build-$(date -u +%Y%m%dT%H%M%SZ).serial.log"
+    python3 - "$serial" "$diagnostic" <<'PYDIAG' || true
+import pathlib,re,sys
+text=pathlib.Path(sys.argv[1]).read_text(errors="replace")
+text=re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+            "[REDACTED PRIVATE KEY BLOCK]", text, flags=re.S)
+text=re.sub(r"-----BEGIN SSH HOST KEY KEYS-----.*?-----END SSH HOST KEY KEYS-----",
+            "[REDACTED SSH HOST KEYS]", text, flags=re.S)
+pathlib.Path(sys.argv[2]).write_text(text)
+PYDIAG
+    chmod 0444 "$diagnostic" 2>/dev/null || true
+    echo "BUILD_DIAGNOSTICS=$diagnostic" >&2
+  fi
+  exit 1
+}
 sha(){ sha256sum -- "$1" | awk '{print $1}'; }
 cleanup(){
   if [[ -n "$qemu_pid" ]] && kill -0 "$qemu_pid" 2>/dev/null; then kill -TERM "$qemu_pid" 2>/dev/null || true; wait "$qemu_pid" 2>/dev/null || true; fi
@@ -28,7 +45,13 @@ check_host(){
   [[ -r "$dir/kvm-egress-proxy.py" ]] || fail 'allowlist proxy missing'
 }
 check_base(){
-  [[ -f "$base" && ! -L "$base" && ! -w "$base" ]] || fail 'stock image must be read-only regular file'
+  [[ -f "$base" && ! -L "$base" && -r "$base" ]] || fail 'stock image must be a readable regular non-symlink file'
+  # test -w is privilege-sensitive: root may report writable for a 0444
+  # file. Inspect the actual mode bits so validation is consistent for every caller.
+  local permissions
+  permissions="$(stat -c %a -- "$base")" || fail 'cannot inspect stock image permissions'
+  [[ "$permissions" =~ ^[0-7]{3,4}$ ]] || fail 'cannot parse stock image permissions'
+  (( (8#$permissions & 0222) == 0 )) || fail 'stock image has write permission bits'
   [[ "$(sha "$base")" = "$base_sha" ]] || fail 'stock image digest mismatch'
   qemu-img check -- "$base" >/dev/null || fail 'stock qcow2 check failed'
 }
@@ -111,23 +134,28 @@ PY
  grep -q '^listening=' "$tmp/proxy.log" || fail 'allowlist proxy failed'
  format="$(qemu-img info --output=json -- "$base" | python3 -c 'import json,sys;print(json.load(sys.stdin)["format"])')"
  overlay="$tmp/overlay.qcow2"; seed="$tmp/seed.iso"; serial="$tmp/serial.log"
- qemu-img create -f qcow2 -F "$format" -b "$base" -o preallocation=metadata "$overlay" 12G >/dev/null
+ qemu-img create -f qcow2 -F "$format" -b "$base" "$overlay" 12G >/dev/null
  cat >"$tmp/bootstrap.sh" <<'GUEST'
 #!/bin/bash
 set -euo pipefail
+echo BUILDER_BOOTSTRAP_START=$(cut -d" " -f1 /proc/uptime) >>/dev/ttyS0
 export http_proxy=http://10.0.2.100:3128 https_proxy=http://10.0.2.100:3128
 cat >/etc/apt/apt.conf.d/90builder-proxy <<'APT'
 Acquire::http::Proxy "http://10.0.2.100:3128/";
 Acquire::https::Proxy "http://10.0.2.100:3128/";
 APT
+echo BUILDER_APT_START=$(cut -d" " -f1 /proc/uptime) >>/dev/ttyS0
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash bubblewrap ca-certificates curl eject git jq nftables openjdk-21-jdk procps python3 python3-pip python3-venv tar unzip xz-utils libatomic1 libcurl4 libgcc-s1 libicu74 libkrb5-3 liblttng-ust1 libssl3t64 libstdc++6 libunwind8 zlib1g libbz2-1.0 libffi8 liblzma5 libreadline8t64 libsqlite3-0 libncursesw6 libgdbm6t64 libuuid1
+echo BUILDER_APT_END=$(cut -d" " -f1 /proc/uptime) >>/dev/ttyS0
 dpkg-query -W -f='${binary:Package}=${Version}\\n' | sort >/var/lib/dpkg-package-manifest.txt
 chmod 0444 /var/lib/dpkg-package-manifest.txt
 install -d -o root -g root -m 0755 /opt/recursive-coder-kvm
+echo BUILDER_RUNNER_INSTALL_START=$(cut -d" " -f1 /proc/uptime) >>/dev/ttyS0
 curl -fsSL --retry 3 https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz -o /tmp/runner.tgz
 echo 'af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32  /tmp/runner.tgz' | sha256sum -c -
 install -o root -g root -m 0444 /tmp/runner.tgz /opt/recursive-coder-kvm/actions-runner.tar.gz
+echo BUILDER_RUNNER_INSTALL_END=$(cut -d" " -f1 /proc/uptime) >>/dev/ttyS0
 echo 'schema=1 runner=2.338.0 sha256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32' >/opt/recursive-coder-kvm/prepared.manifest
 chmod 0444 /opt/recursive-coder-kvm/prepared.manifest
 rm -f /tmp/runner.tgz
@@ -150,7 +178,7 @@ GUEST
  python3 - "$tmp" <<'PY'
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1])
-u={"write_files":[{"path":"/var/lib/kvm-image-builder.sh","owner":"root:root","permissions":"0700","content":(p/"bootstrap.sh").read_text()}],"runcmd":[["bash","/var/lib/kvm-image-builder.sh"]]}
+u={"ssh":{"emit_keys_to_console":False},"write_files":[{"path":"/var/lib/kvm-image-builder.sh","owner":"root:root","permissions":"0700","content":(p/"bootstrap.sh").read_text()}],"runcmd":[["bash","/var/lib/kvm-image-builder.sh"]]}
 (p/"user-data").write_text("#cloud-config\n"+json.dumps(u))
 (p/"meta-data").write_text("instance-id: kvm-golden-builder\nlocal-hostname: kvm-golden-builder\n")
 PY
@@ -158,11 +186,22 @@ PY
  qemu-system-x86_64 -nodefaults -no-user-config -machine q35,accel=kvm -cpu host -smp 2 -m 4096 -display none -no-reboot -serial "file:$serial" -monitor none \
   -drive "if=virtio,format=qcow2,file=$overlay" -drive "if=ide,media=cdrom,readonly=on,format=raw,file=$seed" \
   -netdev "user,id=net0,restrict=on,ipv6=off,guestfwd=tcp:10.0.2.100:3128-cmd:$tmp/proxy-bridge" -device virtio-net-pci,netdev=net0 >"$tmp/qemu.log" 2>&1 & qemu_pid=$!
+ SECONDS=0
+ while kill -0 "$qemu_pid" 2>/dev/null && ! grep -q 'BUILDER_BOOTSTRAP_START=' "$serial" 2>/dev/null; do sleep .2; done
+ boot_elapsed="$SECONDS"
  if ! timeout 1200 bash -c 'while kill -0 "$1" 2>/dev/null; do sleep 2; done' _ "$qemu_pid"; then fail 'builder exceeded 20-minute limit'; fi
  wait "$qemu_pid" || fail 'builder VM failed'; qemu_pid=
  grep -q BUILDER_BWRAP_PROBE=PASS "$serial" || fail 'Bubblewrap probe failed'
  grep -q BUILDER_IMAGE_READY=PASS "$serial" || fail 'guest did not shut down cleanly'
- pkg_sha="$(sed -n 's/^BUILDER_PACKAGES_SHA256=//p' "$serial" | tail -n 1)"
+ marker(){ sed -n "s/.*$1=//p" "$serial" | tail -n 1 | tr -d '\r'; }
+ apt_start="$(marker BUILDER_APT_START)"; apt_end="$(marker BUILDER_APT_END)"
+ runner_start="$(marker BUILDER_RUNNER_INSTALL_START)"; runner_end="$(marker BUILDER_RUNNER_INSTALL_END)"
+ [[ "$apt_start" =~ ^[0-9]+([.][0-9]+)?$ && "$apt_end" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail 'apt timing markers missing'
+ [[ "$runner_start" =~ ^[0-9]+([.][0-9]+)?$ && "$runner_end" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail 'runner archive timing markers missing'
+ apt_elapsed="$(python3 -c 'import sys; print(round(float(sys.argv[2])-float(sys.argv[1]),1))' "$apt_start" "$apt_end")"
+ runner_elapsed="$(python3 -c 'import sys; print(round(float(sys.argv[2])-float(sys.argv[1]),1))' "$runner_start" "$runner_end")"
+ vm_elapsed="$SECONDS"
+ pkg_sha="$(sed -n 's/.*BUILDER_PACKAGES_SHA256=//p' "$serial" | tail -n 1 | tr -d '\r')"
  [[ "$pkg_sha" =~ ^[0-9a-f]{64}$ ]] || fail 'package provenance digest missing'
  candidate="$out/noble-server-cloudimg-amd64-prepared-$(date -u +%Y%m%dT%H%M%SZ).img"
  qemu-img convert -f qcow2 -O qcow2 -o compat=1.1,lazy_refcounts=off "$overlay" "$candidate"
@@ -173,6 +212,13 @@ p={"schema":1,"created_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"b
 open(sys.argv[1],"w").write(json.dumps(p,sort_keys=True,indent=2)+"\n")
 PY
  chmod 0444 "$candidate.provenance.json"; grep -E 'BUILDER_(BWRAP_PROBE|IMAGE_READY)=PASS' "$serial"
- echo "CANDIDATE=$candidate"; echo "SHA256=$digest"; echo 'Stock golden unchanged.' ;;
+ echo "CANDIDATE=$candidate"; echo "SHA256=$digest"
+ echo "TIMING_VM_BOOT_TO_BOOTSTRAP_SECONDS=$boot_elapsed"
+ echo "TIMING_VM_RUN_TO_SHUTDOWN_SECONDS=$vm_elapsed"
+ echo "TIMING_APT_PROVISION_SECONDS=$apt_elapsed"
+ echo "TIMING_RUNNER_ARCHIVE_INSTALL_SECONDS=$runner_elapsed"
+ echo "TIMING_REGISTRATION=not-measured-no-credentials"
+ echo "TIMING_GITHUB_JOB_READINESS=not-measured-no-live-runner-registration"
+ echo 'Stock golden unchanged.' ;;
 *) usage >&2; exit 2 ;;
 esac
