@@ -80,6 +80,7 @@ grep -Fq 'cloud-init clean --logs --machine-id --seed' "$v2" || fail 'v2 does no
 grep -Fq 'rm -rf /tmp/recursive-coder-warm /home/runner' "$v2" || fail 'builder is retaining source and runner home'
 grep -Fq 'pkill -TERM -u runner' "$v2" || fail 'v2 does not stop lingering compiler processes'
 grep -Fq 'pkill -KILL -u runner' "$v2" || fail 'v2 cleanup lacks a bounded force-stop fallback'
+grep -Fq 'chmod -R a+rX "$base/python" "$base/gradle-9.8.1" "$base/node-v22.21.1-linux-x64"' "$v2" || fail 'v2 toolchains are not accessible to unprivileged runner'
 python3 - "$v2" <<'PY' || fail 'v2 must stop runner processes before deleting its home or user'
 from pathlib import Path
 import sys
