@@ -59,6 +59,14 @@ without owner privilege. The failed initial verification occurs before the
 script writes `current`; the owner should check root-only metadata before
 updating, without printing the protected `.env` contents.
 
+Owner-only metadata inspection (names, ownership, modes and sizes only; this
+does not print the saved environment file):
+
+```bash
+sudo find /var/lib/recursive-coder-kvm-deploy -mindepth 1 -maxdepth 2 \
+  -printf '%y %m %u:%g %s %p\n' | sort
+```
+
 ## Earlier Docker runner prototype (blocked)
 
 `recursive-coder-runner-manager` is a third independent manager process, with its
