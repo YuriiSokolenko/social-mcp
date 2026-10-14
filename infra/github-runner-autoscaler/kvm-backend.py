@@ -131,6 +131,15 @@ if [ -e /opt/recursive-coder-kvm/prepared.manifest ]; then
     command -v "$required" >/dev/null
   done
   stage prepared_golden_verified
+  if [ -e /opt/recursive-coder-kvm/toolchain-v2.manifest ]; then
+    expected_v2='schema=2 gradle=9.8.1 gradle_sha256=dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f node=22.21.1 node_sha256=680d3f30b24a7ff24b98db5e96f294c0070f8f9078df658da1bce1b9c9873c88 python=3.12 jsonschema=4.25.1 source=3028a05e602a9572ba41bc1f3daa28d0fdb762c0'
+    [ "$(cat /opt/recursive-coder-kvm/toolchain-v2.manifest)" = "$expected_v2" ]
+    /opt/recursive-coder-kvm/gradle-9.8.1/bin/gradle --version | grep -Fq 'Gradle 9.8.1'
+    [ "$(/opt/recursive-coder-kvm/node-v22.21.1-linux-x64/bin/node --version)" = v22.21.1 ]
+    /opt/recursive-coder-kvm/python/bin/python -c 'from importlib.metadata import version; assert version("jsonschema") == "4.25.1"'
+    [ -d /opt/recursive-coder-kvm/gradle-home ]
+    stage baked_ci_toolchain_verified
+  fi
 else
   stage apt_start
   apt-get update
@@ -234,6 +243,15 @@ TimeoutStopSec=20
 [Install]
 WantedBy=multi-user.target
 UNIT
+if [ -e /opt/recursive-coder-kvm/toolchain-v2.manifest ]; then
+  install -d -m 0755 /etc/systemd/system/actions-runner.service.d
+  cat >/etc/systemd/system/actions-runner.service.d/10-baked-ci-tools.conf <<'CI_TOOLS'
+[Service]
+Environment="PATH=/opt/recursive-coder-kvm/gradle-9.8.1/bin:/opt/recursive-coder-kvm/node-v22.21.1-linux-x64/bin:/opt/recursive-coder-kvm/python/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="GRADLE_USER_HOME=/opt/recursive-coder-kvm/gradle-home"
+Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
+CI_TOOLS
+fi
 systemctl daemon-reload
 cat >/etc/nftables.conf <<'NFT'
 flush ruleset
