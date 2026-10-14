@@ -4,6 +4,12 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 builder="$root/infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh"
 fail(){ echo "FAIL: $*" >&2; exit 1; }
 bash -n "$builder" || fail 'builder shell syntax is invalid'
+# SIGINT and SIGTERM must exit the script so EXIT cleanup runs once.
+grep -Fq "trap 'exit 130' INT" "$builder" || fail 'Ctrl-C does not exit builder'
+grep -Fq "trap 'exit 143' TERM" "$builder" || fail 'SIGTERM does not exit builder'
+grep -Fq 'trap cleanup EXIT' "$builder" || fail 'builder EXIT cleanup is missing'
+grep -Fq 'terminate_child "$qemu_pid"' "$builder" || fail 'QEMU cleanup is not bounded'
+grep -Fq 'kill -KILL "$pid"' "$builder" || fail 'QEMU cleanup has no force-stop fallback'
 grep -Fq 'restrict=on,ipv6=off' "$builder" || fail 'QEMU guest networking is not restricted'
 grep -Fq 'kvm-egress-proxy.py' "$builder" || fail 'builder omits repository allowlist proxy'
 grep -Fq 'actions-runner-linux-x64-2.338.0.tar.gz' "$builder" || fail 'pinned Actions runner archive is missing'
