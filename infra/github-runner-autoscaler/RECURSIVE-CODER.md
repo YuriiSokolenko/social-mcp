@@ -743,9 +743,10 @@ and [runner authentication design](https://github.com/actions/runner/blob/main/d
 Read-only deployment checklist for the owner (never run by Codex):
 
 ```bash
-cd /home/yurasik/github-runners/social-mcp-pr-794
-sudo bash infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh --verify
-sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --dry-run infra/github-runner-autoscaler/.env
+REPO=/home/yurasik/github-runners/social-mcp-pr-794
+ENV_FILE="$REPO/infra/github-runner-autoscaler/.env"
+sudo bash "$REPO/infra/github-runner-autoscaler/prepare-recursive-coder-kvm.sh" --verify
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --dry-run "$ENV_FILE
 docker inspect pi-runner-manager general-runner-manager n150-control --format '{{.Name}} {{.Id}} {{.State.Status}} {{.State.StartedAt}}'
 ```
 
@@ -970,8 +971,10 @@ Only when the job list is empty and the VM list is empty, the owner can update
 the dedicated service alone and re-verify:
 
 ```bash
-sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --deploy infra/github-runner-autoscaler/.env
-sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify
+REPO=/home/yurasik/github-runners/social-mcp-pr-794
+ENV_FILE="$REPO/infra/github-runner-autoscaler/.env"
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --deploy "$ENV_FILE"
+sudo bash "$REPO/infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh" --verify "$ENV_FILE"
 ```
 
 Then dispatch or wait for a trusted same-repository run and inspect
