@@ -29,7 +29,7 @@ APT
 
 stage BUILDER_APT_START
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3.12-venv unzip xz-utils
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3.12-venv unzip xz-utils procps
 stage BUILDER_APT_END
 test -f "$base/prepared.manifest"
 grep -Fxq 'schema=1 runner=2.338.0 sha256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32' "$base/prepared.manifest"
