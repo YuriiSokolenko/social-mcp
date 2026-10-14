@@ -1080,7 +1080,7 @@ The final candidate is:
 - SHA-256: 18db16acc6085326c9d4a5dc10dbefbe4bf4d37b01031da588a9ecf5c27e10a5
 - Package manifest SHA-256: 6af335299cbbd6f8caa5d5eeabbffb9a1c5a5c3a5392422aa9c0d4dde6dd120d
 - Runner: 2.338.0; SHA-256 af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-- File size: 3,488,612,352 bytes; virtual disk: 12 GiB; file mode: 0444
+- File size: 3,437,428,736 bytes (verified by stat on 2026-10-14); virtual disk: 12 GiB; file mode: 0444
 
 The builder emitted BUILDER_BWRAP_PROBE=PASS and BUILDER_IMAGE_READY=PASS.
 The candidate passed --verify and qemu-img check. A separate disposable
@@ -1261,4 +1261,4 @@ This PR does not modify the downstream workflow.
 Registration, GitHub runner readiness, job pickup, and artifact upload timing
 remain unmeasured because doing so requires a runner registration token or
 owner-authorized live deployment. The prepared image is not promoted, the
-manager is not redeployed, and PR #794 remains Draft.
+manager is not redeployed, and PR #794 remain
