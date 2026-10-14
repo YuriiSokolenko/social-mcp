@@ -78,6 +78,14 @@ fi
 grep -Fq 'runuser -u runner -- /usr/bin/bwrap' "$v2" || fail 'v2 Bubblewrap probe is missing'
 grep -Fq 'cloud-init clean --logs --machine-id --seed' "$v2" || fail 'v2 does not scrub cloud-init identity'
 grep -Fq 'rm -rf /tmp/recursive-coder-warm /home/runner' "$v2" || fail 'builder is retaining source and runner home'
+grep -Fq 'pkill -TERM -u runner' "$v2" || fail 'v2 does not stop lingering compiler processes'
+grep -Fq 'pkill -KILL -u runner' "$v2" || fail 'v2 cleanup lacks a bounded force-stop fallback'
+python3 - "$v2" <<'PY' || fail 'v2 must stop runner processes before deleting its home or user'
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text()
+assert s.index('pkill -TERM -u runner') < s.index('rm -rf /tmp/recursive-coder-warm /home/runner') < s.index('userdel runner')
+PY
 if grep -E 'ACTIONS_RUNNER_INPUT_TOKEN|RECURSIVE_CODER_GH_ADMIN_TOKEN|hostfwd|docker.sock' "$v2"; then
   fail 'v2 build embeds credentials or a host-escape interface'
 fi
