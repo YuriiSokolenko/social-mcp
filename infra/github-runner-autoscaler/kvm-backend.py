@@ -138,6 +138,13 @@ if [ -e /opt/recursive-coder-kvm/prepared.manifest ]; then
     [ "$(/opt/recursive-coder-kvm/node-v22.21.1-linux-x64/bin/node --version)" = v22.21.1 ]
     /opt/recursive-coder-kvm/python/bin/python -c 'from importlib.metadata import version; assert version("jsonschema") == "4.25.1"'
     [ -d /opt/recursive-coder-kvm/gradle-home ]
+    # The v2 toolchains were installed by root with umask 077. Their original
+    # directory modes can block the unprivileged Actions runner (EACCES when
+    # checkout searches python/bin/git). Fix access only inside this disposable
+    # guest's writable overlay; the SHA-pinned host golden remains immutable.
+    chmod -R a+rX /opt/recursive-coder-kvm/python \\
+      /opt/recursive-coder-kvm/gradle-9.8.1 \\
+      /opt/recursive-coder-kvm/node-v22.21.1-linux-x64
     stage baked_ci_toolchain_verified
   fi
 else
