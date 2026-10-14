@@ -130,21 +130,25 @@ PY
 verify_service() {
   [ "$(docker inspect "$container" --format '{{.State.Running}}')" = true ] || fail 'KVM manager is not running'
   docker inspect "$container" | python3 -c '
-import json, sys
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("kvm_deploy_policy", sys.argv[1])
+policy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(policy)
 c = json.load(sys.stdin)[0]
 assert c["Config"]["Labels"].get("com.docker.compose.project") == "recursive-coder-kvm"
 mounts = {m["Destination"]: m["RW"] for m in c["Mounts"]}
 assert mounts == {"/golden": False, "/kvm-state": True, "/scheduler": True}
 h = c["HostConfig"]
 assert not h["Privileged"] and h["Memory"] == 5120 * 1024 * 1024
-assert h["NanoCpus"] == 2250000000 and len(h["Devices"]) == 1
+assert policy.nano_cpus_within_limit(h.get("NanoCpus")) and len(h["Devices"]) == 1
 assert h["Devices"][0]["PathOnHost"] == "/dev/kvm"
 assert not h.get("PortBindings")
 assert "no-new-privileges:true" in h["SecurityOpt"]
 assert h["MemorySwap"] == 8192 * 1024 * 1024
 assert "WORKER_BACKEND=kvm" in c["Config"]["Env"]
 assert "GITHUB_REPOSITORY=YuriiSokolenko/recursive-coder" in c["Config"]["Env"]
-' || fail 'KVM container mount, device or resource policy verification failed'
+' "$root/infra/github-runner-autoscaler/kvm_deploy_policy.py" \
+    || fail 'KVM container mount, device or resource policy verification failed'
   docker exec "$container" python3 /usr/local/bin/kvm-backend.py verify >/dev/null \
     || fail 'KVM backend or pinned golden image verification failed'
   echo 'KVM manager, read-only golden image, state volume and /dev/kvm verified.'

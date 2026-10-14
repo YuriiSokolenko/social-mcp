@@ -19,7 +19,7 @@ api_get() {
   esac
 }
 cat > "$fixture/jobs.json" <<'JSON'
-{"total_count":8,"jobs":[
+{"total_count":12,"jobs":[
  {"status":"queued","labels":["self-hosted","linux","x64","n150","recursive-coder-ci"]},
  {"status":"queued","labels":["SELF-HOSTED","Linux","X64","N150","recursive-coder-ci"]},
  {"status":"queued","labels":["self-hosted","linux","x64","n150","recursive-coder-ci"]},
@@ -27,10 +27,25 @@ cat > "$fixture/jobs.json" <<'JSON'
  {"status":"queued","labels":["self-hosted","n150","pi-agent"]},
  {"status":"queued","labels":["self-hosted","n150","control"]},
  {"status":"queued","labels":["self-hosted","n150","recursive-coder-ci","gpu"]},
- {"status":"in_progress","labels":["self-hosted","n150","recursive-coder-ci"]}
+ {"status":"queued","labels":["self-hosted","n150","recursive-coder-ci"]},
+ {"status":"queued"},
+ {"status":"queued","labels":[]},
+ {"status":"in_progress","labels":["self-hosted","linux","x64","n150","recursive-coder-ci"]}
 ]}
 JSON
 [[ "$(queued_jobs)" = 3 ]] || fail 'three eligible jobs, fork blocked, overlapping status snapshots deduplicated'
+# The real jq binary used by the manager must reject malformed job JSON rather
+# than silently treating a broken API response as zero demand.
+(
+  api_get() {
+    case "$1" in
+      *'status='*) printf '%s' '{"total_count":1,"workflow_runs":[{"id":7,"path":".github/workflows/ci.yml","event":"push"}]}' ;;
+      *'/7/jobs?'*) printf '%s' '{malformed json' ;;
+      *) fail "unexpected malformed-input API URL: $1" ;;
+    esac
+  }
+  assert_failure queued_jobs
+)
 # In-progress workflow alone still exposes the other waiting jobs.
 (
   original_api="$(declare -f api_get | sed '1s/api_get/original_api/')"; eval "$original_api"

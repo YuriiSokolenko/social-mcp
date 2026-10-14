@@ -1,11 +1,63 @@
 # Recursive-coder CI pool — issue #793
 
-Status (2026-10-14): **The unprivileged KVM guest passes the exact Bubblewrap probe, full downstream Gradle CI, and two repeated integration suites on a real disposable N150 VM. Resource review bounded KVM-manager swap and added fail-closed VM-state checks. The six failures from an earlier run did not recur; their original JUnit diagnostics were not preserved, so no downstream implementation fix is claimed. The runner pool is not deployed and PR #794 remains Draft.**
+Status (2026-10-14): **The unprivileged KVM guest passes the exact Bubblewrap probe, full downstream Gradle CI, and two repeated integration suites on a real disposable N150 VM. The owner has since started the dedicated manager. Its first live poll exposed a jq parse error in `queued_jobs()`, and first post-start verification rejected Docker's 128-nanocpu rounding of the 2.25 CPU cap. Fixes and regression tests are in PR #794; do not restart or update the manager until the owner authorizes the commands below. PR #794 remains Draft.**
 The guest uses unprivileged user namespaces and a guest-only nftables deny-by-default
 egress policy. VM startup, bounded resources, restricted proxy egress, shutdown and
 overlay cleanup have been exercised. Actions runner registration and a live job
 remain untested because the owner has not supplied the separately scoped PAT.
-The owner alone performs privileged deployment.
+The owner alone performs privileged deployment. The deploy script writes its
+`current` state snapshot only after post-start verification. If verification
+fails on an initial install, retrying `--deploy` is safe after confirming no VM
+is active: preflight is repeated, `docker compose up` targets only the dedicated
+KVM service, and `current` is committed only after verification. If an older
+`current` snapshot exists, it is copied to `previous` before updating, preserving
+the rollback path. `--verify` is read-only; `--rollback` removes/restores only
+the dedicated KVM manager and refuses while KVM VM state is active.
+
+### Live manager recovery — owner-operated
+
+The live manager previously logged a jq compilation error on each poll, leaving
+the `recursive-coder` jobs queued. Do not touch the running container until the
+PR fix is pushed and the owner confirms a quiet window. From the isolated Beelink
+checkout, fetch the PR head and verify the existing container first:
+
+```bash
+cd /home/yurasik/github-runners/social-mcp-pr-794
+git fetch origin pull/794/head
+git checkout --detach FETCH_HEAD
+ENV_FILE=/home/yurasik/github-runners/social-mcp-pr-794/infra/github-runner-autoscaler/.env
+sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify "$ENV_FILE"
+docker exec recursive-coder-kvm-runner-manager python3 /usr/local/bin/kvm-backend.py list
+gh run list --repo YuriiSokolenko/recursive-coder --workflow ci.yml --status in_progress --json databaseId,name
+```
+
+Proceed only when the backend reports no active VM and the workflow query shows
+no in-progress run. Queued jobs are expected to remain queued during the update.
+Then update and verify only the dedicated service:
+
+```bash
+sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --deploy "$ENV_FILE"
+sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify "$ENV_FILE"
+docker inspect recursive-coder-kvm-runner-manager --format '{{.State.Status}} {{.State.StartedAt}} {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}'
+```
+
+The script's deployment lock serializes manager admission, and its preflight
+checks for an active VM before Compose can replace the container. Do not run
+`docker compose up` for the full file or update the Pi, General, or Control
+services. After the owner authorizes the update, watch the existing queued run
+for runner pickup, successful completion, JUnit artifact upload, empty KVM
+state after teardown, and unchanged Pi/General/Control IDs and start times.
+
+On 2026-10-14, read-only inspection found the manager running with
+`NanoCpus=2249999872`, `Memory=5368709120`, `MemorySwap=8589934592`, exactly one
+`/dev/kvm` device, no published ports, and the expected golden/state/scheduler
+mounts. Run 38485469883 had three queued jobs and no artifacts; no VM directory
+was present in `/kvm-state` (only `preparation.json` and `prepare.lock`). The
+deployment metadata directory `/var/lib/recursive-coder-kvm-deploy` is
+root-owned mode 0700, so its `current`/`previous` entries could not be inspected
+without owner privilege. The failed initial verification occurs before the
+script writes `current`; the owner should check root-only metadata before
+updating, without printing the protected `.env` contents.
 
 ## Earlier Docker runner prototype (blocked)
 

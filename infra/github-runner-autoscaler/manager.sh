@@ -197,7 +197,10 @@ queued_jobs() {
         ($labels | ascii_downcase | split(",")) as $supported
         | [.jobs[] | select(.status == "queued")
           | select((.labels | type) == "array" and (.labels | length) > 0)
-          | select(all(.labels[]; type == "string" and (ascii_downcase as $label | $supported | index($label)) != null))
+          | select(all(.labels[]; type == "string"))
+          | select((.labels | map(ascii_downcase)) as $requested_labels
+              | all($requested_labels[]; . as $requested_label | $supported | index($requested_label) != null)
+                and all($supported[]; . as $required_label | $requested_labels | index($required_label) != null))
           | select(any(.labels[]; ascii_downcase == "self-hosted"))] | length' <<< "$jobs")" || return 1
       total=$((total + count))
     done <<< "$ids"
