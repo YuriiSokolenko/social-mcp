@@ -894,3 +894,89 @@ regression scripts exited 1 with 22 SC2034 warnings and 259 informational
 findings: SC2317 215, SC2016 19, SC2015 17, SC1091 2, SC2012 2, SC2030 2, and
 SC2031 2. Most are indirect test functions invoked through the sourced manager.
 No suppressions were added.
+
+
+## P0 runner shutdown investigation and diagnostics — 2026-10-14
+
+The three original cancelled jobs were not explained by the available old-runner
+evidence. The manager logged the architecture runner as busy with queued work
+through 08:41:47Z, twelve seconds before its 08:41:59Z shutdown; the full-suite
+runner was likewise busy and queued work existed before its 08:09:16Z shutdown.
+The third architecture job ended at 08:41:59Z. These observations rule out the
+manager's idle-retirement path. The guest lifetime cap is 1800 seconds and the
+20-minute Actions timeout also do not fit those shutdown times. In particular,
+the later architecture runner had been alive only about 8m24s. The earlier
+supervisor deleted each VM state directory, including serial, QEMU and
+supervisor logs, so guest OOM/systemd-oomd, runner service failure and another
+guest shutdown trigger could not be distinguished.
+
+A further full integration job on the still-running old image reproduced the
+same runner shutdown at 09:04:43Z, 13m32s after the job started. GitHub marked
+the compile/test and sandbox-follow-up steps cancelled; the shutdown message
+again came from Actions, not a diagnostic identifying the initiating process.
+The VM disappeared and the manager returned to active=0; no diagnostics
+directory existed. The manager cgroup counters after this run showed
+oom=0, oom_kill=0, and oom_group_kill=0 (with 9351 max events).
+These are manager-container counters and cannot rule out a guest OOM. No
+specific shutdown root cause is claimed as proven.
+
+A separate lifecycle defect was confirmed during read-only process inspection:
+the detached supervisor inherited FD 9 for the scheduler admission.lock.
+The lock became available when the old supervisor exited. New supervisors now
+close all inherited descriptors above stderr before exec, and the Linux
+lifecycle regression holds the manager lock across VM creation, releases the
+parent lock, then proves flock -n can acquire it while the fake VM is still
+running. This lock leak could block other admission operations; it did not
+explain a guest shutdown.
+
+The prototype now writes a bounded incident JSON record under the manager's
+private /kvm-state/diagnostics directory before deleting a VM's disposable
+state. It retains ten records, mode 0700 directory / 0600 files, caps records
+at 128 KiB, and includes only the VM name/timestamps, normalized shutdown
+reason, QEMU exit status, manager cgroup memory/swap counters, and redacted
+12-KiB tails of serial/QEMU/supervisor logs. It does not copy the qcow2 disk,
+seed image, runner workspace, cloud-init user-data, environment, or credentials.
+Recovery, startup failure, supervisor signal, lifetime expiration, QEMU exit,
+and forced cleanup paths preserve diagnostics. Guest ExecStopPost now emits
+up to 32 KiB of sanitized service result, runner exit status, memory/pressure,
+filesystem availability, kernel OOM/oomd records, and filtered runner-service
+failure records to the QEMU serial log before requesting poweroff. The next
+owner-updated run is needed to establish whether those records identify the
+trigger.
+
+Linux regression validation on Beelink after these source changes:
+tests/test_kvm_backend.py passed 10/10, including simulated QEMU exit 7,
+lifetime expiration, OOM marker/cgroup data, token redaction, size/mode/retention,
+and a real flock probe while the detached fake supervisor runs.
+tests/test_recursive_coder_kvm_pool.sh passed busy-runner protection,
+idle-to-busy recheck protection, and confirmed-idle cleanup. The broader
+autoscaler, recursive-coder pool, KVM deployment, and KVM preparation shell
+suites passed; tests.test_kvm_deploy_policy passed 3/3. No test connected to
+the live manager or stopped the current production service.
+
+### Owner-only validation after review
+
+Do not update the live manager while any KVM VM or matching GitHub Actions job
+is active. First check the repository's Actions page for queued/in-progress
+jobs and run:
+
+```bash
+cd /home/yurasik/github-runners/social-mcp-pr-794
+docker exec recursive-coder-kvm-runner-manager python3 /usr/local/bin/kvm-backend.py list
+sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify
+```
+
+Only when the job list is empty and the VM list is empty, the owner can update
+the dedicated service alone and re-verify:
+
+```bash
+sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --deploy infra/github-runner-autoscaler/.env
+sudo bash infra/github-runner-autoscaler/deploy-recursive-coder-kvm.sh --verify
+```
+
+Then dispatch or wait for a trusted same-repository run and inspect
+/kvm-state/diagnostics after the runner unregisters. Require one runner per
+VM, job completion, JUnit artifacts, overlay cleanup, and unchanged Pi/General/
+Control IDs and health. If the job is still active, wait for completion; do not
+force-stop or redeploy around it. This PR remains Draft and has not been
+deployed by Codex.

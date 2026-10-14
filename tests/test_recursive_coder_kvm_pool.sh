@@ -70,4 +70,38 @@ echo n150-rc-eph-active >"$tmp/active"
 python3 "$KVM_BACKEND_SCRIPT" stop --name n150-rc-eph-active
 [ "$(cat "$tmp/stop-name")" = n150-rc-eph-active ] || fail 'idle VM cleanup did not call the KVM backend'
 
+queued_jobs() { echo 0; }
+pool_containers() { echo n150-rc-eph-active; }
+TEST_RUNNER_CALLS_FILE="$tmp/runner-calls"
+runner_list() {
+  local calls=0
+  [ ! -f "$TEST_RUNNER_CALLS_FILE" ] || calls="$(cat "$TEST_RUNNER_CALLS_FILE")"
+  calls=$((calls + 1))
+  printf '%s\n' "$calls" >"$TEST_RUNNER_CALLS_FILE"
+  case "$TEST_RUNNER_MODE:$calls" in
+    busy:*) printf '%s\n' '{"runners":[{"name":"n150-rc-eph-active","status":"online","busy":true}]}';;
+    race:1) printf '%s\n' '{"runners":[{"name":"n150-rc-eph-active","status":"online","busy":false}]}';;
+    race:*) printf '%s\n' '{"runners":[{"name":"n150-rc-eph-active","status":"online","busy":true}]}';;
+    idle:*) printf '%s\n' '{"runners":[{"name":"n150-rc-eph-active","status":"online","busy":false}]}';;
+    *) fail "unexpected runner list fixture";;
+  esac
+}
+rm -f "$tmp/stop-name" "$TEST_RUNNER_CALLS_FILE"
+TEST_RUNNER_MODE=busy
+IDLE_STREAK["n150-rc-eph-active"]=$((KVM_IDLE_POLLS_BEFORE_STOP - 1))
+retire_idle_runners || fail 'busy runner lifecycle check errored'
+[ ! -e "$tmp/stop-name" ] || fail 'busy runner was stopped'
+
+rm -f "$TEST_RUNNER_CALLS_FILE"
+TEST_RUNNER_MODE=race
+IDLE_STREAK["n150-rc-eph-active"]=$((KVM_IDLE_POLLS_BEFORE_STOP - 1))
+retire_idle_runners || fail 'busy-transition lifecycle check errored'
+[ ! -e "$tmp/stop-name" ] || fail 'runner that became busy during recheck was stopped'
+
+rm -f "$TEST_RUNNER_CALLS_FILE"
+TEST_RUNNER_MODE=idle
+IDLE_STREAK["n150-rc-eph-active"]=$((KVM_IDLE_POLLS_BEFORE_STOP - 1))
+retire_idle_runners || fail 'idle runner cleanup errored'
+[ "$(cat "$tmp/stop-name")" = n150-rc-eph-active ] || fail 'confirmed surplus idle runner was not cleaned up'
+
 echo 'recursive-coder KVM manager checks passed'

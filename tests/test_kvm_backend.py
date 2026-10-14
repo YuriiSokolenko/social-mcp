@@ -1,4 +1,5 @@
 import contextlib
+import fcntl
 import importlib.util
 import io
 import json
@@ -45,7 +46,10 @@ class KvmBackendTests(unittest.TestCase):
         self.assertNotIn('--token "$token"', userdata)
         self.assertIn("systemd-run --quiet --unit=actions-runner-delayed-start --on-active=10s", userdata)
         self.assertIn("After=network-online.target cloud-final.service", userdata)
+        self.assertIn("ExecStopPost=+/usr/local/sbin/runner-shutdown-diagnostics", userdata)
         self.assertIn("ExecStopPost=+/usr/bin/systemctl --no-block poweroff", userdata)
+        self.assertIn("runner-shutdown-diagnostics-v1", userdata)
+        self.assertIn("systemd-oomd.service", userdata)
         self.assertIn('oifname "lo" accept', userdata)
         self.assertIn(kvm.REPOSITORY, userdata)
         self.assertEqual("n150-rc-eph-test", json.loads(metadata)["instance-id"])
@@ -60,6 +64,7 @@ class KvmBackendTests(unittest.TestCase):
         # The runner executable exists only in the guest image; /bin/true lets
         # systemd-analyze validate every unit directive without touching host units.
         unit = unit.replace("/home/runner/actions-runner/run.sh", "/bin/true")
+        unit = unit.replace("/usr/local/sbin/runner-shutdown-diagnostics", "/bin/true")
         with tempfile.TemporaryDirectory(prefix="kvm-systemd-unit-test-") as temporary:
             unit_path = Path(temporary) / "actions-runner.service"
             unit_path.write_text(unit)
@@ -120,6 +125,7 @@ class KvmBackendTests(unittest.TestCase):
             }
             self.assertEqual(0, kvm.supervise(state.name, cfg))
             self.assertFalse(state.exists())
+            self.assertEqual(1, len(list((root / "diagnostics").glob("*.json"))))
 
             state.mkdir(mode=0o700)
             fake_qemu.write_text("#!/bin/sh\nexec /bin/sleep 5\n")
@@ -127,6 +133,81 @@ class KvmBackendTests(unittest.TestCase):
             cfg["lifetime"] = 0.05
             self.assertEqual(124, kvm.supervise(state.name, cfg))
             self.assertFalse(state.exists())
+            records = list((root / "diagnostics").glob("*.json"))
+            self.assertEqual(2, len(records))
+            self.assertIn("lifetime_limit", [json.loads(path.read_text())["reason"] for path in records])
+
+    def test_diagnostics_are_sanitized_bounded_private_and_retained(self):
+        with tempfile.TemporaryDirectory(prefix="kvm-diag-test-") as temporary:
+            root = Path(temporary)
+            state = root / "n150-rc-eph-diag"
+            state.mkdir(mode=0o700)
+            (state / "state.json").write_text(json.dumps({
+                "name": state.name, "created_at": 123, "registration_token": "ghs_" + "x" * 30,
+            }))
+            (state / "serial.log").write_text(
+                "z" * (kvm.DIAGNOSTIC_TAIL_BYTES * 3) + "\n"
+                "/home/runner/_work/project/private-file\n"
+                "kernel: Out of memory: Killed process 42 (java)\n"
+                "runner failed github_pat_" + "y" * 36 + "\n"
+                "authorization: Bearer abcdefghijklmnop\n"
+            )
+            cgroup = root / "cgroup"
+            cgroup.mkdir()
+            (cgroup / "memory.events").write_text("oom 1\noom_kill 1\n")
+            (cgroup / "memory.current").write_text("4096\n")
+            (cgroup / "memory.peak").write_text("8192\n")
+            (cgroup / "memory.swap.current").write_text("0\n")
+            output = kvm.preserve_diagnostics(
+                state, "guest_oom", 137, cgroup_root=cgroup,
+            )
+            self.assertIsNotNone(output)
+            self.assertFalse((state / "root.qcow2").exists())
+            payload = output.read_text()
+            self.assertIn("Out of memory", payload)
+            self.assertIn("oom_kill 1", payload)
+            self.assertIn("[REDACTED_GITHUB_TOKEN]", payload)
+            self.assertNotIn("github_pat_", payload)
+            self.assertNotIn("ghs_", payload)
+            self.assertNotIn("abcdefghijklmnop", payload)
+            self.assertNotIn("/home/runner", payload)
+            self.assertIn("[RUNNER_PATH]", payload)
+            self.assertLessEqual(output.stat().st_size, kvm.DIAGNOSTIC_MAX_BYTES)
+            self.assertEqual(0o600, output.stat().st_mode & 0o777)
+            self.assertEqual(0o700, output.parent.stat().st_mode & 0o777)
+            for index in range(kvm.DIAGNOSTIC_RETENTION + 2):
+                (output.parent / f"n150-rc-eph-old-{index}.json").write_text("{}")
+            kvm.preserve_diagnostics(state, "repeat", 0, cgroup_root=cgroup)
+            self.assertLessEqual(len(list(output.parent.glob("n150-rc-eph-*.json"))),
+                                 kvm.DIAGNOSTIC_RETENTION)
+
+    def test_supervisor_file_actions_close_inherited_admission_lock_fd(self):
+        with tempfile.TemporaryFile() as lock:
+            fd = lock.fileno()
+            actions = kvm._supervisor_file_actions(fd + 1)
+            self.assertIn((os.POSIX_SPAWN_CLOSE, fd), actions)
+
+    def test_supervisor_preserves_diagnostics_on_qemu_failure(self):
+        with tempfile.TemporaryDirectory(prefix="kvm-supervisor-fail-") as temporary:
+            root = Path(temporary)
+            state = root / "n150-rc-eph-fail"
+            state.mkdir(mode=0o700)
+            fake_qemu = root / "fake-qemu"
+            fake_qemu.write_text("#!/bin/sh\necho 'QEMU fixture failure' >&2\nexit 7\n")
+            fake_qemu.chmod(0o755)
+            (state / "state.json").write_text(json.dumps({
+                "name": state.name, "created_at": 123, "supervisor_pid": os.getpid(), "qemu_pid": 0,
+            }))
+            cfg = {"state": root, "qemu": str(fake_qemu), "bridge": "/tmp/kvm-bridge",
+                   "cpus": 2, "memory_mb": 512, "lifetime": 2}
+            self.assertEqual(7, kvm.supervise(state.name, cfg))
+            self.assertFalse(state.exists())
+            diagnostics = list((root / "diagnostics").glob("*.json"))
+            self.assertEqual(1, len(diagnostics))
+            record = json.loads(diagnostics[0].read_text())
+            self.assertEqual("qemu_exit", record["reason"])
+            self.assertEqual(7, record["qemu_exit_status"])
+            self.assertIn("QEMU fixture failure", record["logs"]["qemu.log"])
 
     def test_recover_removes_abandoned_vm_state(self):
         with tempfile.TemporaryDirectory(prefix="kvm-recover-test-") as temporary:
@@ -137,6 +218,10 @@ class KvmBackendTests(unittest.TestCase):
             (state / "state.json").write_text(json.dumps({"supervisor_pid": 2147483647, "qemu_pid": 0}))
             kvm.recover({"state": root})
             self.assertFalse(state.exists())
+            records = list((root / "diagnostics").glob("*.json"))
+            self.assertEqual(1, len(records))
+            self.assertEqual("recovery_orphaned_supervisor",
+                             json.loads(records[0].read_text())["reason"])
 
     def test_start_supervise_and_stop_clean_the_overlay_without_logging_token(self):
         with tempfile.TemporaryDirectory(prefix="kvm-lifecycle-test-") as temporary:
@@ -181,6 +266,9 @@ class KvmBackendTests(unittest.TestCase):
             state = state_root / name
             output = io.StringIO()
             supervisor_pid = None
+            admission_path = root / "admission.lock"
+            admission = admission_path.open("w")
+            fcntl.flock(admission.fileno(), fcntl.LOCK_EX)
             with patch.dict(os.environ, env), patch.object(kvm, "validate_runtime"), \
                 patch.object(kvm, "recover"), patch.object(kvm, "active_names", return_value=[]), \
                 patch.object(kvm, "run", side_effect=fake_run), contextlib.redirect_stdout(output):
@@ -196,6 +284,14 @@ class KvmBackendTests(unittest.TestCase):
                     time.sleep(0.05)
                 else:
                     self.fail("supervisor did not start the disposable QEMU process")
+                fcntl.flock(admission.fileno(), fcntl.LOCK_UN)
+                admission.close()
+                lock_probe = subprocess.run(
+                    ["flock", "-n", str(admission_path), "-c", "true"],
+                    check=False, text=True, capture_output=True, timeout=5,
+                )
+                self.assertEqual(0, lock_probe.returncode,
+                                 "detached supervisor inherited the autoscaler admission lock")
                 kvm.stop_vm(name, kvm.config())
                 deadline = time.monotonic() + 5
                 while state.exists() and time.monotonic() < deadline:
@@ -206,6 +302,10 @@ class KvmBackendTests(unittest.TestCase):
                     except ChildProcessError:
                         pass
             self.assertFalse(state.exists(), "overlay and bootstrap media must be removed")
+            stop_records = list((state_root / "diagnostics").glob("*.json"))
+            self.assertEqual(1, len(stop_records))
+            self.assertIn(json.loads(stop_records[0].read_text())["reason"],
+                          ("supervisor_signal_15", "forced_stop_cleanup"))
             self.assertNotIn("ghs_", output.getvalue())
             self.assertNotIn("GH_ADMIN_TOKEN", env_capture.read_text())
 

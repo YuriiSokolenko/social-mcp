@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -26,6 +27,11 @@ RUNNER_LABELS = "n150,recursive-coder-ci"
 NAME_RE = re.compile(r"^n150-rc-eph-[A-Za-z0-9-]{1,80}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{20,512}$")
 GUEST_PROXY = "10.0.2.100:3128"
+DIAGNOSTIC_RETENTION = 10
+DIAGNOSTIC_MAX_BYTES = 128 * 1024
+DIAGNOSTIC_TAIL_BYTES = 12 * 1024
+DIAGNOSTIC_SECRET_RE = re.compile(r"(?i)(authorization\s*[:=]\s*(?:(?:bearer|token)\s+)?|(?:token|password|secret|credential|authorization)[\w.-]*\s*[:=]\s*)[^\s]+")
+DIAGNOSTIC_GH_TOKEN_RE = re.compile(r"(?i)\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b")
 QEMU_ENV_KEYS = (
     "KVM_GOLDEN_IMAGE", "KVM_GOLDEN_SHA256", "KVM_STATE_DIR", "KVM_QEMU_BINARY",
     "KVM_QEMU_IMG_BINARY", "KVM_XORRISO_BINARY", "KVM_PROXY_PORT", "KVM_PROXY_BRIDGE",
@@ -150,6 +156,27 @@ instance_id="$(cat /var/lib/cloud/data/instance-id 2>/dev/null || true)"
 if [ -n "$instance_id" ]; then rm -f "/var/lib/cloud/instances/$instance_id/user-data.txt"; fi
 rm -f /run/cloud-init/instance-data-sensitive.json
 rm -f /var/log/cloud-init.log /var/log/cloud-init-output.log
+cat >/usr/local/sbin/runner-shutdown-diagnostics <<'DIAGNOSTICS'
+#!/bin/bash
+set +e
+{{
+  echo '=== runner-shutdown-diagnostics-v1 ==='
+  printf 'service_result=%s exit_code=%s exit_status=%s time=%s\n' \
+    "${{SERVICE_RESULT:-unknown}}" "${{EXIT_CODE:-unknown}}" "${{EXIT_STATUS:-unknown}}" "$(date -u +%FT%TZ)"
+  systemctl show actions-runner.service -p ActiveState -p SubState -p Result -p ExecMainCode -p ExecMainStatus
+  systemctl show systemd-oomd.service -p ActiveState -p SubState -p Result
+  echo '=== memory ==='
+  grep -E 'MemAvailable|SwapFree' /proc/meminfo
+  cat /proc/pressure/memory 2>/dev/null
+  echo '=== filesystem ==='
+  df -h / /home/runner 2>/dev/null
+  echo '=== kernel oom/oomd records ==='
+  journalctl --no-pager -k -b --since '-30 minutes' 2>/dev/null | grep -Ei 'out of memory|oom-kill|killed process|systemd-oomd' | tail -n 80
+  echo '=== runner service failure records ==='
+  journalctl --no-pager -u actions-runner.service -b --since '-30 minutes' 2>/dev/null | grep -Ei 'failed|error|exit|shutdown signal|result|status' | tail -n 80
+}} | sed -E 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/[REDACTED_GITHUB_TOKEN]/g; s/((token|password|secret|authorization)[^ =:]*[=: ]+)[^ ]+/\\1[REDACTED]/Ig' | tail -c 32768 >>/dev/ttyS0 2>/dev/null || true
+DIAGNOSTICS
+chmod 0755 /usr/local/sbin/runner-shutdown-diagnostics
 cat >/etc/systemd/system/actions-runner.service <<'UNIT'
 [Unit]
 Description=Ephemeral GitHub Actions runner
@@ -169,6 +196,7 @@ Environment=NO_PROXY=localhost,127.0.0.1
 ExecStart=/home/runner/actions-runner/run.sh
 # '+' makes systemd run this post-stop command with full privileges even though
 # the long-lived Actions listener runs as the unprivileged runner account.
+ExecStopPost=+/usr/local/sbin/runner-shutdown-diagnostics
 ExecStopPost=+/usr/bin/systemctl --no-block poweroff
 Restart=no
 TimeoutStopSec=20
@@ -278,6 +306,102 @@ def _stop_qemu_if_present(state_dir: Path, pid: int) -> None:
             pass
 
 
+def _redact_diagnostic_text(value: str) -> str:
+    value = DIAGNOSTIC_SECRET_RE.sub("[REDACTED]", value)
+    value = DIAGNOSTIC_GH_TOKEN_RE.sub("[REDACTED_GITHUB_TOKEN]", value)
+    return re.sub(r"/home/runner(?:/[^\s,;]+)?", "[RUNNER_PATH]", value)
+
+
+def _bounded_tail(path: Path, limit: int = DIAGNOSTIC_TAIL_BYTES) -> str:
+    try:
+        with path.open("rb") as source:
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            source.seek(max(0, size - limit))
+            raw = source.read(limit)
+        return _redact_diagnostic_text(raw.decode("utf-8", errors="replace"))[-limit:]
+    except OSError:
+        return ""
+
+
+def _read_cgroup_diagnostics(root: Path = Path("/sys/fs/cgroup")) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for name in ("memory.current", "memory.peak", "memory.swap.current", "memory.events"):
+        try:
+            result[name] = _redact_diagnostic_text((root / name).read_text()[:2048])
+        except OSError:
+            result[name] = "unavailable"
+    return result
+
+
+def preserve_diagnostics(
+    state_dir: Path,
+    reason: str,
+    qemu_exit_status: int | None,
+    *,
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+    now: datetime.datetime | None = None,
+) -> Path | None:
+    """Keep a bounded, sanitized incident record outside disposable VM state."""
+    try:
+        metadata = json.loads((state_dir / "state.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        metadata = {"name": state_dir.name}
+    timestamp = now or datetime.datetime.now(datetime.timezone.utc)
+    diagnostic_root = state_dir.parent / "diagnostics"
+    try:
+        diagnostic_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(diagnostic_root, 0o700)
+        record = {
+            "name": _redact_diagnostic_text(str(metadata.get("name", state_dir.name)))[:128],
+            "created_at": metadata.get("created_at"),
+            "shutdown_at": timestamp.isoformat(),
+            "reason": _redact_diagnostic_text(reason)[:256],
+            "qemu_exit_status": qemu_exit_status,
+            "host_cgroup": _read_cgroup_diagnostics(cgroup_root),
+            "logs": {name: _bounded_tail(state_dir / name)
+                     for name in ("serial.log", "qemu.log", "supervisor.log")},
+        }
+        payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        payload = payload[:DIAGNOSTIC_MAX_BYTES]
+        path = diagnostic_root / f"{state_dir.name}-{time.time_ns()}.json"
+        temp = path.with_suffix(".tmp")
+        temp.write_bytes(payload)
+        os.chmod(temp, 0o600)
+        temp.replace(path)
+        retained = sorted(diagnostic_root.glob("n150-rc-eph-*.json"),
+                          key=lambda item: item.stat().st_mtime, reverse=True)
+        for expired in retained[DIAGNOSTIC_RETENTION:]:
+            expired.unlink(missing_ok=True)
+        return path
+    except OSError:
+        return None
+
+
+def _supervisor_file_actions(output_fd: int) -> list[tuple[int, ...]]:
+    actions = [
+        (os.POSIX_SPAWN_DUP2, output_fd, 1),
+        (os.POSIX_SPAWN_DUP2, output_fd, 2),
+    ]
+    try:
+        open_fds = []
+        for entry in os.listdir("/proc/self/fd"):
+            if entry.isdigit():
+                fd = int(entry)
+                try:
+                    os.fstat(fd)
+                except OSError:
+                    continue
+                open_fds.append(fd)
+    except OSError:
+        open_fds = list(range(3, min(os.sysconf("SC_OPEN_MAX"), 65536)))
+    actions.extend((os.POSIX_SPAWN_CLOSE, fd)
+                   for fd in open_fds if fd > 2 and fd != output_fd)
+    if output_fd > 2:
+        actions.append((os.POSIX_SPAWN_CLOSE, output_fd))
+    return actions
+
+
 def cleanup_state(state_dir: Path) -> None:
     if state_dir.exists():
         shutil.rmtree(state_dir)
@@ -294,6 +418,7 @@ def recover(cfg: dict[str, object]) -> None:
             metadata = json.loads((state_dir / "state.json").read_text())
         except (OSError, json.JSONDecodeError):
             _stop_qemu_if_present(state_dir, 0)
+            preserve_diagnostics(state_dir, "recovery_invalid_metadata", None)
             cleanup_state(state_dir)
             continue
         supervisor_pid = int(metadata.get("supervisor_pid", 0))
@@ -304,6 +429,7 @@ def recover(cfg: dict[str, object]) -> None:
             continue
         if qemu_ok:
             _stop_qemu_if_present(state_dir, qemu_pid)
+        preserve_diagnostics(state_dir, "recovery_orphaned_supervisor", None)
         cleanup_state(state_dir)
 
 
@@ -374,11 +500,7 @@ def start_vm(name: str, token: str, cfg: dict[str, object]) -> None:
                 sys.executable,
                 command,
                 child_env,
-                file_actions=[
-                    (os.POSIX_SPAWN_DUP2, output.fileno(), 1),
-                    (os.POSIX_SPAWN_DUP2, output.fileno(), 2),
-                    (os.POSIX_SPAWN_CLOSE, output.fileno()),
-                ],
+                file_actions=_supervisor_file_actions(output.fileno()),
                 setsid=True,
             )
         metadata["supervisor_pid"] = supervisor_pid
@@ -398,6 +520,7 @@ def start_vm(name: str, token: str, cfg: dict[str, object]) -> None:
                     os.killpg(supervisor_pid, signal.SIGKILL)
                 except OSError:
                     pass
+        preserve_diagnostics(state_dir, "start_failure", None)
         cleanup_state(state_dir)
         raise
 
@@ -405,8 +528,20 @@ def start_vm(name: str, token: str, cfg: dict[str, object]) -> None:
 def supervise(name: str, cfg: dict[str, object]) -> int:
     state_dir = Path(cfg["state"]) / name
     qemu: subprocess.Popen | None = None
+    reason = "supervisor_exit"
+    return_code: int | None = None
+
+    class SupervisorStop(Exception):
+        def __init__(self, signum: int):
+            self.signum = signum
+
+    def handle_stop(signum: int, _frame: object) -> None:
+        raise SupervisorStop(signum)
+
+    previous_sigterm = signal.signal(signal.SIGTERM, handle_stop)
     try:
         if not state_dir.is_dir():
+            reason = "state_missing"
             return 1
         metadata_path = state_dir / "state.json"
         deadline = time.monotonic() + 10
@@ -420,30 +555,43 @@ def supervise(name: str, cfg: dict[str, object]) -> int:
                 pass
             time.sleep(0.05)
         else:
+            reason = "metadata_timeout"
             return 1
         qemu_log = (state_dir / "qemu.log").open("ab", buffering=0)
-        qemu = subprocess.Popen(
-            qemu_command(name, cfg, state_dir), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=qemu_log, close_fds=True,
-        )
-        metadata["qemu_pid"] = qemu.pid
-        _write_state(metadata_path, metadata)
         try:
-            return_code = qemu.wait(timeout=int(cfg["lifetime"]))
-            print(f"QEMU exited name={name} exit={return_code}", flush=True)
-            return return_code
-        except subprocess.TimeoutExpired:
-            print(f"QEMU lifetime limit reached name={name}", flush=True)
-            qemu.terminate()
+            qemu = subprocess.Popen(
+                qemu_command(name, cfg, state_dir), stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=qemu_log, close_fds=True,
+            )
+            metadata["qemu_pid"] = qemu.pid
+            _write_state(metadata_path, metadata)
             try:
-                qemu.wait(timeout=10)
+                return_code = qemu.wait(timeout=int(cfg["lifetime"]))
+                reason = "qemu_exit"
+                print(f"QEMU exited name={name} exit={return_code}", flush=True)
+                return return_code
             except subprocess.TimeoutExpired:
-                qemu.kill()
-                qemu.wait(timeout=10)
-            return 124
+                reason = "lifetime_limit"
+                print(f"QEMU lifetime limit reached name={name}", flush=True)
+                qemu.terminate()
+                try:
+                    qemu.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    qemu.kill()
+                    qemu.wait(timeout=10)
+                return_code = 124
+                return return_code
         finally:
             qemu_log.close()
+    except SupervisorStop as stop:
+        reason = f"supervisor_signal_{stop.signum}"
+        return_code = 128 + stop.signum
+        return return_code
+    except BaseException as error:
+        reason = f"supervisor_exception_{type(error).__name__}"
+        raise
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         if qemu is not None and qemu.poll() is None:
             qemu.terminate()
             try:
@@ -451,6 +599,7 @@ def supervise(name: str, cfg: dict[str, object]) -> int:
             except subprocess.TimeoutExpired:
                 qemu.kill()
                 qemu.wait(timeout=10)
+        preserve_diagnostics(state_dir, reason, return_code)
         cleanup_state(state_dir)
 
 
