@@ -1,10 +1,13 @@
 # Recursive-coder CI pool — issue #793
 
-Status (2026-10-14): **The unprivileged KVM guest passes the exact Bubblewrap probe, full downstream Gradle CI, and two repeated integration suites on a real disposable N150 VM. The owner has since started the dedicated manager. Its first live poll exposed a jq parse error in `queued_jobs()`, and first post-start verification rejected Docker's 128-nanocpu rounding of the 2.25 CPU cap. Fixes and regression tests are in PR #794; do not restart or update the manager until the owner authorizes the commands below. PR #794 remains Draft.**
+Status (2026-10-14): **The owner deployed the dedicated KVM manager and Golden Image v2 on N150. Golden image `noble-server-cloudimg-amd64-prepared-9fc0ce202ba8.img` is SHA-256 pinned to `9fc0ce202ba8def25b126323af21d5a5bb0fb8903cb7367f2fc246ae568e1706`; its v1 parent remains available for rollback. Full live CI passed all three jobs in recursive-coder run [38632973318, attempt 2](https://github.com/YuriiSokolenko/recursive-coder/actions/runs/38632973318/attempts/2), including sandbox E2E.** The v2 image bakes Java 21, Gradle 9.8.1, Node 22.21.1, Python 3.12 and prewarmed Gradle dependencies. The owner subsequently deployed the overlay-only permissions fix and verified that the KVM manager and immutable golden remain valid.
 The guest uses unprivileged user namespaces and a guest-only nftables deny-by-default
 egress policy. VM startup, bounded resources, restricted proxy egress, shutdown and
-overlay cleanup have been exercised. Actions runner registration and a live job
-remain untested because the owner has not supplied the separately scoped PAT.
+overlay cleanup have been exercised. Live Actions registration and job execution
+are now validated. The manager can repeatedly reject further new-VM admissions
+while jobs are queued; the exact guard has not been confirmed, and this is tracked
+in [#795](https://github.com/YuriiSokolenko/social-mcp/issues/795).
+The isolated KVM service must not be confused with Pi, General or Control pools.
 The owner alone performs privileged deployment. The deploy script writes its
 `current` state snapshot only after post-start verification. If verification
 fails on an initial install, retrying `--deploy` is safe after confirming no VM
