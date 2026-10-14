@@ -1137,6 +1137,57 @@ builder preflight test also passed against the staged pinned image. Regression
 logs and the sanitized serial/JUnit summaries are under
 /var/tmp/recursive-coder-kvm-validation on Beelink.
 
+### CI Golden Image v2 — prebaked Kotlin/Node/Python environment
+
+This optional new image does not update the running v1 pool in place.
+It layers onto the immutable v1 golden at
+/var/lib/recursive-coder-kvm/golden/noble-server-cloudimg-amd64-prepared-18db16acc608.img.
+The v1 image remains supported and available for rollback.
+
+The v2 guest builder installs and verifies Gradle 9.8.1 (official SHA-256),
+Node.js 22.21.1 (official SHA-256), the OpenJDK 21 already in Ubuntu v1,
+and a Python 3.12 virtual environment with jsonschema==4.25.1.
+It resolves and compiles Gradle test classpaths from the public
+recursive-coder dev commit 3028a05e602a9572ba41bc1f3daa28d0fdb762c0
+using --max-workers=1 and -Dorg.gradle.jvmargs=-Xmx1g. Only executable
+toolchains, cache and version/provenance manifest are retained.
+The checkout, test outputs, build user home and cloud-init identities are
+removed before image capture. No GitHub runner token is supplied to builder.
+
+At boot, kvm-backend.py verifies the optional v2 manifest, and a systemd
+drop-in exposes the baked PATH, JAVA_HOME and GRADLE_USER_HOME to the
+ephemeral runner. v1 bootstrap behavior remains unchanged.
+
+When the recursive-coder Actions queue is empty and the KVM VM list is empty,
+update the PR #794 checkout on Beelink and build the v2 candidate:
+
+~~~bash
+cd /home/yurasik/github-runners/social-mcp-pr-794
+git status --short
+git pull --ff-only
+bash tests/test_build_recursive_coder_kvm_golden.sh
+python3 -m unittest discover -s tests -p 'test_kvm_backend.py' -v
+infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --dry-run-v2
+infra/github-runner-autoscaler/build-recursive-coder-kvm-golden.sh --build-v2
+~~~
+
+Record CANDIDATE and SHA256 output. The builder uses restricted QEMU
+networking, an HTTPS allowlist-only proxy, 2 vCPUs and 4 GiB memory.
+Run --verify and qemu-img check on the new candidate and smoke-test it
+in a disposable VM before promoting or deploying it. Use the new v2
+digest and filename in the deployment .env, NOT the v1 digest.
+
+Matching download-free workflow changes are staged on the recursive-coder
+branch feat/ci-golden-v2-workflow, based on PR #68. No PR was opened
+for this branch yet: its baked-only preflight would fail on v1 and
+prematurely trigger CI. Open the app PR only when the v2 guest is ready.
+CI still needs network for GitHub actions and new, uncached dependencies.
+
+For acceptance compare VM launch-to-job start, setup/download duration,
+all three jobs, JUnit artifacts and automatic VM cleanup. Keep v1
+available for rollback. Do not merge infrastructure PR #794 before
+live acceptance.
+
 ### Owner-only promotion and deployment
 
 Promotion and production deployment remain owner-operated. Do not proceed
