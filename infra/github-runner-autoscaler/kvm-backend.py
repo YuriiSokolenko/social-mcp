@@ -116,19 +116,19 @@ cat >/etc/apt/apt.conf.d/90runner-proxy <<'APT'
 Acquire::http::Proxy \"http://{GUEST_PROXY}/\";
 Acquire::https::Proxy \"http://{GUEST_PROXY}/\";
 APT
-stage() {{ printf 'kvm_bootstrap_stage=%s guest_uptime_s=%s\n' "$1" "$(cut -d' ' -f1 /proc/uptime)" >>/dev/ttyS0 2>/dev/null || true; }}
+stage() {{ printf 'kvm_bootstrap_stage=%s guest_uptime_s=%s\\n' "$1" "$(cut -d' ' -f1 /proc/uptime)" >>/dev/ttyS0 2>/dev/null || true; }}
 stage provisioning_start
 # A prepared golden is immutable and digest-pinned by verify_image(). Never bake
 # ephemeral runner registration, identity keys, job workspaces, or credentials.
 prepared_runner=""
 if [ -e /opt/recursive-coder-kvm/prepared.manifest ]; then
   expected_manifest='schema=1 runner={RUNNER_VERSION} sha256={RUNNER_SHA256}'
-  [ "$(cat /opt/recursive-coder-kvm/prepared.manifest)" = "$expected_manifest" ] || exit 1
+  [ "$(cat /opt/recursive-coder-kvm/prepared.manifest)" = "$expected_manifest" ]
   prepared_runner=/opt/recursive-coder-kvm/actions-runner.tar.gz
-  [ -f "$prepared_runner" ] || exit 1
+  [ -f "$prepared_runner" ]
   echo '{RUNNER_SHA256}  /opt/recursive-coder-kvm/actions-runner.tar.gz' | sha256sum -c -
   for required in git jq nft bwrap java python3 curl eject runuser; do
-    command -v "$required" >/dev/null || exit 1
+    command -v "$required" >/dev/null
   done
   stage prepared_golden_verified
 else
