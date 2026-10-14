@@ -116,22 +116,47 @@ cat >/etc/apt/apt.conf.d/90runner-proxy <<'APT'
 Acquire::http::Proxy \"http://{GUEST_PROXY}/\";
 Acquire::https::Proxy \"http://{GUEST_PROXY}/\";
 APT
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-  bash bubblewrap ca-certificates curl eject git jq nftables openjdk-21-jdk procps python3 python3-pip \\
-  python3-venv tar unzip xz-utils libatomic1 libcurl4 libgcc-s1 libicu74 \\
-  libkrb5-3 liblttng-ust1 libssl3t64 libstdc++6 libunwind8 zlib1g libbz2-1.0 \\
-  libffi8 liblzma5 libreadline8t64 libsqlite3-0 libncursesw6 libgdbm6t64 libuuid1
+stage() {{ printf 'kvm_bootstrap_stage=%s guest_uptime_s=%s\\n' "$1" "$(cut -d' ' -f1 /proc/uptime)" >>/dev/ttyS0 2>/dev/null || true; }}
+stage provisioning_start
+# A prepared golden is immutable and digest-pinned by verify_image(). Never bake
+# ephemeral runner registration, identity keys, job workspaces, or credentials.
+prepared_runner=""
+if [ -e /opt/recursive-coder-kvm/prepared.manifest ]; then
+  expected_manifest='schema=1 runner={RUNNER_VERSION} sha256={RUNNER_SHA256}'
+  [ "$(cat /opt/recursive-coder-kvm/prepared.manifest)" = "$expected_manifest" ] || exit 1
+  prepared_runner=/opt/recursive-coder-kvm/actions-runner.tar.gz
+  [ -f "$prepared_runner" ] || exit 1
+  echo '{RUNNER_SHA256}  /opt/recursive-coder-kvm/actions-runner.tar.gz' | sha256sum -c -
+  for required in git jq nft bwrap java python3 curl eject runuser; do
+    command -v "$required" >/dev/null || exit 1
+  done
+  stage prepared_golden_verified
+else
+  stage apt_start
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
+    bash bubblewrap ca-certificates curl eject git jq nftables openjdk-21-jdk procps python3 python3-pip \\
+    python3-venv tar unzip xz-utils libatomic1 libcurl4 libgcc-s1 libicu74 \\
+    libkrb5-3 liblttng-ust1 libssl3t64 libstdc++6 libunwind8 zlib1g libbz2-1.0 \\
+    libffi8 liblzma5 libreadline8t64 libsqlite3-0 libncursesw6 libgdbm6t64 libuuid1
+  stage apt_complete
+fi
 useradd --create-home --uid 1001 --shell /bin/bash runner
 usermod --lock --shell /usr/sbin/nologin ubuntu
 gpasswd --delete ubuntu sudo >/dev/null 2>&1 || true
 install -d -o runner -g runner -m 0755 /home/runner/actions-runner
-curl -fsSL --retry 3 \\
-  https://github.com/actions/runner/releases/download/v{RUNNER_VERSION}/actions-runner-linux-x64-{RUNNER_VERSION}.tar.gz \\
-  -o /tmp/actions-runner.tar.gz
-echo '{RUNNER_SHA256}  /tmp/actions-runner.tar.gz' | sha256sum -c -
-tar -xzf /tmp/actions-runner.tar.gz -C /home/runner/actions-runner
-rm -f /tmp/actions-runner.tar.gz
+stage runner_package_start
+if [ -n "$prepared_runner" ]; then
+  tar -xzf "$prepared_runner" -C /home/runner/actions-runner
+else
+  curl -fsSL --retry 3 \\
+    https://github.com/actions/runner/releases/download/v{RUNNER_VERSION}/actions-runner-linux-x64-{RUNNER_VERSION}.tar.gz \\
+    -o /tmp/actions-runner.tar.gz
+  echo '{RUNNER_SHA256}  /tmp/actions-runner.tar.gz' | sha256sum -c -
+  tar -xzf /tmp/actions-runner.tar.gz -C /home/runner/actions-runner
+  rm -f /tmp/actions-runner.tar.gz
+fi
+stage runner_package_complete
 chown -R runner:runner /home/runner/actions-runner
 chmod 0755 /usr/bin/bwrap
 chown root:root /usr/bin/bwrap
@@ -144,12 +169,14 @@ runuser -u runner -- /usr/bin/bwrap --die-with-parent --new-session --unshare-al
   --ro-bind /usr /usr --ro-bind /bin /bin \\
   --ro-bind /lib /lib --ro-bind /lib64 /lib64 \\
   -- /usr/bin/true
+stage runner_registration_start
 token="$(base64 -d /var/lib/runner-bootstrap/token.b64)"
 ACTIONS_RUNNER_INPUT_TOKEN="$token" runuser -u runner --preserve-environment -- \\
   /home/runner/actions-runner/config.sh \\
   --url {RUNNER_URL} --name {name} --labels {RUNNER_LABELS} \\
   --ephemeral --disableupdate --unattended --work _work
 unset token
+stage runner_registration_complete
 shred -u /var/lib/runner-bootstrap/token.b64
 rm -rf /var/lib/runner-bootstrap
 eject -r /dev/sr0 >/dev/null 2>&1 || true
@@ -226,6 +253,7 @@ systemctl enable actions-runner.service
 # cloud-final is still running this bootstrap, so do not synchronously start a
 # unit ordered After=cloud-final.service. A transient timer starts it once
 # cloud-init has returned and systemd has completed cloud-final.
+stage runner_ready
 systemd-run --quiet --unit=actions-runner-delayed-start --on-active=10s \\
   /usr/bin/systemctl start actions-runner.service
 """
