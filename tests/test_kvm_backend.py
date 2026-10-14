@@ -147,10 +147,15 @@ class KvmBackendTests(unittest.TestCase):
             }))
             (state / "serial.log").write_text(
                 "z" * (kvm.DIAGNOSTIC_TAIL_BYTES * 3) + "\n"
+                "kvm_bootstrap_stage=apt_start uptime=2.0\n"
+                "=== runner-shutdown-diagnostics-v1 ===\n"
+                "service_result=signal exit_code=killed exit_status=9\n"
                 "/home/runner/_work/project/private-file\n"
                 "kernel: Out of memory: Killed process 42 (java)\n"
                 "runner failed github_pat_" + "y" * 36 + "\n"
                 "authorization: Bearer abcdefghijklmnop\n"
+                "=== runner-shutdown-diagnostics-end ===\n"
+                + "systemd: Reached shutdown.target\n" * 1000
             )
             cgroup = root / "cgroup"
             cgroup.mkdir()
@@ -165,6 +170,12 @@ class KvmBackendTests(unittest.TestCase):
             self.assertFalse((state / "root.qcow2").exists())
             payload = output.read_text()
             self.assertIn("Out of memory", payload)
+            incident = json.loads(payload)
+            self.assertTrue(incident["guest_evidence"]["shutdown_marker_found"])
+            self.assertIn("exit_status=9", incident["guest_evidence"]["shutdown_details"])
+            self.assertIn("kvm_bootstrap_stage=apt_start", incident["guest_evidence"]["bootstrap_stages"])
+            self.assertNotIn("service_result=", incident["logs"]["serial.log"],
+                             "A long systemd shutdown should displace the old serial tail")
             self.assertIn("oom_kill 1", payload)
             self.assertIn("[REDACTED_GITHUB_TOKEN]", payload)
             self.assertNotIn("github_pat_", payload)
