@@ -52,6 +52,10 @@ test "$("$base/node-v22.21.1-linux-x64/bin/node" --version)" = v22.21.1
 rm -f /tmp/gradle.zip /tmp/node.tar.xz
 stage BUILDER_RUNNER_INSTALL_END
 
+# All JVM tiers share the 'test' source set. The real tasks are testClasses,
+# unitTest, integrationTest and e2eTest; there is no integrationTestClasses or
+# e2eTestClasses. Compile testClasses without executing suites and prebuild the
+# CLI distribution; this warms Gradle/Java/Kotlin artifacts for all three tiers.
 # Resolve and compile trusted, pinned public source only. Never bake the
 # checkout, a work directory, registration tokens or Git identity into image.
 useradd --create-home --uid 1001 --shell /bin/bash runner
@@ -71,7 +75,7 @@ runuser -u runner -- env \
   http_proxy="$proxy" https_proxy="$proxy" HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" \
   bash -c 'cd /tmp/recursive-coder-warm/src &&
     ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.jvmargs=-Xmx1g \
-      testClasses integrationTestClasses e2eTestClasses --stacktrace'
+      testClasses :app:cli:installDist --stacktrace'
 stage BUILDER_V2_CACHE_END
 # Repeat the sandbox probe on the v2 layer; never mark it successful without executing it.
 sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
