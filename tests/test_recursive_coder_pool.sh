@@ -19,7 +19,7 @@ api_get() {
   esac
 }
 cat > "$fixture/jobs.json" <<'JSON'
-{"total_count":12,"jobs":[
+{"total_count":11,"jobs":[
  {"status":"queued","labels":["self-hosted","linux","x64","n150","recursive-coder-ci"]},
  {"status":"queued","labels":["SELF-HOSTED","Linux","X64","N150","recursive-coder-ci"]},
  {"status":"queued","labels":["self-hosted","linux","x64","n150","recursive-coder-ci"]},
