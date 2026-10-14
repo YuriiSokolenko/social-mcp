@@ -61,6 +61,12 @@ runuser -u runner -- env \
     ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.jvmargs=-Xmx1g \
       testClasses integrationTestClasses e2eTestClasses --stacktrace'
 stage BUILDER_V2_CACHE_END
+# Repeat the sandbox probe on the v2 layer; never mark it successful without executing it.
+sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+runuser -u runner -- /usr/bin/bwrap --die-with-parent --new-session --unshare-all \
+  --tmpfs / --proc /proc --dev /dev --ro-bind /usr /usr --ro-bind /bin /bin \
+  --ro-bind /lib /lib --ro-bind /lib64 /lib64 -- /usr/bin/true
+echo BUILDER_BWRAP_PROBE=PASS >>/dev/ttyS0
 # Only artifact/dependency caches remain; discard source, compiler outputs,
 # Gradle daemon locks, runner home, git config, logs and identities.
 rm -rf /tmp/recursive-coder-warm /home/runner
@@ -74,12 +80,14 @@ sha256sum "$base/toolchain-v2.manifest" | awk '{print "BUILDER_V2_MANIFEST_SHA25
 echo BUILDER_V2_TOOLCHAIN=PASS >>/dev/ttyS0
 
 # A clone/virtualenv is never allowed to carry a secret into the golden image.
+dpkg-query -W -f='${binary:Package}=${Version}\n' | sort >/var/lib/dpkg-package-manifest.txt
+chmod 0444 /var/lib/dpkg-package-manifest.txt
+sha256sum /var/lib/dpkg-package-manifest.txt | awk '{print "BUILDER_PACKAGES_SHA256="$1}' >>/dev/ttyS0
 rm -f /etc/apt/apt.conf.d/90builder-proxy /etc/ssh/ssh_host_* /var/lib/dbus/machine-id
 rm -f /var/lib/kvm-image-builder.sh
 cloud-init clean --logs --machine-id --seed
 rm -rf /var/lib/cloud /var/log/cloud-init.log /var/log/cloud-init-output.log
 truncate -s 0 /etc/machine-id
 sync
-echo BUILDER_BWRAP_PROBE=PASS >>/dev/ttyS0
 echo BUILDER_IMAGE_READY=PASS >>/dev/ttyS0
 systemctl poweroff --force
