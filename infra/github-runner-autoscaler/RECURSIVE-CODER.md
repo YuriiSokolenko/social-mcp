@@ -980,3 +980,53 @@ VM, job completion, JUnit artifacts, overlay cleanup, and unchanged Pi/General/
 Control IDs and health. If the job is still active, wait for completion; do not
 force-stop or redeploy around it. This PR remains Draft and has not been
 deployed by Codex.
+
+## Faster KVM bootstrap (prepared golden opt-in) — not yet deployed
+
+The cold guest from the pinned stock Ubuntu cloud image still installs packages with
+`apt-get` and downloads the pinned Actions runner for **every** ephemeral VM.
+The repository now supports an opt-in *prepared* immutable golden image, but the
+current stock image is unchanged; no speed improvement has been claimed or measured
+on the live N150 KVM pool yet.
+
+A prepared image must contain the same prerequisites required by `cloud_init()`
+(including Java 21, bubblewrap, Git, Python, nftables, jq and their dependencies),
+plus the **unchanged upstream pinned runner tarball**, stored at
+`/opt/recursive-coder-kvm/actions-runner.tar.gz`. Its root-owned
+`/opt/recursive-coder-kvm/prepared.manifest` must consist of one exact line:
+
+```text
+schema=1 runner=2.338.0 sha256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
+```
+
+The image must **not** contain a configured runner, registration token, generated
+runner identity/private key, GitHub PAT, workspace, cloud-init user-data, or
+per-job credentials. At every ephemeral boot the manager must verify the golden
+image SHA-256; guest bootstrap then validates the manifest, runner archive digest
+and essential prerequisites before it skips package installation and download.
+Malformed or incomplete prepared images must **fail closed**; there is no silent
+fallback to network provisioning when the marker exists.
+
+The existing `prepare-recursive-coder-kvm.sh` and
+`deploy-recursive-coder-kvm.sh` still pin the *stock* image checksum. A new
+prepared image requires a separately tested and reviewed, owner-operated staging
+and digest-pinning procedure; do not replace the running golden image in place
+or relax ownership, permissions, network isolation or the pinned digest.
+Use a distinct filename and roll-back-safe image selection if staging a second
+image. The original stock-image bootstrap remains the compatible fallback.
+
+New `kvm_bootstrap_stage=<stage> guest_uptime_s=<seconds>` entries on the
+guest serial console measure provisioning, apt, runner package handling,
+registration and readiness. After shutdown, the private incident JSON records a
+bounded `guest_evidence.bootstrap_stages` array and the separately retained
+`guest_evidence.shutdown_details` section, even if late systemd poweroff
+messages displace the original 12-KiB serial tail. Check these records to compare
+cold-start times before/after, identify unexpected exits, and avoid guesswork.
+
+Acceptance requires building a **credential-free** golden image from a disposable
+trusted builder; checking its package provenance, package/runner hashes and image
+contents; local regression tests and a real KVM boot with Bubblewrap and
+deny-by-default proxy checks; owner approval for a dedicated-manager-only
+deployment in a quiet window; and successful live CI including all three jobs,
+JUnit artifacts, proper unregistration, VM cleanup and unchanged existing pools.
+Do not raise the CPU/RAM/time limits simply to mask failing or hanging tests.
