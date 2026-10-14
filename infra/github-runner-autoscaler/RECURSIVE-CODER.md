@@ -58,8 +58,9 @@ mounts. Run 38485469883 had three queued jobs and no artifacts; no VM directory
 was present in `/kvm-state` (only `preparation.json` and `prepare.lock`). The
 deployment metadata directory `/var/lib/recursive-coder-kvm-deploy` is
 root-owned mode 0700, so its `current`/`previous` entries could not be inspected
-without owner privilege. The failed initial verification occurs before the
-script writes `current`; the owner should check root-only metadata before
+without owner privilege. A failed post-start verification happens before the
+new `current` snapshot is committed, though a `current` from an older successful
+deployment may remain. The owner should inspect root-only metadata before
 updating, without printing the protected `.env` contents.
 
 Owner-only metadata inspection (names, ownership, modes and sizes only; this
