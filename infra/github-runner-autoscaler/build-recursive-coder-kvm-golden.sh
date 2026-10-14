@@ -31,14 +31,33 @@ PYDIAG
   exit 1
 }
 sha(){ sha256sum -- "$1" | awk '{print $1}'; }
+# Terminate only processes created by this builder. Do not wait indefinitely
+# for QEMU on interrupted builds or on failure during cloud-init.
+terminate_child(){
+  local pid="${1:-}" attempt
+  [[ -n "$pid" ]] || return 0
+  kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null || true; return 0; }
+  kill -TERM "$pid" 2>/dev/null || true
+  for ((attempt=0; attempt<40; attempt++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
 cleanup(){
-  if [[ -n "$qemu_pid" ]] && kill -0 "$qemu_pid" 2>/dev/null; then kill -TERM "$qemu_pid" 2>/dev/null || true; wait "$qemu_pid" 2>/dev/null || true; fi
-  if [[ -n "$proxy_pid" ]] && kill -0 "$proxy_pid" 2>/dev/null; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi
+  trap - INT TERM
+  terminate_child "$qemu_pid"
+  terminate_child "$proxy_pid"
   [[ -z "$promote_image_tmp" || ! -e "$promote_image_tmp" ]] || rm -f -- "$promote_image_tmp"
   [[ -z "$promote_prov_tmp" || ! -e "$promote_prov_tmp" ]] || rm -f -- "$promote_prov_tmp"
   [[ -z "$tmp" || ! -e "$tmp" ]] || rm -rf -- "$tmp"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 usage(){ echo "Usage: $0 [--dry-run|--dry-run-v2|--build|--build-v2|--verify CANDIDATE|--promote-dry-run CANDIDATE|--promote CANDIDATE]"; }
 check_host(){
   [[ "$(uname -m)" = x86_64 ]] || fail 'requires x86_64'
