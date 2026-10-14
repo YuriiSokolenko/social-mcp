@@ -10,6 +10,17 @@ gradle_sha=dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f
 node_sha=680d3f30b24a7ff24b98db5e96f294c0070f8f9078df658da1bce1b9c9873c88
 source_sha=3028a05e602a9572ba41bc1f3daa28d0fdb762c0
 stage() { echo "$1=$(cut -d' ' -f1 /proc/uptime)" >>/dev/ttyS0; }
+# Cloud-init scripts_user does not power off on a nonzero exit. Always
+# terminate a failed disposable builder guest, so the host can preserve its
+# serial failure evidence instead of hitting the 20-minute lifetime limit.
+fail_and_poweroff() {
+  code="$?"
+  trap - ERR
+  printf 'BUILDER_V2_FAILED_EXIT=%s\n' "$code" >>/dev/ttyS0 || true
+  systemctl poweroff --force || poweroff -f || true
+  exit "$code"
+}
+trap fail_and_poweroff ERR
 stage BUILDER_BOOTSTRAP_START
 cat >/etc/apt/apt.conf.d/90builder-proxy <<'APT'
 Acquire::http::Proxy "http://10.0.2.100:3128/";
