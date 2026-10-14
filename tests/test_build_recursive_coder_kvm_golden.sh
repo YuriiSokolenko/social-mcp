@@ -52,4 +52,28 @@ if [[ -n "${KVM_BUILDER_TEST_PINNED_IMAGE:-}" ]]; then
   KVM_BUILDER_BASE_IMAGE="$KVM_BUILDER_TEST_PINNED_IMAGE" KVM_BUILDER_OUTPUT_DIR="$pinned_output" bash "$builder" --dry-run >"$tmp/output" 2>&1 || { cat "$tmp/output" >&2; fail 'builder rejected the staged pinned read-only image'; }
   grep -Fq 'Read-only preflight passed' "$tmp/output" || fail 'pinned dry-run did not complete'
 fi
+# v2 must build from the v1 image, pin all downloaded toolchains,
+# warm a trusted public revision and scrub guest identities before capture.
+v2="$root/infra/github-runner-autoscaler/recursive-coder-golden-v2-guest.sh"
+bash -n "$v2" || fail 'v2 guest bootstrap shell syntax is invalid'
+grep -Fq -- '--build-v2' "$builder" || fail 'v2 build mode missing'
+grep -Fq -- '--dry-run-v2' "$builder" || fail 'v2 preflight mode missing'
+grep -Fq 'toolchain_manifest_sha256' "$builder" || fail 'v2 provenance is not verified'
+grep -Fq 'recursive-coder-golden-v2-guest.sh' "$builder" || fail 'v2 guest script is not embedded in cloud-init'
+grep -Fq 'dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f' "$v2" || fail 'Gradle 9.8.1 checksum is missing'
+grep -Fq '680d3f30b24a7ff24b98db5e96f294c0070f8f9078df658da1bce1b9c9873c88' "$v2" || fail 'Node 22 checksum is missing'
+grep -Fq 'sha256sum -c -' "$v2" || fail 'v2 downloads are not checksum verified'
+grep -Fq '3028a05e602a9572ba41bc1f3daa28d0fdb762c0' "$v2" || fail 'prewarm source revision is not pinned'
+grep -Fq 'GRADLE_USER_HOME="$base/gradle-home"' "$v2" || fail 'v2 dependency cache is not captured'
+grep -Fq 'testClasses integrationTestClasses e2eTestClasses' "$v2" || fail 'all Kotlin test tiers are not prewarmed'
+grep -Fq 'runuser -u runner -- /usr/bin/bwrap' "$v2" || fail 'v2 Bubblewrap probe is missing'
+grep -Fq 'cloud-init clean --logs --machine-id --seed' "$v2" || fail 'v2 does not scrub cloud-init identity'
+grep -Fq 'rm -rf /tmp/recursive-coder-warm /home/runner' "$v2" || fail 'builder is retaining source and runner home'
+if grep -E 'ACTIONS_RUNNER_INPUT_TOKEN|RECURSIVE_CODER_GH_ADMIN_TOKEN|hostfwd|docker.sock' "$v2"; then
+  fail 'v2 build embeds credentials or a host-escape interface'
+fi
+if KVM_BUILDER_V1_IMAGE="$tmp/wrong.img" KVM_BUILDER_OUTPUT_DIR="$tmp/out" bash "$builder" --dry-run-v2 >"$tmp/output" 2>&1; then
+  fail 'v2 accepted an unpinned parent image'
+fi
+grep -Fq 'stock image digest mismatch' "$tmp/output" || fail 'v2 pinned parent was not validated'
 echo 'recursive-coder KVM golden builder checks passed'
