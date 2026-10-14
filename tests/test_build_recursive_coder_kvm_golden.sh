@@ -65,7 +65,10 @@ grep -Fq '680d3f30b24a7ff24b98db5e96f294c0070f8f9078df658da1bce1b9c9873c88' "$v2
 grep -Fq 'sha256sum -c -' "$v2" || fail 'v2 downloads are not checksum verified'
 grep -Fq '3028a05e602a9572ba41bc1f3daa28d0fdb762c0' "$v2" || fail 'prewarm source revision is not pinned'
 grep -Fq 'GRADLE_USER_HOME="$base/gradle-home"' "$v2" || fail 'v2 dependency cache is not captured'
-grep -Fq 'testClasses integrationTestClasses e2eTestClasses' "$v2" || fail 'all Kotlin test tiers are not prewarmed'
+grep -Fq 'testClasses :app:cli:installDist' "$v2" || fail 'v2 must prewarm actual JVM test classes and the CLI distribution'
+if grep -Eq '(^|[[:space:]])(integrationTestClasses|e2eTestClasses)([[:space:]]|$)' "$v2"; then
+  fail 'v2 builder invokes nonexistent integrationTestClasses/e2eTestClasses tasks'
+fi
 grep -Fq 'runuser -u runner -- /usr/bin/bwrap' "$v2" || fail 'v2 Bubblewrap probe is missing'
 grep -Fq 'cloud-init clean --logs --machine-id --seed' "$v2" || fail 'v2 does not scrub cloud-init identity'
 grep -Fq 'rm -rf /tmp/recursive-coder-warm /home/runner' "$v2" || fail 'builder is retaining source and runner home'
