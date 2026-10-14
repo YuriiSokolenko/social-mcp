@@ -60,6 +60,7 @@ class KvmBackendTests(unittest.TestCase):
         self.assertIn("baked_ci_toolchain_verified", userdata)
         self.assertIn("10-baked-ci-tools.conf", userdata)
         self.assertIn("GRADLE_USER_HOME=/opt/recursive-coder-kvm/gradle-home", userdata)
+        self.assertIn("GRADLE_OPTS=-Dorg.gradle.workers.max=1 -Dorg.gradle.jvmargs=-Xmx1g", userdata)
         self.assertIn("node-v22.21.1-linux-x64/bin", userdata)
         self.assertIn("gradle-9.8.1/bin", userdata)
         self.assertIn("python/bin", userdata)
