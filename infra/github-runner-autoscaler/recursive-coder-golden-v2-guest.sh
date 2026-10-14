@@ -56,6 +56,7 @@ runuser -u runner -- env \
   PATH="$base/gradle-9.8.1/bin:$base/node-v22.21.1-linux-x64/bin:/usr/local/bin:/usr/bin:/bin" \
   GRADLE_USER_HOME="$base/gradle-home" \
   JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
+  JAVA_TOOL_OPTIONS='-Dhttp.proxyHost=10.0.2.100 -Dhttp.proxyPort=3128 -Dhttps.proxyHost=10.0.2.100 -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=localhost|127.*' \
   http_proxy="$proxy" https_proxy="$proxy" HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" \
   bash -c 'cd /tmp/recursive-coder-warm/src &&
     ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.jvmargs=-Xmx1g \
