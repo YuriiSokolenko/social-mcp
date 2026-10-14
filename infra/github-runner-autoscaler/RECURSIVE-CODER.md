@@ -588,8 +588,9 @@ TOKEN_ENCRYPTION_KEY=validation-only-placeholder-no-auth docker compose --env-fi
 ## Final resource and deployment safety review — 2026-10-14
 
 Beelink reports Docker cgroup v2 with the systemd cgroup driver, 4 CPUs, 14 GiB
-RAM, 12 GiB `MemAvailable`, and a 4 GiB `/swap.img` with 208 MiB used at the
-review snapshot. Load averages were `1.08, 0.60, 0.39`. The Pi and General
+RAM, 12 GiB `MemAvailable`, and a 4 GiB `/swap.img` with 208 KiB used at the
+review snapshot. Load averages were `1.08, 0.60, 0.39` initially and
+`1.12, 0.76, 0.55` after regression testing. The Pi and General
 manager containers report no explicit Docker memory, swap, or CPU quota; these
 existing pools were not changed. No KVM manager was deployed at the time of this
 inspection. The golden parent `/var/lib/recursive-coder-kvm` is root-owned mode
@@ -610,6 +611,14 @@ manager from consuming all 4 GiB of host swap by itself. This is a hard bound,
 not a guarantee that other host workloads can never cause swapping. See the
 [Docker resource constraints reference](https://docs.docker.com/engine/containers/resource_constraints).
 
+On Beelink, Docker resolved this service to 5,368,709,120 bytes RAM,
+8,589,934,592 bytes total RAM+swap, and 2.25 CPUs. A separate disposable,
+network-disabled pressure probe with a 128 MiB RAM / 160 MiB total cap reported
+`memory.max=134217728` and `memory.swap.max=33554432`; it allocated and touched
+96 MiB while staying under its cgroup limit, then was removed. The actual KVM
+manager is not deployed, so its cgroup values will be asserted again by
+deployment `--verify`. No production container was used as the pressure target.
+
 KVM admission fails closed unless `MemAvailable` covers the 5 GiB manager RAM
 budget plus a 3 GiB host reserve, the 1-minute load plus two guest vCPUs and one
 CPU headroom fits within four online CPUs, the existing 11 ephemeral slots plus
@@ -619,7 +628,9 @@ memory below the admission threshold and asserts refusal; no pressure was
 applied to live services. The Beelink snapshot had enough available memory, but
 its 1-minute load of 1.08 exceeded the current CPU admission threshold of 1.0,
 so a live start at that instant would correctly defer. Existing Docker pools
-retain their prior resource settings.
+retain their prior resource settings. The updated admission regression passed
+on Linux for available memory below the 8 GiB threshold and malformed memory
+input; no live host memory pressure was applied.
 
 The 1800-second QEMU lifetime exceeds the downstream workflow's longest
 20-minute job timeout by 10 minutes. The previous full guest validation, from
@@ -793,21 +804,29 @@ network/lifecycle results. The downstream workflow artifact change is in Draft P
 `test`, `integrationTest`, and `e2eTest` XML under `if: always()`.
 
 The Beelink regression suite was rerun from the Linux checkout at
-`9c0891cd8fec0562efcf2f89ddb1687eb920a2eb` (the KVM implementation under test is
-unchanged from this PR head). `tests/test_runner_autoscaler.sh`,
+`ef1c34c8df30618e1e141f4f10d5d230f38529f3`. `tests/test_runner_autoscaler.sh`,
 `tests/test_recursive_coder_pool.sh`, `tests/test_recursive_coder_kvm_pool.sh`,
 `tests/test_recursive_coder_kvm_deploy.sh`, and
 `tests/test_prepare_recursive_coder_kvm.sh` all exited 0. The Python unittest
 set passed 25/25; Python AST parsing passed for all 38 Python files under the
 autoscaler and tests directories. Workflow-integrity pytest passed 4/4 using
-pytest 9.1.1, PyYAML 6.0.3, and pytest-asyncio 1.4.0. Compose config rendering
-passed with a nonsecret placeholder for the required encryption key.
+pytest 9.1.1, PyYAML 6.0.3, and pytest-asyncio 1.4.0. Both the KVM Compose
+profile and repository Compose config rendered successfully with nonsecret-only
+placeholders.
 
-The existing container IDs and health states matched the pre-test snapshot. The
-one-off diagnostics image was removed after validation. ShellCheck 0.9.0 ran in
-an isolated container. The broad default scan over implementation and test
-scripts exited 1 with 22 SC2034 warnings and 257 informational findings, mostly
-SC2317 reports for test functions invoked through dynamically sourced manager
-code. No suppressions were added. The three production KVM scripts passed
-`shellcheck --severity=warning` with exit 0. This records the broad scan's real
-status instead of describing it only as advisory.
+The pre/post regression container name/ID lists and Pi, General, and Control
+manager IDs/start times matched. Rabbit logger remained unhealthy and Rabbit
+viewer healthy, unchanged. Host memory/swap stayed at 12 GiB available and 208
+KiB swap used; root storage had 190 GiB free. No KVM manager, QEMU process,
+overlay, validation container, or diagnostics image remained. The unprivileged
+deployment dry-run failed before Docker access because the prepared golden
+directory's root-only parent is not traversable by the SSH user; the owner
+should run this read-only preflight with `sudo`. No privileged command was run.
+
+ShellCheck 0.10.0 ran in a disposable container with the source mounted
+read-only. The three production KVM scripts passed `shellcheck
+--severity=warning`. The broad default scan across those scripts and five
+regression scripts exited 1 with 22 SC2034 warnings and 259 informational
+findings: SC2317 215, SC2016 19, SC2015 17, SC1091 2, SC2012 2, SC2030 2, and
+SC2031 2. Most are indirect test functions invoked through the sourced manager.
+No suppressions were added.
