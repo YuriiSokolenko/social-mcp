@@ -245,7 +245,16 @@ PY
  echo "TIMING_VM_BOOT_TO_BOOTSTRAP_SECONDS=$boot_elapsed"
  echo "TIMING_VM_RUN_TO_SHUTDOWN_SECONDS=$vm_elapsed"
  echo "TIMING_APT_PROVISION_SECONDS=$apt_elapsed"
- echo "TIMING_RUNNER_ARCHIVE_INSTALL_SECONDS=$runner_elapsed"
+ if [[ "$mode" = --build-v2 ]]; then
+   cache_start="$(marker BUILDER_V2_CACHE_START)"
+   cache_end="$(marker BUILDER_V2_CACHE_END)"
+   [[ "$cache_start" =~ ^[0-9]+([.][0-9]+)?$ && "$cache_end" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail 'v2 cache timing markers missing'
+   cache_elapsed="$(python3 -c 'import sys; print(round(float(sys.argv[2])-float(sys.argv[1]),1))' "$cache_start" "$cache_end")"
+   echo "TIMING_V2_TOOLCHAINS_INSTALL_SECONDS=$runner_elapsed"
+   echo "TIMING_V2_DEPENDENCY_PREWARM_SECONDS=$cache_elapsed"
+ else
+   echo "TIMING_RUNNER_ARCHIVE_INSTALL_SECONDS=$runner_elapsed"
+ fi
  echo "TIMING_REGISTRATION=not-measured-no-credentials"
  echo "TIMING_GITHUB_JOB_READINESS=not-measured-no-live-runner-registration"
  echo 'Stock golden unchanged.' ;;
