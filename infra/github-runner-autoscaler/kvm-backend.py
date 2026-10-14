@@ -249,6 +249,7 @@ if [ -e /opt/recursive-coder-kvm/toolchain-v2.manifest ]; then
 [Service]
 Environment="PATH=/opt/recursive-coder-kvm/gradle-9.8.1/bin:/opt/recursive-coder-kvm/node-v22.21.1-linux-x64/bin:/opt/recursive-coder-kvm/python/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="GRADLE_USER_HOME=/opt/recursive-coder-kvm/gradle-home"
+Environment="GRADLE_OPTS=-Dorg.gradle.workers.max=1 -Dorg.gradle.jvmargs=-Xmx1g"
 Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
 CI_TOOLS
 fi
