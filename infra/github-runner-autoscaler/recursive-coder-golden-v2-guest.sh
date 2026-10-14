@@ -110,6 +110,11 @@ fi
 # Gradle daemon locks, runner home, git config, logs and identities.
 rm -rf /tmp/recursive-coder-warm /home/runner
 find "$base/gradle-home" -type f -name '*.lock' -delete
+# The builder runs under umask 077. Export root-owned toolchain trees with
+# world-readable/traversable paths, while Gradle caches remain runner-owned.
+# Otherwise ephemeral Actions processes see EACCES under python/bin and the
+# toolchain verification job exits without executing any tests.
+chmod -R a+rX "$base/python" "$base/gradle-9.8.1" "$base/node-v22.21.1-linux-x64"
 userdel runner
 cat >"$base/toolchain-v2.manifest" <<MANIFEST
 schema=2 gradle=9.8.1 gradle_sha256=$gradle_sha node=22.21.1 node_sha256=$node_sha python=3.12 jsonschema=4.25.1 source=$source_sha
